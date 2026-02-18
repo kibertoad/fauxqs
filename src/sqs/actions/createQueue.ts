@@ -18,6 +18,33 @@ export function createQueue(
   const attributes = (body.Attributes as Record<string, string>) ?? {};
   const tags = (body.tags as Record<string, string>) ?? {};
 
+  // FIFO validation
+  const isFifoName = queueName.endsWith(".fifo");
+  const isFifoAttr = attributes.FifoQueue === "true";
+
+  if (isFifoName && !isFifoAttr) {
+    // Auto-set FifoQueue when name ends with .fifo
+    attributes.FifoQueue = "true";
+  } else if (isFifoAttr && !isFifoName) {
+    throw new SqsError(
+      "InvalidParameterValue",
+      "The name of a FIFO queue can only include alphanumeric characters, hyphens, or underscores, must end with .fifo suffix.",
+    );
+  }
+
+  // Set FIFO defaults
+  if (attributes.FifoQueue === "true") {
+    if (attributes.ContentBasedDeduplication === undefined) {
+      attributes.ContentBasedDeduplication = "false";
+    }
+    if (attributes.DeduplicationScope === undefined) {
+      attributes.DeduplicationScope = "queue";
+    }
+    if (attributes.FifoThroughputLimit === undefined) {
+      attributes.FifoThroughputLimit = "perQueue";
+    }
+  }
+
   // Check for existing queue with same name
   const existing = store.getQueueByName(queueName);
   if (existing) {

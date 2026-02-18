@@ -41,6 +41,33 @@ export function publish(
   // Parse message attributes
   const messageAttributes = parseMessageAttributes(params);
 
+  // FIFO topic handling
+  const isFifoTopic = topic.attributes.FifoTopic === "true";
+  let messageGroupId: string | undefined;
+  let messageDeduplicationId: string | undefined;
+
+  if (isFifoTopic) {
+    messageGroupId = params.MessageGroupId;
+    if (!messageGroupId) {
+      throw new SnsError(
+        "InvalidParameter",
+        "Invalid parameter: The MessageGroupId parameter is required for FIFO topics.",
+      );
+    }
+
+    messageDeduplicationId = params.MessageDeduplicationId;
+    if (!messageDeduplicationId) {
+      if (topic.attributes.ContentBasedDeduplication === "true") {
+        messageDeduplicationId = SqsStoreClass.contentBasedDeduplicationId(message);
+      } else {
+        throw new SnsError(
+          "InvalidParameter",
+          "Invalid parameter: The topic should either have ContentBasedDeduplication enabled or MessageDeduplicationId provided explicitly.",
+        );
+      }
+    }
+  }
+
   // Fan out to subscriptions
   for (const subArn of topic.subscriptionArns) {
     const sub = snsStore.getSubscription(subArn);
@@ -93,7 +120,21 @@ export function publish(
       });
     }
 
-    const sqsMsg = SqsStoreClass.createMessage(sqsBody, sqsAttributes);
+    const sqsMsg = SqsStoreClass.createMessage(
+      sqsBody,
+      sqsAttributes,
+      undefined,
+      messageGroupId,
+      messageDeduplicationId,
+    );
+
+    if (queue.isFifo() && messageDeduplicationId) {
+      const dedupResult = queue.checkDeduplication(messageDeduplicationId);
+      if (dedupResult.isDuplicate) continue;
+      sqsMsg.sequenceNumber = queue.nextSequenceNumber();
+      queue.recordDeduplication(messageDeduplicationId, sqsMsg.messageId);
+    }
+
     queue.enqueue(sqsMsg);
   }
 
@@ -117,6 +158,7 @@ export function publishBatch(
 
   // Parse batch entries from flattened form params
   const entries = parseBatchEntries(params);
+  const isFifoTopic = topic.attributes.FifoTopic === "true";
 
   const successfulXml: string[] = [];
   const failedXml: string[] = [];
@@ -127,6 +169,31 @@ export function publishBatch(
         `<member><Id>${entry.id}</Id><Code>InvalidParameter</Code><Message>Message too long</Message><SenderFault>true</SenderFault></member>`,
       );
       continue;
+    }
+
+    let messageGroupId: string | undefined;
+    let messageDeduplicationId: string | undefined;
+
+    if (isFifoTopic) {
+      messageGroupId = entry.messageGroupId;
+      if (!messageGroupId) {
+        failedXml.push(
+          `<member><Id>${entry.id}</Id><Code>InvalidParameter</Code><Message>The MessageGroupId parameter is required for FIFO topics.</Message><SenderFault>true</SenderFault></member>`,
+        );
+        continue;
+      }
+
+      messageDeduplicationId = entry.messageDeduplicationId;
+      if (!messageDeduplicationId) {
+        if (topic.attributes.ContentBasedDeduplication === "true") {
+          messageDeduplicationId = SqsStoreClass.contentBasedDeduplicationId(entry.message);
+        } else {
+          failedXml.push(
+            `<member><Id>${entry.id}</Id><Code>InvalidParameter</Code><Message>The topic should either have ContentBasedDeduplication enabled or MessageDeduplicationId provided explicitly.</Message><SenderFault>true</SenderFault></member>`,
+          );
+          continue;
+        }
+      }
     }
 
     const messageId = randomUUID();
@@ -160,7 +227,21 @@ export function publishBatch(
         });
       }
 
-      const sqsMsg = SqsStoreClass.createMessage(sqsBody);
+      const sqsMsg = SqsStoreClass.createMessage(
+        sqsBody,
+        {},
+        undefined,
+        messageGroupId,
+        messageDeduplicationId,
+      );
+
+      if (queue.isFifo() && messageDeduplicationId) {
+        const dedupResult = queue.checkDeduplication(messageDeduplicationId);
+        if (dedupResult.isDuplicate) continue;
+        sqsMsg.sequenceNumber = queue.nextSequenceNumber();
+        queue.recordDeduplication(messageDeduplicationId, sqsMsg.messageId);
+      }
+
       queue.enqueue(sqsMsg);
     }
 
@@ -204,8 +285,20 @@ function parseMessageAttributes(
 
 function parseBatchEntries(
   params: Record<string, string>,
-): Array<{ id: string; message: string; subject?: string }> {
-  const entries: Array<{ id: string; message: string; subject?: string }> = [];
+): Array<{
+  id: string;
+  message: string;
+  subject?: string;
+  messageGroupId?: string;
+  messageDeduplicationId?: string;
+}> {
+  const entries: Array<{
+    id: string;
+    message: string;
+    subject?: string;
+    messageGroupId?: string;
+    messageDeduplicationId?: string;
+  }> = [];
   const indices = new Set<string>();
 
   for (const key of Object.keys(params)) {
@@ -220,9 +313,11 @@ function parseBatchEntries(
     const id = params[`${prefix}.Id`];
     const message = params[`${prefix}.Message`];
     const subject = params[`${prefix}.Subject`];
+    const messageGroupId = params[`${prefix}.MessageGroupId`];
+    const messageDeduplicationId = params[`${prefix}.MessageDeduplicationId`];
 
     if (id && message) {
-      entries.push({ id, message, subject });
+      entries.push({ id, message, subject, messageGroupId, messageDeduplicationId });
     }
   }
 

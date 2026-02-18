@@ -32,8 +32,17 @@ export async function receiveMessage(
     if (waitedMsgs.length > 0) {
       // Process the waited messages through the normal dequeue path
       // Put them back temporarily and dequeue properly
-      for (const msg of waitedMsgs) {
-        queue.messages.unshift(msg);
+      if (queue.isFifo()) {
+        for (const msg of waitedMsgs) {
+          const groupId = msg.messageGroupId ?? "__default";
+          const group = queue.fifoMessages.get(groupId) ?? [];
+          group.unshift(msg);
+          queue.fifoMessages.set(groupId, group);
+        }
+      } else {
+        for (const msg of waitedMsgs) {
+          queue.messages.unshift(msg);
+        }
       }
       messages = queue.dequeue(maxNumberOfMessages, visibilityTimeout, dlqResolver);
     }
@@ -75,6 +84,21 @@ function addSystemAttributes(
       attrs.ApproximateFirstReceiveTimestamp = String(
         entry.message.approximateFirstReceiveTimestamp ?? "",
       );
+    }
+    if (wantsAll || systemAttributeNames.includes("MessageGroupId")) {
+      if (entry.message.messageGroupId) {
+        attrs.MessageGroupId = entry.message.messageGroupId;
+      }
+    }
+    if (wantsAll || systemAttributeNames.includes("MessageDeduplicationId")) {
+      if (entry.message.messageDeduplicationId) {
+        attrs.MessageDeduplicationId = entry.message.messageDeduplicationId;
+      }
+    }
+    if (wantsAll || systemAttributeNames.includes("SequenceNumber")) {
+      if (entry.message.sequenceNumber) {
+        attrs.SequenceNumber = entry.message.sequenceNumber;
+      }
     }
 
     if (Object.keys(attrs).length > 0) {

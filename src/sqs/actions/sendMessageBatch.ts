@@ -9,6 +9,8 @@ interface BatchEntry {
   MessageBody: string;
   DelaySeconds?: number;
   MessageAttributes?: Record<string, MessageAttributeValue>;
+  MessageGroupId?: string;
+  MessageDeduplicationId?: string;
 }
 
 export function sendMessageBatch(body: Record<string, unknown>, store: SqsStore): unknown {
@@ -45,11 +47,15 @@ export function sendMessageBatch(body: Record<string, unknown>, store: SqsStore)
     ids.add(entry.Id);
   }
 
+  const isFifo = queue.isFifo();
+  const contentBasedDedup = queue.attributes.ContentBasedDeduplication === "true";
+
   const successful: Array<{
     Id: string;
     MessageId: string;
     MD5OfMessageBody: string;
     MD5OfMessageAttributes?: string;
+    SequenceNumber?: string;
   }> = [];
   const failed: Array<{
     Id: string;
@@ -80,27 +86,113 @@ export function sendMessageBatch(body: Record<string, unknown>, store: SqsStore)
       continue;
     }
 
-    const delaySeconds = entry.DelaySeconds ?? parseInt(queue.attributes.DelaySeconds);
+    if (isFifo) {
+      // FIFO validations
+      if (!entry.MessageGroupId) {
+        failed.push({
+          Id: entry.Id,
+          SenderFault: true,
+          Code: "MissingParameter",
+          Message: "The request must contain the parameter MessageGroupId.",
+        });
+        continue;
+      }
 
-    const msg = SqsStoreClass.createMessage(
-      entry.MessageBody,
-      entry.MessageAttributes ?? {},
-      delaySeconds > 0 ? delaySeconds : undefined,
-    );
+      if (entry.DelaySeconds !== undefined && entry.DelaySeconds !== 0) {
+        failed.push({
+          Id: entry.Id,
+          SenderFault: true,
+          Code: "InvalidParameterValue",
+          Message: "DelaySeconds is not supported on FIFO queues.",
+        });
+        continue;
+      }
 
-    queue.enqueue(msg);
+      let dedupId = entry.MessageDeduplicationId;
+      if (!dedupId) {
+        if (contentBasedDedup) {
+          dedupId = SqsStoreClass.contentBasedDeduplicationId(entry.MessageBody);
+        } else {
+          failed.push({
+            Id: entry.Id,
+            SenderFault: true,
+            Code: "InvalidParameterValue",
+            Message:
+              "The queue should either have ContentBasedDeduplication enabled or MessageDeduplicationId provided explicitly.",
+          });
+          continue;
+        }
+      }
 
-    const result: (typeof successful)[number] = {
-      Id: entry.Id,
-      MessageId: msg.messageId,
-      MD5OfMessageBody: msg.md5OfBody,
-    };
+      // Check deduplication
+      const dedupResult = queue.checkDeduplication(dedupId);
+      if (dedupResult.isDuplicate) {
+        const result: (typeof successful)[number] = {
+          Id: entry.Id,
+          MessageId: dedupResult.originalMessageId!,
+          MD5OfMessageBody: SqsStoreClass.createMessage(entry.MessageBody).md5OfBody,
+          SequenceNumber: queue.nextSequenceNumber(),
+        };
+        const md5OfAttrs = SqsStoreClass.createMessage(
+          entry.MessageBody,
+          entry.MessageAttributes ?? {},
+        ).md5OfMessageAttributes;
+        if (md5OfAttrs) {
+          result.MD5OfMessageAttributes = md5OfAttrs;
+        }
+        successful.push(result);
+        continue;
+      }
 
-    if (msg.md5OfMessageAttributes) {
-      result.MD5OfMessageAttributes = msg.md5OfMessageAttributes;
+      const queueDelay = parseInt(queue.attributes.DelaySeconds);
+      const msg = SqsStoreClass.createMessage(
+        entry.MessageBody,
+        entry.MessageAttributes ?? {},
+        queueDelay > 0 ? queueDelay : undefined,
+        entry.MessageGroupId,
+        dedupId,
+      );
+
+      msg.sequenceNumber = queue.nextSequenceNumber();
+      queue.recordDeduplication(dedupId, msg.messageId);
+      queue.enqueue(msg);
+
+      const result: (typeof successful)[number] = {
+        Id: entry.Id,
+        MessageId: msg.messageId,
+        MD5OfMessageBody: msg.md5OfBody,
+        SequenceNumber: msg.sequenceNumber,
+      };
+
+      if (msg.md5OfMessageAttributes) {
+        result.MD5OfMessageAttributes = msg.md5OfMessageAttributes;
+      }
+
+      successful.push(result);
+    } else {
+      // Standard queue
+      const delaySeconds = entry.DelaySeconds ?? parseInt(queue.attributes.DelaySeconds);
+
+      const msg = SqsStoreClass.createMessage(
+        entry.MessageBody,
+        entry.MessageAttributes ?? {},
+        delaySeconds > 0 ? delaySeconds : undefined,
+      );
+
+      queue.enqueue(msg);
+
+      const result: (typeof successful)[number] = {
+        Id: entry.Id,
+        MessageId: msg.messageId,
+        MD5OfMessageBody: msg.md5OfBody,
+      };
+
+      if (msg.md5OfMessageAttributes) {
+        result.MD5OfMessageAttributes = msg.md5OfMessageAttributes;
+      }
+
+      successful.push(result);
     }
-
-    successful.push(result);
   }
 
   return { Successful: successful, Failed: failed };

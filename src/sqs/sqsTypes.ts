@@ -53,6 +53,8 @@ export const SETTABLE_ATTRIBUTES = new Set([
   "Policy",
   "KmsMasterKeyId",
   "KmsDataKeyReusePeriodSeconds",
+  "FifoQueue",
+  "ContentBasedDeduplication",
 ]);
 
 // AWS SQS allowed unicode characters: #x9 | #xA | #xD | #x20 to #xD7FF | #xE000 to #xFFFD
@@ -81,4 +83,8 @@ export const ALL_ATTRIBUTE_NAMES = [
   "Policy",
   "KmsMasterKeyId",
   "KmsDataKeyReusePeriodSeconds",
+  "FifoQueue",
+  "ContentBasedDeduplication",
+  "DeduplicationScope",
+  "FifoThroughputLimit",
 ];

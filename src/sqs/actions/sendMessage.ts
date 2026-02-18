@@ -36,6 +36,10 @@ export function sendMessage(body: Record<string, unknown>, store: SqsStore): unk
 
   const messageAttributes = (body.MessageAttributes as Record<string, MessageAttributeValue>) ?? {};
 
+  if (queue.isFifo()) {
+    return sendFifoMessage(body, queue, messageBody, messageAttributes);
+  }
+
   // DelaySeconds: per-message override or queue default
   const delaySeconds =
     (body.DelaySeconds as number | undefined) ?? parseInt(queue.attributes.DelaySeconds);
@@ -51,6 +55,85 @@ export function sendMessage(body: Record<string, unknown>, store: SqsStore): unk
   const result: Record<string, unknown> = {
     MessageId: msg.messageId,
     MD5OfMessageBody: msg.md5OfBody,
+  };
+
+  if (msg.md5OfMessageAttributes) {
+    result.MD5OfMessageAttributes = msg.md5OfMessageAttributes;
+  }
+
+  return result;
+}
+
+function sendFifoMessage(
+  body: Record<string, unknown>,
+  queue: import("../sqsStore.js").SqsQueue,
+  messageBody: string,
+  messageAttributes: Record<string, MessageAttributeValue>,
+): unknown {
+  const messageGroupId = body.MessageGroupId as string | undefined;
+  if (!messageGroupId) {
+    throw new SqsError(
+      "MissingParameter",
+      "The request must contain the parameter MessageGroupId.",
+    );
+  }
+
+  // Per-message DelaySeconds is not supported on FIFO queues
+  if (body.DelaySeconds !== undefined && body.DelaySeconds !== 0) {
+    throw new SqsError(
+      "InvalidParameterValue",
+      "Value 0 for parameter DelaySeconds is invalid. Reason: The request include parameter that is not valid for this queue type.",
+    );
+  }
+
+  let messageDeduplicationId = body.MessageDeduplicationId as string | undefined;
+  const contentBasedDedup = queue.attributes.ContentBasedDeduplication === "true";
+
+  if (!messageDeduplicationId) {
+    if (contentBasedDedup) {
+      messageDeduplicationId = SqsStoreClass.contentBasedDeduplicationId(messageBody);
+    } else {
+      throw new SqsError(
+        "InvalidParameterValue",
+        "The queue should either have ContentBasedDeduplication enabled or MessageDeduplicationId provided explicitly.",
+      );
+    }
+  }
+
+  // Check deduplication
+  const dedupResult = queue.checkDeduplication(messageDeduplicationId);
+  if (dedupResult.isDuplicate) {
+    // Return the original message ID without re-enqueue
+    const result: Record<string, unknown> = {
+      MessageId: dedupResult.originalMessageId,
+      MD5OfMessageBody: SqsStoreClass.createMessage(messageBody).md5OfBody,
+    };
+    const md5OfAttrs = SqsStoreClass.createMessage(messageBody, messageAttributes).md5OfMessageAttributes;
+    if (md5OfAttrs) {
+      result.MD5OfMessageAttributes = md5OfAttrs;
+    }
+    result.SequenceNumber = queue.nextSequenceNumber();
+    return result;
+  }
+
+  // Queue-level delay applies to FIFO queues
+  const queueDelay = parseInt(queue.attributes.DelaySeconds);
+  const msg = SqsStoreClass.createMessage(
+    messageBody,
+    messageAttributes,
+    queueDelay > 0 ? queueDelay : undefined,
+    messageGroupId,
+    messageDeduplicationId,
+  );
+
+  msg.sequenceNumber = queue.nextSequenceNumber();
+  queue.recordDeduplication(messageDeduplicationId, msg.messageId);
+  queue.enqueue(msg);
+
+  const result: Record<string, unknown> = {
+    MessageId: msg.messageId,
+    MD5OfMessageBody: msg.md5OfBody,
+    SequenceNumber: msg.sequenceNumber,
   };
 
   if (msg.md5OfMessageAttributes) {

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { md5, md5OfMessageAttributes } from "../common/md5.js";
 import type {
   SqsMessage,
@@ -7,6 +7,8 @@ import type {
   MessageAttributeValue,
 } from "./sqsTypes.js";
 import { DEFAULT_QUEUE_ATTRIBUTES, ALL_ATTRIBUTE_NAMES } from "./sqsTypes.js";
+
+const DEDUP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
 export class SqsQueue {
   readonly createdTimestamp: number;
@@ -22,6 +24,12 @@ export class SqsQueue {
     timer: ReturnType<typeof setTimeout>;
   }> = [];
 
+  // FIFO-specific fields
+  fifoMessages: Map<string, SqsMessage[]> = new Map();
+  fifoDelayed: Map<string, SqsMessage[]> = new Map();
+  deduplicationCache: Map<string, { messageId: string; timestamp: number }> = new Map();
+  sequenceCounter = 0;
+
   constructor(
     public readonly name: string,
     public readonly url: string,
@@ -34,6 +42,10 @@ export class SqsQueue {
     this.lastModifiedTimestamp = now;
     this.attributes = { ...DEFAULT_QUEUE_ATTRIBUTES, ...attributes };
     this.tags = new Map(tags ? Object.entries(tags) : []);
+  }
+
+  isFifo(): boolean {
+    return this.attributes.FifoQueue === "true";
   }
 
   getAllAttributes(requested: string[]): Record<string, string> {
@@ -54,10 +66,24 @@ export class SqsQueue {
       case "QueueArn":
         return this.arn;
       case "ApproximateNumberOfMessages":
+        if (this.isFifo()) {
+          let total = 0;
+          for (const msgs of this.fifoMessages.values()) {
+            total += msgs.length;
+          }
+          return String(total);
+        }
         return String(this.messages.length);
       case "ApproximateNumberOfMessagesNotVisible":
         return String(this.inflightMessages.size);
       case "ApproximateNumberOfMessagesDelayed":
+        if (this.isFifo()) {
+          let total = 0;
+          for (const msgs of this.fifoDelayed.values()) {
+            total += msgs.length;
+          }
+          return String(total);
+        }
         return String(this.delayedMessages.length);
       case "CreatedTimestamp":
         return String(this.createdTimestamp);
@@ -74,6 +100,21 @@ export class SqsQueue {
   }
 
   enqueue(msg: SqsMessage): void {
+    if (this.isFifo()) {
+      const groupId = msg.messageGroupId ?? "__default";
+      if (msg.delayUntil && msg.delayUntil > Date.now()) {
+        const group = this.fifoDelayed.get(groupId) ?? [];
+        group.push(msg);
+        this.fifoDelayed.set(groupId, group);
+      } else {
+        const group = this.fifoMessages.get(groupId) ?? [];
+        group.push(msg);
+        this.fifoMessages.set(groupId, group);
+        this.notifyWaiters();
+      }
+      return;
+    }
+
     if (msg.delayUntil && msg.delayUntil > Date.now()) {
       this.delayedMessages.push(msg);
     } else {
@@ -87,6 +128,10 @@ export class SqsQueue {
     visibilityTimeoutOverride?: number,
     dlqResolver?: (arn: string) => SqsQueue | undefined,
   ): ReceivedMessage[] {
+    if (this.isFifo()) {
+      return this.dequeueFifo(maxCount, visibilityTimeoutOverride, dlqResolver);
+    }
+
     this.processTimers();
 
     const visibilityTimeout =
@@ -158,6 +203,103 @@ export class SqsQueue {
     return result;
   }
 
+  private dequeueFifo(
+    maxCount: number,
+    visibilityTimeoutOverride?: number,
+    dlqResolver?: (arn: string) => SqsQueue | undefined,
+  ): ReceivedMessage[] {
+    this.processTimers();
+
+    const visibilityTimeout =
+      visibilityTimeoutOverride ?? parseInt(this.attributes.VisibilityTimeout);
+
+    // Parse RedrivePolicy for DLQ
+    let maxReceiveCount = Infinity;
+    let dlqArn: string | undefined;
+    if (this.attributes.RedrivePolicy) {
+      try {
+        const policy = JSON.parse(this.attributes.RedrivePolicy);
+        maxReceiveCount = policy.maxReceiveCount ?? Infinity;
+        dlqArn = policy.deadLetterTargetArn;
+      } catch {
+        // Invalid policy, ignore
+      }
+    }
+
+    // Collect set of groups that have inflight messages
+    const lockedGroups = new Set<string>();
+    for (const entry of this.inflightMessages.values()) {
+      if (entry.message.messageGroupId) {
+        lockedGroups.add(entry.message.messageGroupId);
+      }
+    }
+
+    const result: ReceivedMessage[] = [];
+    const count = Math.min(maxCount, 10);
+
+    for (const [groupId, groupMsgs] of this.fifoMessages) {
+      if (result.length >= count) break;
+      if (lockedGroups.has(groupId)) continue;
+      if (groupMsgs.length === 0) continue;
+
+      // Take messages from this group in order (up to remaining count)
+      while (result.length < count && groupMsgs.length > 0) {
+        const msg = groupMsgs.shift()!;
+
+        msg.approximateReceiveCount++;
+        if (!msg.approximateFirstReceiveTimestamp) {
+          msg.approximateFirstReceiveTimestamp = Date.now();
+        }
+
+        // DLQ check
+        if (dlqArn && dlqResolver && msg.approximateReceiveCount > maxReceiveCount) {
+          const dlq = dlqResolver(dlqArn);
+          if (dlq) {
+            dlq.enqueue(msg);
+            continue;
+          }
+        }
+
+        const receiptHandle = randomUUID();
+        const visibilityDeadline = Date.now() + visibilityTimeout * 1000;
+
+        this.inflightMessages.set(receiptHandle, {
+          message: msg,
+          receiptHandle,
+          visibilityDeadline,
+        });
+
+        const received: ReceivedMessage = {
+          MessageId: msg.messageId,
+          ReceiptHandle: receiptHandle,
+          MD5OfBody: msg.md5OfBody,
+          Body: msg.body,
+        };
+
+        if (msg.md5OfMessageAttributes) {
+          received.MD5OfMessageAttributes = msg.md5OfMessageAttributes;
+        }
+
+        if (Object.keys(msg.messageAttributes).length > 0) {
+          received.MessageAttributes = msg.messageAttributes;
+        }
+
+        result.push(received);
+
+        // Once a message from this group is inflight, the group is locked
+        lockedGroups.add(groupId);
+        break;
+      }
+
+      // Clean up empty groups
+      if (groupMsgs.length === 0) {
+        this.fifoMessages.delete(groupId);
+      }
+    }
+
+    return result;
+  }
+
   deleteMessage(receiptHandle: string): boolean {
     return this.inflightMessages.delete(receiptHandle);
   }
@@ -170,7 +312,14 @@ export class SqsQueue {
 
     if (timeoutSeconds === 0) {
       this.inflightMessages.delete(receiptHandle);
-      this.messages.push(entry.message);
+      if (this.isFifo() && entry.message.messageGroupId) {
+        const groupId = entry.message.messageGroupId;
+        const group = this.fifoMessages.get(groupId) ?? [];
+        group.unshift(entry.message);
+        this.fifoMessages.set(groupId, group);
+      } else {
+        this.messages.push(entry.message);
+      }
       this.notifyWaiters();
     } else {
       entry.visibilityDeadline = Date.now() + timeoutSeconds * 1000;
@@ -179,6 +328,43 @@ export class SqsQueue {
 
   processTimers(): void {
     const now = Date.now();
+
+    if (this.isFifo()) {
+      // Move expired inflight messages back to front of their group
+      for (const [handle, entry] of this.inflightMessages) {
+        if (entry.visibilityDeadline <= now) {
+          this.inflightMessages.delete(handle);
+          const groupId = entry.message.messageGroupId ?? "__default";
+          const group = this.fifoMessages.get(groupId) ?? [];
+          group.unshift(entry.message);
+          this.fifoMessages.set(groupId, group);
+        }
+      }
+
+      // Move delayed FIFO messages that are now ready
+      for (const [groupId, delayedMsgs] of this.fifoDelayed) {
+        const stillDelayed: SqsMessage[] = [];
+        for (const msg of delayedMsgs) {
+          if (msg.delayUntil && msg.delayUntil > now) {
+            stillDelayed.push(msg);
+          } else {
+            const group = this.fifoMessages.get(groupId) ?? [];
+            group.push(msg);
+            this.fifoMessages.set(groupId, group);
+          }
+        }
+        if (stillDelayed.length === 0) {
+          this.fifoDelayed.delete(groupId);
+        } else {
+          this.fifoDelayed.set(groupId, stillDelayed);
+        }
+      }
+
+      if (this.hasFifoMessages()) {
+        this.notifyWaiters();
+      }
+      return;
+    }
 
     // Move expired inflight messages back to available
     for (const [handle, entry] of this.inflightMessages) {
@@ -221,6 +407,8 @@ export class SqsQueue {
   purge(): void {
     this.messages = [];
     this.delayedMessages = [];
+    this.fifoMessages.clear();
+    this.fifoDelayed.clear();
     // Inflight messages are NOT purged (matches AWS behavior)
   }
 
@@ -232,7 +420,51 @@ export class SqsQueue {
     this.pollWaiters = [];
   }
 
+  checkDeduplication(dedupId: string): { isDuplicate: boolean; originalMessageId?: string } {
+    const now = Date.now();
+    // Lazy cleanup of expired entries
+    for (const [key, entry] of this.deduplicationCache) {
+      if (now - entry.timestamp > DEDUP_WINDOW_MS) {
+        this.deduplicationCache.delete(key);
+      }
+    }
+
+    const existing = this.deduplicationCache.get(dedupId);
+    if (existing && now - existing.timestamp <= DEDUP_WINDOW_MS) {
+      return { isDuplicate: true, originalMessageId: existing.messageId };
+    }
+
+    return { isDuplicate: false };
+  }
+
+  recordDeduplication(dedupId: string, messageId: string): void {
+    this.deduplicationCache.set(dedupId, { messageId, timestamp: Date.now() });
+  }
+
+  nextSequenceNumber(): string {
+    this.sequenceCounter++;
+    return String(this.sequenceCounter).padStart(20, "0");
+  }
+
+  private hasFifoMessages(): boolean {
+    for (const msgs of this.fifoMessages.values()) {
+      if (msgs.length > 0) return true;
+    }
+    return false;
+  }
+
   private notifyWaiters(): void {
+    if (this.isFifo()) {
+      while (this.pollWaiters.length > 0 && this.hasFifoMessages()) {
+        const waiter = this.pollWaiters.shift()!;
+        clearTimeout(waiter.timer);
+        // For FIFO long polling, we pull from the first available unlocked group
+        const msgs = this.pullFifoMessagesForWaiter(waiter.maxMessages);
+        waiter.resolve(msgs);
+      }
+      return;
+    }
+
     while (this.pollWaiters.length > 0 && this.messages.length > 0) {
       const waiter = this.pollWaiters.shift()!;
       clearTimeout(waiter.timer);
@@ -240,6 +472,21 @@ export class SqsQueue {
       const msgs = this.messages.splice(0, count);
       waiter.resolve(msgs);
     }
+  }
+
+  private pullFifoMessagesForWaiter(maxMessages: number): SqsMessage[] {
+    const result: SqsMessage[] = [];
+    for (const [groupId, groupMsgs] of this.fifoMessages) {
+      if (result.length >= maxMessages) break;
+      if (groupMsgs.length === 0) continue;
+      const msg = groupMsgs.shift()!;
+      result.push(msg);
+      if (groupMsgs.length === 0) {
+        this.fifoMessages.delete(groupId);
+      }
+      break; // one group at a time for FIFO
+    }
+    return result;
   }
 }
 
@@ -312,6 +559,8 @@ export class SqsStore {
     body: string,
     messageAttributes: Record<string, MessageAttributeValue> = {},
     delaySeconds?: number,
+    messageGroupId?: string,
+    messageDeduplicationId?: string,
   ): SqsMessage {
     const now = Date.now();
     return {
@@ -323,6 +572,12 @@ export class SqsStore {
       sentTimestamp: now,
       approximateReceiveCount: 0,
       delayUntil: delaySeconds ? now + delaySeconds * 1000 : undefined,
+      messageGroupId,
+      messageDeduplicationId,
     };
+  }
+
+  static contentBasedDeduplicationId(body: string): string {
+    return createHash("sha256").update(body).digest("hex");
   }
 }

@@ -58,6 +58,25 @@ export function createTopic(params: Record<string, string>, snsStore: SnsStore):
     }
   }
 
+  // FIFO topic validation
+  const isFifoName = name.endsWith(".fifo");
+  const isFifoAttr = resolvedAttributes.FifoTopic === "true";
+
+  if (isFifoName && !isFifoAttr) {
+    resolvedAttributes.FifoTopic = "true";
+  } else if (isFifoAttr && !isFifoName) {
+    throw new SnsError(
+      "InvalidParameter",
+      "Invalid parameter: Topic name must end with .fifo suffix for FIFO topics.",
+    );
+  }
+
+  if (resolvedAttributes.FifoTopic === "true") {
+    if (resolvedAttributes.ContentBasedDeduplication === undefined) {
+      resolvedAttributes.ContentBasedDeduplication = "false";
+    }
+  }
+
   const topic = snsStore.createTopic(
     name,
     Object.keys(resolvedAttributes).length > 0 ? resolvedAttributes : undefined,

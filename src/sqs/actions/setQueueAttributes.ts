@@ -21,6 +21,14 @@ export function setQueueAttributes(body: Record<string, unknown>, store: SqsStor
     }
   }
 
+  // FifoQueue cannot be changed after creation
+  if (attributes.FifoQueue !== undefined && attributes.FifoQueue !== queue.attributes.FifoQueue) {
+    throw new SqsError(
+      "InvalidAttributeValue",
+      "Invalid value for the parameter FifoQueue. You cannot change the FifoQueue attribute of an existing queue.",
+    );
+  }
+
   queue.setAttributes(attributes);
   return {};
 }
