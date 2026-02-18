@@ -1,6 +1,6 @@
 # fauxqs
 
-Local SNS/SQS emulator for development and testing. Point your `@aws-sdk/client-sqs` and `@aws-sdk/client-sns` clients at fauxqs instead of real AWS or LocalStack.
+Local SNS/SQS/S3 emulator for development and testing. Point your `@aws-sdk/client-sqs`, `@aws-sdk/client-sns`, and `@aws-sdk/client-s3` clients at fauxqs instead of real AWS or LocalStack.
 
 All state is in-memory. No persistence, no external storage dependencies.
 
@@ -18,7 +18,7 @@ npm install fauxqs
 npx fauxqs
 ```
 
-The server starts on port `4566` (same as LocalStack) and handles both SQS and SNS on a single endpoint.
+The server starts on port `4566` (same as LocalStack) and handles SQS, SNS, and S3 on a single endpoint.
 
 Override the port with the `FAUXQS_PORT` environment variable:
 
@@ -35,6 +35,7 @@ Point your SDK clients at the local server:
 ```typescript
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { SNSClient } from "@aws-sdk/client-sns";
+import { S3Client } from "@aws-sdk/client-s3";
 
 const sqsClient = new SQSClient({
   endpoint: "http://localhost:4566",
@@ -46,6 +47,13 @@ const snsClient = new SNSClient({
   endpoint: "http://localhost:4566",
   region: "us-east-1",
   credentials: { accessKeyId: "test", secretAccessKey: "test" },
+});
+
+const s3Client = new S3Client({
+  endpoint: "http://localhost:4566",
+  region: "us-east-1",
+  credentials: { accessKeyId: "test", secretAccessKey: "test" },
+  forcePathStyle: true,
 });
 ```
 
@@ -146,6 +154,19 @@ const server = await startFauxqs({ defaultRegion: "eu-west-1" });
 | UntagResource | Yes |
 | ListTagsForResource | Yes |
 
+### S3
+
+| Action | Supported |
+|--------|-----------|
+| CreateBucket | Yes |
+| HeadBucket | Yes |
+| ListObjects | Yes |
+| PutObject | Yes |
+| GetObject | Yes |
+| DeleteObject | Yes |
+| HeadObject | Yes |
+| DeleteObjects | Yes |
+
 ### STS
 
 | Action | Supported |
@@ -177,6 +198,14 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Topic and subscription tags**
 - **FIFO topics** — `.fifo` suffix enforcement, `MessageGroupId` and `MessageDeduplicationId` passthrough to SQS subscriptions, content-based deduplication
 - **Batch publish**
+
+## S3 Features
+
+- **Bucket management** — CreateBucket (idempotent), HeadBucket, ListObjects
+- **Object operations** — PutObject, GetObject, DeleteObject, HeadObject with ETag, Content-Type, and Last-Modified headers
+- **Bulk delete** — DeleteObjects for batch key deletion
+- **Keys with slashes** — full support for slash-delimited keys (e.g., `path/to/file.txt`)
+- **Path-style access** — SDK must use `forcePathStyle: true`
 
 ## Conventions
 
