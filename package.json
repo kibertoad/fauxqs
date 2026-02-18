@@ -39,6 +39,11 @@
   "bugs": {
     "url": "https://github.com/kibertoad/fauxqs/issues"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "license": "MIT",
   "author": "Igor Savin",
   "engines": {

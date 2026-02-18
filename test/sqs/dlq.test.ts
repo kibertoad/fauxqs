@@ -7,20 +7,20 @@ import {
   GetQueueAttributesCommand,
 } from "@aws-sdk/client-sqs";
 import { createSqsClient } from "../helpers/clients.js";
-import { createTestServer, type TestServer } from "../helpers/setup.js";
+import { startFauxqsTestServer, type FauxqsServer } from "../helpers/setup.js";
 
 describe("SQS Dead Letter Queue", () => {
-  let server: TestServer;
+  let server: FauxqsServer;
   let sqs: ReturnType<typeof createSqsClient>;
 
   beforeAll(async () => {
-    server = await createTestServer();
+    server = await startFauxqsTestServer();
     sqs = createSqsClient(server.port);
   });
 
   afterAll(async () => {
     sqs.destroy();
-    await server.app.close();
+    await server.stop();
   });
 
   it("moves messages to DLQ after maxReceiveCount", async () => {
