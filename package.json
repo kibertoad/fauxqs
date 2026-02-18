@@ -1,6 +1,6 @@
 {
   "name": "fauxqs",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "description": "SNS/SQS emulator",
   "type": "module",
   "scripts": {
@@ -37,6 +37,19 @@
   "homepage": "https://github.com/kibertoad/fauxqs",
   "bugs": {
     "url": "https://github.com/kibertoad/fauxqs/issues"
+  },
+  "main": "dist/app.js",
+  "types": "dist/app.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/app.d.ts",
+        "default": "./dist/app.js"
+      }
+    }
+  },
+  "bin": {
+    "fauxqs": "dist/server.js"
   },
   "files": [
     "dist",
