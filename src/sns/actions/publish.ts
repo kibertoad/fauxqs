@@ -1,0 +1,240 @@
+import { randomUUID } from "node:crypto";
+import { SnsError } from "../../common/errors.js";
+import { snsSuccessResponse } from "../../common/xml.js";
+import { md5 } from "../../common/md5.js";
+import { parseArn } from "../../common/arnHelper.js";
+import type { SnsStore } from "../snsStore.js";
+import type { SqsStore } from "../../sqs/sqsStore.js";
+import { SqsStore as SqsStoreClass } from "../../sqs/sqsStore.js";
+import type { SnsMessageAttribute } from "../snsTypes.js";
+import type { MessageAttributeValue } from "../../sqs/sqsTypes.js";
+import { matchesFilterPolicy, matchesFilterPolicyOnBody } from "../filter.js";
+
+export function publish(
+  params: Record<string, string>,
+  snsStore: SnsStore,
+  sqsStore: SqsStore,
+): string {
+  const topicArn = params.TopicArn;
+  if (!topicArn) {
+    throw new SnsError("InvalidParameter", "TopicArn is required");
+  }
+
+  const topic = snsStore.getTopic(topicArn);
+  if (!topic) {
+    throw new SnsError("NotFound", "Topic does not exist", 404);
+  }
+
+  const message = params.Message;
+  if (!message) {
+    throw new SnsError("InvalidParameter", "Message is required");
+  }
+
+  const messageId = randomUUID();
+  const subject = params.Subject;
+
+  // Parse message attributes
+  const messageAttributes = parseMessageAttributes(params);
+
+  // Fan out to subscriptions
+  for (const subArn of topic.subscriptionArns) {
+    const sub = snsStore.getSubscription(subArn);
+    if (!sub || !sub.confirmed) continue;
+    if (sub.protocol !== "sqs") continue;
+
+    // Filter policy check
+    if (sub.attributes.FilterPolicy) {
+      try {
+        const filterPolicy = JSON.parse(sub.attributes.FilterPolicy);
+        const scope = sub.attributes.FilterPolicyScope ?? "MessageAttributes";
+
+        if (scope === "MessageBody") {
+          if (!matchesFilterPolicyOnBody(filterPolicy, message)) continue;
+        } else {
+          if (!matchesFilterPolicy(filterPolicy, messageAttributes)) continue;
+        }
+      } catch {
+        // Invalid filter policy, skip filtering
+      }
+    }
+
+    const sqsQueueArn = sub.endpoint;
+    const queue = sqsStore.getQueueByArn(sqsQueueArn);
+    if (!queue) continue;
+
+    const isRaw = sub.attributes.RawMessageDelivery === "true";
+
+    let sqsBody: string;
+    let sqsAttributes: Record<string, MessageAttributeValue> = {};
+
+    if (isRaw) {
+      sqsBody = message;
+      sqsAttributes = messageAttributes;
+    } else {
+      // Wrap in SNS envelope
+      sqsBody = JSON.stringify({
+        Type: "Notification",
+        MessageId: messageId,
+        TopicArn: topicArn,
+        Subject: subject ?? null,
+        Message: message,
+        Timestamp: new Date().toISOString(),
+        SignatureVersion: "1",
+        Signature: "EXAMPLE",
+        SigningCertURL: "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem",
+        UnsubscribeURL: `https://sns.us-east-1.amazonaws.com/?Action=Unsubscribe&SubscriptionArn=${sub.arn}`,
+        MessageAttributes: formatEnvelopeAttributes(messageAttributes),
+      });
+    }
+
+    const sqsMsg = SqsStoreClass.createMessage(sqsBody, sqsAttributes);
+    queue.enqueue(sqsMsg);
+  }
+
+  return snsSuccessResponse(
+    "Publish",
+    `<MessageId>${messageId}</MessageId>`,
+  );
+}
+
+export function publishBatch(
+  params: Record<string, string>,
+  snsStore: SnsStore,
+  sqsStore: SqsStore,
+): string {
+  const topicArn = params.TopicArn;
+  if (!topicArn) {
+    throw new SnsError("InvalidParameter", "TopicArn is required");
+  }
+
+  const topic = snsStore.getTopic(topicArn);
+  if (!topic) {
+    throw new SnsError("NotFound", "Topic does not exist", 404);
+  }
+
+  // Parse batch entries from flattened form params
+  const entries = parseBatchEntries(params);
+
+  const successfulXml: string[] = [];
+
+  for (const entry of entries) {
+    const messageId = randomUUID();
+
+    // Fan out each entry
+    for (const subArn of topic.subscriptionArns) {
+      const sub = snsStore.getSubscription(subArn);
+      if (!sub || !sub.confirmed || sub.protocol !== "sqs") continue;
+
+      const queue = sqsStore.getQueueByArn(sub.endpoint);
+      if (!queue) continue;
+
+      const isRaw = sub.attributes.RawMessageDelivery === "true";
+      let sqsBody: string;
+
+      if (isRaw) {
+        sqsBody = entry.message;
+      } else {
+        sqsBody = JSON.stringify({
+          Type: "Notification",
+          MessageId: messageId,
+          TopicArn: topicArn,
+          Subject: entry.subject ?? null,
+          Message: entry.message,
+          Timestamp: new Date().toISOString(),
+          SignatureVersion: "1",
+          Signature: "EXAMPLE",
+          SigningCertURL: "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem",
+          UnsubscribeURL: `https://sns.us-east-1.amazonaws.com/?Action=Unsubscribe&SubscriptionArn=${sub.arn}`,
+        });
+      }
+
+      const sqsMsg = SqsStoreClass.createMessage(sqsBody);
+      queue.enqueue(sqsMsg);
+    }
+
+    successfulXml.push(
+      `<member><Id>${entry.id}</Id><MessageId>${messageId}</MessageId></member>`,
+    );
+  }
+
+  return snsSuccessResponse(
+    "PublishBatch",
+    `<Successful>${successfulXml.join("")}</Successful><Failed></Failed>`,
+  );
+}
+
+function parseMessageAttributes(
+  params: Record<string, string>,
+): Record<string, MessageAttributeValue> {
+  const result: Record<string, MessageAttributeValue> = {};
+  const indices = new Set<string>();
+
+  for (const key of Object.keys(params)) {
+    const match = key.match(
+      /^MessageAttributes\.entry\.(\d+)\./,
+    );
+    if (match) {
+      indices.add(match[1]);
+    }
+  }
+
+  for (const idx of indices) {
+    const name = params[`MessageAttributes.entry.${idx}.Name`];
+    const dataType =
+      params[`MessageAttributes.entry.${idx}.Value.DataType`];
+    const stringValue =
+      params[`MessageAttributes.entry.${idx}.Value.StringValue`];
+    const binaryValue =
+      params[`MessageAttributes.entry.${idx}.Value.BinaryValue`];
+
+    if (name && dataType) {
+      result[name] = { DataType: dataType };
+      if (stringValue !== undefined) result[name].StringValue = stringValue;
+      if (binaryValue !== undefined) result[name].BinaryValue = binaryValue;
+    }
+  }
+
+  return result;
+}
+
+function parseBatchEntries(
+  params: Record<string, string>,
+): Array<{ id: string; message: string; subject?: string }> {
+  const entries: Array<{ id: string; message: string; subject?: string }> = [];
+  const indices = new Set<string>();
+
+  for (const key of Object.keys(params)) {
+    const match = key.match(
+      /^PublishBatchRequestEntries\.member\.(\d+)\./,
+    );
+    if (match) {
+      indices.add(match[1]);
+    }
+  }
+
+  for (const idx of indices) {
+    const prefix = `PublishBatchRequestEntries.member.${idx}`;
+    const id = params[`${prefix}.Id`];
+    const message = params[`${prefix}.Message`];
+    const subject = params[`${prefix}.Subject`];
+
+    if (id && message) {
+      entries.push({ id, message, subject });
+    }
+  }
+
+  return entries;
+}
+
+function formatEnvelopeAttributes(
+  attributes: Record<string, MessageAttributeValue>,
+): Record<string, { Type: string; Value: string }> {
+  const result: Record<string, { Type: string; Value: string }> = {};
+  for (const [key, attr] of Object.entries(attributes)) {
+    result[key] = {
+      Type: attr.DataType,
+      Value: attr.StringValue ?? attr.BinaryValue ?? "",
+    };
+  }
+  return result;
+}
