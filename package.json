@@ -14,6 +14,11 @@
     "format": "oxfmt --write src",
     "format:check": "oxfmt src"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "license": "MIT",
   "author": "Igor Savin",
   "engines": {
