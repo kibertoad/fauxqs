@@ -1,0 +1,2 @@
+# fauxqs
+SNS/SQS emulator 
