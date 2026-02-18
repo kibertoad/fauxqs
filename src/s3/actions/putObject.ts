@@ -10,9 +10,7 @@ export function putObject(
   const key = request.params["*"];
   const contentType = request.headers["content-type"] ?? "application/octet-stream";
 
-  const body = Buffer.isBuffer(request.body)
-    ? request.body
-    : Buffer.from(request.body as string);
+  const body = Buffer.isBuffer(request.body) ? request.body : Buffer.from(request.body as string);
 
   const obj = store.putObject(bucket, key, body, contentType);
 
