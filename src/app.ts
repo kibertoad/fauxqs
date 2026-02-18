@@ -33,6 +33,8 @@ import { getSubscriptionAttributes } from "./sns/actions/getSubscriptionAttribut
 import { setSubscriptionAttributes } from "./sns/actions/setSubscriptionAttributes.js";
 import { publish, publishBatch } from "./sns/actions/publish.js";
 import { tagResource, untagResource, listTagsForResource } from "./sns/actions/tagResource.js";
+import { S3Store } from "./s3/s3Store.js";
+import { registerS3Routes } from "./s3/s3Router.js";
 
 export function buildApp(options?: { logger?: boolean; host?: string; defaultRegion?: string }) {
   const app = Fastify({
@@ -120,6 +122,14 @@ export function buildApp(options?: { logger?: boolean; host?: string; defaultReg
       }
     },
   );
+
+  // Wildcard parser for S3 (binary bodies)
+  app.addContentTypeParser("*", { parseAs: "buffer" }, (_req, body, done) => {
+    done(null, body);
+  });
+
+  const s3Store = new S3Store();
+  registerS3Routes(app, s3Store);
 
   app.addHook("preClose", () => {
     sqsStore.shutdown();
