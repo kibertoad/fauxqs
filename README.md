@@ -18,7 +18,13 @@ npm install fauxqs
 npx fauxqs
 ```
 
-The server starts on port 3000 and handles both SQS and SNS on a single endpoint.
+The server starts on port `4566` (same as LocalStack) and handles both SQS and SNS on a single endpoint.
+
+Override the port with the `FAUXQS_PORT` environment variable:
+
+```bash
+FAUXQS_PORT=3000 npx fauxqs
+```
 
 A health check is available at `GET /health`.
 
@@ -31,13 +37,13 @@ import { SQSClient } from "@aws-sdk/client-sqs";
 import { SNSClient } from "@aws-sdk/client-sns";
 
 const sqsClient = new SQSClient({
-  endpoint: "http://localhost:3000",
+  endpoint: "http://localhost:4566",
   region: "us-east-1",
   credentials: { accessKeyId: "test", secretAccessKey: "test" },
 });
 
 const snsClient = new SNSClient({
-  endpoint: "http://localhost:3000",
+  endpoint: "http://localhost:4566",
   region: "us-east-1",
   credentials: { accessKeyId: "test", secretAccessKey: "test" },
 });
@@ -52,16 +58,18 @@ You can also embed fauxqs directly in your test suite:
 ```typescript
 import { startFauxqs } from "fauxqs";
 
-const server = await startFauxqs({ logger: false });
+const server = await startFauxqs({ port: 4566, logger: false });
 
-console.log(server.address); // "http://127.0.0.1:12345"
-console.log(server.port);    // 12345
+console.log(server.address); // "http://127.0.0.1:4566"
+console.log(server.port);    // 4566
 
 // point your SDK clients at server.address
 
 // clean up when done
 await server.stop();
 ```
+
+Pass `port: 0` to let the OS assign a random available port (useful in tests).
 
 ## Supported API Actions
 

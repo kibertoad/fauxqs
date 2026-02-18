@@ -141,8 +141,9 @@ export interface FauxqsServer {
 export async function startFauxqs(
   options?: { port?: number; logger?: boolean },
 ): Promise<FauxqsServer> {
+  const port = options?.port ?? parseInt(process.env.FAUXQS_PORT ?? "4566");
   const app = buildApp({ logger: options?.logger ?? true });
-  const listenAddress = await app.listen({ port: options?.port ?? 0, host: "127.0.0.1" });
+  const listenAddress = await app.listen({ port, host: "127.0.0.1" });
   const url = new URL(listenAddress);
 
   return {
