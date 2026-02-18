@@ -5,13 +5,14 @@ import type { SnsTopic, SnsSubscription } from "./snsTypes.js";
 export class SnsStore {
   topics = new Map<string, SnsTopic>();
   subscriptions = new Map<string, SnsSubscription>();
+  region?: string;
 
   createTopic(
     name: string,
     attributes?: Record<string, string>,
     tags?: Record<string, string>,
   ): SnsTopic {
-    const arn = snsTopicArn(name);
+    const arn = snsTopicArn(name, this.region);
 
     const existing = this.topics.get(arn);
     if (existing) return existing;
@@ -58,7 +59,7 @@ export class SnsStore {
     if (!topic) return undefined;
 
     const id = randomUUID();
-    const arn = snsSubscriptionArn(topic.name, id);
+    const arn = snsSubscriptionArn(topic.name, id, this.region);
 
     const subscription: SnsSubscription = {
       arn,

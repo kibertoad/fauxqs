@@ -34,7 +34,7 @@ import { setSubscriptionAttributes } from "./sns/actions/setSubscriptionAttribut
 import { publish, publishBatch } from "./sns/actions/publish.js";
 import { tagResource, untagResource, listTagsForResource } from "./sns/actions/tagResource.js";
 
-export function buildApp(options?: { logger?: boolean; host?: string }) {
+export function buildApp(options?: { logger?: boolean; host?: string; defaultRegion?: string }) {
   const app = Fastify({
     logger: options?.logger ?? true,
     bodyLimit: 2 * 1_048_576, // 2 MiB — allow our handlers to validate message size
@@ -44,7 +44,13 @@ export function buildApp(options?: { logger?: boolean; host?: string }) {
   if (options?.host) {
     sqsStore.host = options.host;
   }
+  if (options?.defaultRegion) {
+    sqsStore.region = options.defaultRegion;
+  }
   const snsStore = new SnsStore();
+  if (options?.defaultRegion) {
+    snsStore.region = options.defaultRegion;
+  }
 
   const sqsRouter = new SqsRouter(sqsStore);
   sqsRouter.register("CreateQueue", createQueue);
@@ -146,9 +152,15 @@ export async function startFauxqs(options?: {
   port?: number;
   logger?: boolean;
   host?: string;
+  /** Fallback region used only when the region cannot be resolved from request Authorization headers. Defaults to "us-east-1". */
+  defaultRegion?: string;
 }): Promise<FauxqsServer> {
   const port = options?.port ?? parseInt(process.env.FAUXQS_PORT ?? "4566");
-  const app = buildApp({ logger: options?.logger ?? true, host: options?.host });
+  const app = buildApp({
+    logger: options?.logger ?? true,
+    host: options?.host,
+    defaultRegion: options?.defaultRegion,
+  });
   const listenAddress = await app.listen({ port, host: "127.0.0.1" });
   const url = new URL(listenAddress);
 

@@ -1,5 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { SnsError } from "../common/errors.js";
+import { regionFromAuth } from "../common/types.js";
 import { snsErrorResponse } from "../common/xml.js";
 import type { SnsStore } from "./snsStore.js";
 import type { SqsStore } from "../sqs/sqsStore.js";
@@ -42,6 +43,9 @@ export class SnsRouter {
     }
 
     try {
+      if (!this.snsStore.region) {
+        this.snsStore.region = regionFromAuth(request.headers.authorization);
+      }
       const result = await handler(body, this.snsStore, this.sqsStore, request);
       reply.header("content-type", "text/xml");
       return result;

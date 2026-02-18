@@ -90,6 +90,16 @@ import { buildApp } from "fauxqs";
 const app = buildApp({ host: "localhost" });
 ```
 
+### Region
+
+The region used in ARNs and queue URLs is automatically detected from the SDK client's `Authorization` header. If your SDK client is configured with `region: "eu-west-1"`, fauxqs will use that region in all generated ARNs and URLs.
+
+If the region cannot be resolved from request headers (e.g., requests without AWS SigV4 signing), the `defaultRegion` option is used as a fallback (defaults to `"us-east-1"`):
+
+```typescript
+const server = await startFauxqs({ defaultRegion: "eu-west-1" });
+```
+
 ## Supported API Actions
 
 ### SQS
@@ -161,10 +171,10 @@ const app = buildApp({ host: "localhost" });
 ## Conventions
 
 - Account ID: `000000000000`
-- Region: `us-east-1`
-- Queue URL format: `http://{host}:{port}/000000000000/{queueName}` (or `http://sqs.us-east-1.{host}:{port}/000000000000/{queueName}` when `host` is configured)
-- Queue ARN format: `arn:aws:sqs:us-east-1:000000000000:{queueName}`
-- Topic ARN format: `arn:aws:sns:us-east-1:000000000000:{topicName}`
+- Region: auto-detected from SDK `Authorization` header (defaults to `us-east-1`)
+- Queue URL format: `http://{host}:{port}/000000000000/{queueName}` (or `http://sqs.{region}.{host}:{port}/000000000000/{queueName}` when `host` is configured)
+- Queue ARN format: `arn:aws:sqs:{region}:000000000000:{queueName}`
+- Topic ARN format: `arn:aws:sns:{region}:000000000000:{topicName}`
 
 ## Limitations
 

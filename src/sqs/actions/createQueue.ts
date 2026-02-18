@@ -1,7 +1,7 @@
 import type { FastifyRequest } from "fastify";
 import { SqsError } from "../../common/errors.js";
 import { sqsQueueArn } from "../../common/arnHelper.js";
-import { DEFAULT_ACCOUNT_ID, DEFAULT_REGION } from "../../common/types.js";
+import { DEFAULT_ACCOUNT_ID, DEFAULT_REGION, regionFromAuth } from "../../common/types.js";
 import type { SqsStore } from "../sqsStore.js";
 import { SETTABLE_ATTRIBUTES } from "../sqsTypes.js";
 
@@ -34,13 +34,12 @@ export function createQueue(
     return { QueueUrl: existing.url };
   }
 
+  const region = store.region ?? regionFromAuth(request.headers.authorization) ?? DEFAULT_REGION;
   const requestHost = request.headers.host ?? "localhost";
   const port = requestHost.includes(":") ? requestHost.split(":")[1] : "";
-  const host = store.host
-    ? `sqs.${DEFAULT_REGION}.${store.host}${port ? `:${port}` : ""}`
-    : requestHost;
+  const host = store.host ? `sqs.${region}.${store.host}${port ? `:${port}` : ""}` : requestHost;
   const url = `http://${host}/${DEFAULT_ACCOUNT_ID}/${queueName}`;
-  const arn = sqsQueueArn(queueName);
+  const arn = sqsQueueArn(queueName, region);
 
   const queue = store.createQueue(queueName, url, arn, attributes, tags);
   return { QueueUrl: queue.url };

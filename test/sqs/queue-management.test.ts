@@ -262,3 +262,37 @@ describe("SQS Queue URL with configured host", () => {
     expect(attrs.Attributes?.QueueArn).toContain("host-ops-queue");
   });
 });
+
+describe("SQS region auto-detection from SDK", () => {
+  let server: FauxqsServer;
+  let sqs: ReturnType<typeof createSqsClient>;
+
+  beforeAll(async () => {
+    server = await startFauxqsTestServerWithHost("localhost");
+    sqs = createSqsClient(server.port, "eu-west-1");
+  });
+
+  afterAll(async () => {
+    sqs.destroy();
+    await server.stop();
+  });
+
+  it("uses region from SDK Authorization header in ARNs and URLs", async () => {
+    const result = await sqs.send(
+      new CreateQueueCommand({ QueueName: "region-auto-queue" }),
+    );
+    expect(result.QueueUrl).toBe(
+      `http://sqs.eu-west-1.localhost:${server.port}/000000000000/region-auto-queue`,
+    );
+
+    const attrs = await sqs.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: result.QueueUrl,
+        AttributeNames: ["QueueArn"],
+      }),
+    );
+    expect(attrs.Attributes?.QueueArn).toBe(
+      "arn:aws:sqs:eu-west-1:000000000000:region-auto-queue",
+    );
+  });
+});

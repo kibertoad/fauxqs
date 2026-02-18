@@ -239,6 +239,7 @@ export class SqsStore {
   private queues = new Map<string, SqsQueue>();
   private queuesByName = new Map<string, SqsQueue>();
   host?: string;
+  region?: string;
 
   createQueue(
     name: string,
