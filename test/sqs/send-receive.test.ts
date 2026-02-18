@@ -227,6 +227,39 @@ describe("SQS Send/Receive/Delete", () => {
     );
   });
 
+  it("rejects message with forbidden unicode characters", async () => {
+    await expect(
+      sqs.send(
+        new SendMessageCommand({
+          QueueUrl: queueUrl,
+          MessageBody: "hello \uFFFF world",
+        }),
+      ),
+    ).rejects.toThrow("Invalid characters");
+  });
+
+  it("accepts message with allowed special characters", async () => {
+    const sent = await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: queueUrl,
+        MessageBody: "tab\there\nnewline\rcarriage",
+      }),
+    );
+    expect(sent.MessageId).toBeDefined();
+  });
+
+  it("rejects message exceeding 1 MiB size limit", async () => {
+    const largeBody = "x".repeat(1_048_577); // 1 byte over limit
+    await expect(
+      sqs.send(
+        new SendMessageCommand({
+          QueueUrl: queueUrl,
+          MessageBody: largeBody,
+        }),
+      ),
+    ).rejects.toThrow("Message must be shorter than");
+  });
+
   it("visibility timeout makes message reappear", async () => {
     // Create queue with very short visibility timeout
     const shortQueue = await sqs.send(

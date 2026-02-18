@@ -39,11 +39,7 @@ export class SqsRouter {
     }
 
     try {
-      const result = await handler(
-        request.body as Record<string, unknown>,
-        this.store,
-        request,
-      );
+      const result = await handler(request.body as Record<string, unknown>, this.store, request);
       reply.header("content-type", "application/x-amz-json-1.0");
       return result;
     } catch (err) {

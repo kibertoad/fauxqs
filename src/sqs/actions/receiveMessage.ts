@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { SqsError } from "../../common/errors.js";
 import type { SqsStore } from "../sqsStore.js";
 import type { SqsMessage, ReceivedMessage } from "../sqsTypes.js";
@@ -14,33 +13,21 @@ export async function receiveMessage(
 
   const queue = store.getQueue(queueUrl);
   if (!queue) {
-    throw new SqsError(
-      "NonExistentQueue",
-      "The specified queue does not exist.",
-      400,
-    );
+    throw new SqsError("NonExistentQueue", "The specified queue does not exist.", 400);
   }
 
   const maxNumberOfMessages = (body.MaxNumberOfMessages as number) ?? 1;
   const visibilityTimeout = body.VisibilityTimeout as number | undefined;
   const waitTimeSeconds =
-    (body.WaitTimeSeconds as number) ??
-    parseInt(queue.attributes.ReceiveMessageWaitTimeSeconds);
+    (body.WaitTimeSeconds as number) ?? parseInt(queue.attributes.ReceiveMessageWaitTimeSeconds);
 
   const dlqResolver = (arn: string) => store.getQueueByArn(arn);
 
-  let messages = queue.dequeue(
-    maxNumberOfMessages,
-    visibilityTimeout,
-    dlqResolver,
-  );
+  let messages = queue.dequeue(maxNumberOfMessages, visibilityTimeout, dlqResolver);
 
   // Long polling: if no messages and WaitTimeSeconds > 0, wait
   if (messages.length === 0 && waitTimeSeconds > 0) {
-    const waitedMsgs = await queue.waitForMessages(
-      maxNumberOfMessages,
-      waitTimeSeconds,
-    );
+    const waitedMsgs = await queue.waitForMessages(maxNumberOfMessages, waitTimeSeconds);
 
     if (waitedMsgs.length > 0) {
       // Process the waited messages through the normal dequeue path
@@ -48,19 +35,13 @@ export async function receiveMessage(
       for (const msg of waitedMsgs) {
         queue.messages.unshift(msg);
       }
-      messages = queue.dequeue(
-        maxNumberOfMessages,
-        visibilityTimeout,
-        dlqResolver,
-      );
+      messages = queue.dequeue(maxNumberOfMessages, visibilityTimeout, dlqResolver);
     }
   }
 
   // Add system attributes if requested
   const systemAttributeNames =
-    (body.AttributeNames as string[]) ??
-    (body.MessageSystemAttributeNames as string[]) ??
-    [];
+    (body.AttributeNames as string[]) ?? (body.MessageSystemAttributeNames as string[]) ?? [];
 
   if (systemAttributeNames.length > 0) {
     addSystemAttributes(messages, queue, systemAttributeNames);
@@ -87,18 +68,10 @@ function addSystemAttributes(
     if (wantsAll || systemAttributeNames.includes("SentTimestamp")) {
       attrs.SentTimestamp = String(entry.message.sentTimestamp);
     }
-    if (
-      wantsAll ||
-      systemAttributeNames.includes("ApproximateReceiveCount")
-    ) {
-      attrs.ApproximateReceiveCount = String(
-        entry.message.approximateReceiveCount,
-      );
+    if (wantsAll || systemAttributeNames.includes("ApproximateReceiveCount")) {
+      attrs.ApproximateReceiveCount = String(entry.message.approximateReceiveCount);
     }
-    if (
-      wantsAll ||
-      systemAttributeNames.includes("ApproximateFirstReceiveTimestamp")
-    ) {
+    if (wantsAll || systemAttributeNames.includes("ApproximateFirstReceiveTimestamp")) {
       attrs.ApproximateFirstReceiveTimestamp = String(
         entry.message.approximateFirstReceiveTimestamp ?? "",
       );

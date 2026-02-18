@@ -2,6 +2,7 @@ import { SqsError } from "../../common/errors.js";
 import type { SqsStore } from "../sqsStore.js";
 import { SqsStore as SqsStoreClass } from "../sqsStore.js";
 import type { MessageAttributeValue } from "../sqsTypes.js";
+import { INVALID_MESSAGE_BODY_CHAR, SQS_MAX_MESSAGE_SIZE_BYTES } from "../sqsTypes.js";
 
 interface BatchEntry {
   Id: string;
@@ -10,10 +11,7 @@ interface BatchEntry {
   MessageAttributes?: Record<string, MessageAttributeValue>;
 }
 
-export function sendMessageBatch(
-  body: Record<string, unknown>,
-  store: SqsStore,
-): unknown {
+export function sendMessageBatch(body: Record<string, unknown>, store: SqsStore): unknown {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -21,18 +19,12 @@ export function sendMessageBatch(
 
   const queue = store.getQueue(queueUrl);
   if (!queue) {
-    throw new SqsError(
-      "NonExistentQueue",
-      "The specified queue does not exist.",
-    );
+    throw new SqsError("NonExistentQueue", "The specified queue does not exist.");
   }
 
   const entries = (body.Entries as BatchEntry[]) ?? [];
   if (entries.length === 0) {
-    throw new SqsError(
-      "EmptyBatchRequest",
-      "The batch request doesn't contain any entries.",
-    );
+    throw new SqsError("EmptyBatchRequest", "The batch request doesn't contain any entries.");
   }
   if (entries.length > 10) {
     throw new SqsError(
@@ -59,10 +51,36 @@ export function sendMessageBatch(
     MD5OfMessageBody: string;
     MD5OfMessageAttributes?: string;
   }> = [];
+  const failed: Array<{
+    Id: string;
+    SenderFault: boolean;
+    Code: string;
+    Message: string;
+  }> = [];
 
   for (const entry of entries) {
-    const delaySeconds =
-      entry.DelaySeconds ?? parseInt(queue.attributes.DelaySeconds);
+    if (INVALID_MESSAGE_BODY_CHAR.test(entry.MessageBody)) {
+      failed.push({
+        Id: entry.Id,
+        SenderFault: true,
+        Code: "InvalidMessageContents",
+        Message:
+          "Invalid characters found. Valid unicode characters are #x9 | #xA | #xD | #x20 to #xD7FF and #xE000 to #xFFFD.",
+      });
+      continue;
+    }
+
+    if (Buffer.byteLength(entry.MessageBody, "utf8") > SQS_MAX_MESSAGE_SIZE_BYTES) {
+      failed.push({
+        Id: entry.Id,
+        SenderFault: true,
+        Code: "InvalidParameterValue",
+        Message: `One or more parameters are invalid. Reason: Message must be shorter than ${SQS_MAX_MESSAGE_SIZE_BYTES} bytes.`,
+      });
+      continue;
+    }
+
+    const delaySeconds = entry.DelaySeconds ?? parseInt(queue.attributes.DelaySeconds);
 
     const msg = SqsStoreClass.createMessage(
       entry.MessageBody,
@@ -85,5 +103,5 @@ export function sendMessageBatch(
     successful.push(result);
   }
 
-  return { Successful: successful, Failed: [] };
+  return { Successful: successful, Failed: failed };
 }

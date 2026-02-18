@@ -51,7 +51,19 @@ export const SETTABLE_ATTRIBUTES = new Set([
   "ReceiveMessageWaitTimeSeconds",
   "RedrivePolicy",
   "Policy",
+  "KmsMasterKeyId",
+  "KmsDataKeyReusePeriodSeconds",
 ]);
+
+// AWS SQS allowed unicode characters: #x9 | #xA | #xD | #x20 to #xD7FF | #xE000 to #xFFFD
+// eslint-disable-next-line no-control-regex
+export const INVALID_MESSAGE_BODY_CHAR = /[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD]/;
+
+// Max message size: 1 MiB (1,048,576 bytes) for SQS
+export const SQS_MAX_MESSAGE_SIZE_BYTES = 1_048_576;
+
+// Max message size: 256 KB (262,144 bytes) for SNS
+export const SNS_MAX_MESSAGE_SIZE_BYTES = 262_144;
 
 export const ALL_ATTRIBUTE_NAMES = [
   "QueueArn",
@@ -67,4 +79,6 @@ export const ALL_ATTRIBUTE_NAMES = [
   "LastModifiedTimestamp",
   "RedrivePolicy",
   "Policy",
+  "KmsMasterKeyId",
+  "KmsDataKeyReusePeriodSeconds",
 ];

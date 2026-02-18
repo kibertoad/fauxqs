@@ -38,30 +38,18 @@ export class SnsRouter {
     if (!handler) {
       reply.status(400);
       reply.header("content-type", "text/xml");
-      return snsErrorResponse(
-        "InvalidAction",
-        `Unknown action: ${action}`,
-      );
+      return snsErrorResponse("InvalidAction", `Unknown action: ${action}`);
     }
 
     try {
-      const result = await handler(
-        body,
-        this.snsStore,
-        this.sqsStore,
-        request,
-      );
+      const result = await handler(body, this.snsStore, this.sqsStore, request);
       reply.header("content-type", "text/xml");
       return result;
     } catch (err) {
       if (err instanceof SnsError) {
         reply.status(err.statusCode);
         reply.header("content-type", "text/xml");
-        return snsErrorResponse(
-          err.code,
-          err.message,
-          err.senderFault ? "Sender" : "Receiver",
-        );
+        return snsErrorResponse(err.code, err.message, err.senderFault ? "Sender" : "Receiver");
       }
       throw err;
     }

@@ -2,10 +2,7 @@ import { SnsError } from "../../common/errors.js";
 import { snsSuccessResponse } from "../../common/xml.js";
 import type { SnsStore } from "../snsStore.js";
 
-export function createTopic(
-  params: Record<string, string>,
-  snsStore: SnsStore,
-): string {
+export function createTopic(params: Record<string, string>, snsStore: SnsStore): string {
   const name = params.Name;
   if (!name) {
     throw new SnsError("InvalidParameter", "Topic name is required");
@@ -67,8 +64,5 @@ export function createTopic(
     Object.keys(resolvedTags).length > 0 ? resolvedTags : undefined,
   );
 
-  return snsSuccessResponse(
-    "CreateTopic",
-    `<TopicArn>${topic.arn}</TopicArn>`,
-  );
+  return snsSuccessResponse("CreateTopic", `<TopicArn>${topic.arn}</TopicArn>`);
 }

@@ -124,6 +124,22 @@ describe("SNS Publish", () => {
     expect(received.Messages![0].Body).toBe("raw message body");
   });
 
+  it("rejects message exceeding 256 KB size limit", async () => {
+    const topic = await sns.send(
+      new CreateTopicCommand({ Name: "pub-size-limit" }),
+    );
+
+    const largeMessage = "x".repeat(262_145); // 1 byte over 256KB limit
+    await expect(
+      sns.send(
+        new PublishCommand({
+          TopicArn: topic.TopicArn!,
+          Message: largeMessage,
+        }),
+      ),
+    ).rejects.toThrow("Message too long");
+  });
+
   it("fans out to multiple subscribers", async () => {
     const topic = await sns.send(
       new CreateTopicCommand({ Name: "pub-fanout" }),

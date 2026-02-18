@@ -1,10 +1,7 @@
 import { SqsError } from "../../common/errors.js";
 import type { SqsStore } from "../sqsStore.js";
 
-export function changeMessageVisibility(
-  body: Record<string, unknown>,
-  store: SqsStore,
-): unknown {
+export function changeMessageVisibility(body: Record<string, unknown>, store: SqsStore): unknown {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -12,18 +9,12 @@ export function changeMessageVisibility(
 
   const queue = store.getQueue(queueUrl);
   if (!queue) {
-    throw new SqsError(
-      "NonExistentQueue",
-      "The specified queue does not exist.",
-    );
+    throw new SqsError("NonExistentQueue", "The specified queue does not exist.");
   }
 
   const receiptHandle = body.ReceiptHandle as string | undefined;
   if (!receiptHandle) {
-    throw new SqsError(
-      "MissingParameter",
-      "The request must contain the parameter ReceiptHandle.",
-    );
+    throw new SqsError("MissingParameter", "The request must contain the parameter ReceiptHandle.");
   }
 
   const visibilityTimeout = body.VisibilityTimeout as number | undefined;

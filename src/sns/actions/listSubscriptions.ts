@@ -1,10 +1,7 @@
 import { snsSuccessResponse, escapeXml } from "../../common/xml.js";
 import type { SnsStore } from "../snsStore.js";
 
-export function listSubscriptions(
-  _params: Record<string, string>,
-  snsStore: SnsStore,
-): string {
+export function listSubscriptions(_params: Record<string, string>, snsStore: SnsStore): string {
   const subscriptions = snsStore.listSubscriptions();
   return formatSubscriptionList("ListSubscriptions", subscriptions);
 }
@@ -14,9 +11,7 @@ export function listSubscriptionsByTopic(
   snsStore: SnsStore,
 ): string {
   const topicArn = params.TopicArn;
-  const subscriptions = topicArn
-    ? snsStore.listSubscriptionsByTopic(topicArn)
-    : [];
+  const subscriptions = topicArn ? snsStore.listSubscriptionsByTopic(topicArn) : [];
   return formatSubscriptionList("ListSubscriptionsByTopic", subscriptions);
 }
 
@@ -42,8 +37,5 @@ function formatSubscriptionList(
     )
     .join("\n    ");
 
-  return snsSuccessResponse(
-    action,
-    `<Subscriptions>${membersXml}</Subscriptions>`,
-  );
+  return snsSuccessResponse(action, `<Subscriptions>${membersXml}</Subscriptions>`);
 }

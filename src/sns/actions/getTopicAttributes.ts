@@ -2,10 +2,7 @@ import { SnsError } from "../../common/errors.js";
 import { snsSuccessResponse, escapeXml } from "../../common/xml.js";
 import type { SnsStore } from "../snsStore.js";
 
-export function getTopicAttributes(
-  params: Record<string, string>,
-  snsStore: SnsStore,
-): string {
+export function getTopicAttributes(params: Record<string, string>, snsStore: SnsStore): string {
   const topicArn = params.TopicArn;
   if (!topicArn) {
     throw new SnsError("InvalidParameter", "TopicArn is required");
@@ -19,9 +16,7 @@ export function getTopicAttributes(
   const allAttributes: Record<string, string> = {
     TopicArn: topic.arn,
     DisplayName: topic.attributes.DisplayName ?? topic.name,
-    SubscriptionsConfirmed: String(
-      topic.subscriptionArns.length,
-    ),
+    SubscriptionsConfirmed: String(topic.subscriptionArns.length),
     SubscriptionsPending: "0",
     SubscriptionsDeleted: "0",
     ...topic.attributes,
@@ -34,8 +29,5 @@ export function getTopicAttributes(
     )
     .join("\n    ");
 
-  return snsSuccessResponse(
-    "GetTopicAttributes",
-    `<Attributes>${entriesXml}</Attributes>`,
-  );
+  return snsSuccessResponse("GetTopicAttributes", `<Attributes>${entriesXml}</Attributes>`);
 }

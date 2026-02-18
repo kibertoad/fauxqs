@@ -35,8 +35,5 @@ export function getSubscriptionAttributes(
     )
     .join("\n    ");
 
-  return snsSuccessResponse(
-    "GetSubscriptionAttributes",
-    `<Attributes>${entriesXml}</Attributes>`,
-  );
+  return snsSuccessResponse("GetSubscriptionAttributes", `<Attributes>${entriesXml}</Attributes>`);
 }

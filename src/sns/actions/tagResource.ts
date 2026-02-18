@@ -2,10 +2,7 @@ import { SnsError } from "../../common/errors.js";
 import { snsSuccessResponse, escapeXml } from "../../common/xml.js";
 import type { SnsStore } from "../snsStore.js";
 
-export function tagResource(
-  params: Record<string, string>,
-  snsStore: SnsStore,
-): string {
+export function tagResource(params: Record<string, string>, snsStore: SnsStore): string {
   const resourceArn = params.ResourceArn;
   if (!resourceArn) {
     throw new SnsError("InvalidParameter", "ResourceArn is required");
@@ -29,10 +26,7 @@ export function tagResource(
   return snsSuccessResponse("TagResource", "");
 }
 
-export function untagResource(
-  params: Record<string, string>,
-  snsStore: SnsStore,
-): string {
+export function untagResource(params: Record<string, string>, snsStore: SnsStore): string {
   const resourceArn = params.ResourceArn;
   if (!resourceArn) {
     throw new SnsError("InvalidParameter", "ResourceArn is required");
@@ -54,10 +48,7 @@ export function untagResource(
   return snsSuccessResponse("UntagResource", "");
 }
 
-export function listTagsForResource(
-  params: Record<string, string>,
-  snsStore: SnsStore,
-): string {
+export function listTagsForResource(params: Record<string, string>, snsStore: SnsStore): string {
   const resourceArn = params.ResourceArn;
   if (!resourceArn) {
     throw new SnsError("InvalidParameter", "ResourceArn is required");
@@ -75,8 +66,5 @@ export function listTagsForResource(
     )
     .join("\n    ");
 
-  return snsSuccessResponse(
-    "ListTagsForResource",
-    `<Tags>${membersXml}</Tags>`,
-  );
+  return snsSuccessResponse("ListTagsForResource", `<Tags>${membersXml}</Tags>`);
 }

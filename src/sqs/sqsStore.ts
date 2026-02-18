@@ -37,8 +37,7 @@ export class SqsQueue {
   }
 
   getAllAttributes(requested: string[]): Record<string, string> {
-    const names =
-      requested.includes("All") ? ALL_ATTRIBUTE_NAMES : requested;
+    const names = requested.includes("All") ? ALL_ATTRIBUTE_NAMES : requested;
 
     const result: Record<string, string> = {};
     for (const name of names) {
@@ -120,11 +119,7 @@ export class SqsQueue {
       }
 
       // DLQ check: if exceeded maxReceiveCount, move to DLQ
-      if (
-        dlqArn &&
-        dlqResolver &&
-        msg.approximateReceiveCount > maxReceiveCount
-      ) {
+      if (dlqArn && dlqResolver && msg.approximateReceiveCount > maxReceiveCount) {
         const dlq = dlqResolver(dlqArn);
         if (dlq) {
           dlq.enqueue(msg);
@@ -209,10 +204,7 @@ export class SqsQueue {
     }
   }
 
-  waitForMessages(
-    maxMessages: number,
-    waitTimeSeconds: number,
-  ): Promise<SqsMessage[]> {
+  waitForMessages(maxMessages: number, waitTimeSeconds: number): Promise<SqsMessage[]> {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         const idx = this.pollWaiters.findIndex((w) => w.resolve === resolve);
@@ -246,6 +238,7 @@ export class SqsQueue {
 export class SqsStore {
   private queues = new Map<string, SqsQueue>();
   private queuesByName = new Map<string, SqsQueue>();
+  host?: string;
 
   createQueue(
     name: string,

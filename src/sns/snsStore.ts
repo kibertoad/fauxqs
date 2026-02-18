@@ -80,9 +80,7 @@ export class SnsStore {
 
     const topic = this.topics.get(sub.topicArn);
     if (topic) {
-      topic.subscriptionArns = topic.subscriptionArns.filter(
-        (s) => s !== arn,
-      );
+      topic.subscriptionArns = topic.subscriptionArns.filter((s) => s !== arn);
     }
 
     this.subscriptions.delete(arn);

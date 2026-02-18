@@ -10,9 +10,7 @@ export interface MessageAttributeForMd5 {
   BinaryValue?: string;
 }
 
-export function md5OfMessageAttributes(
-  attributes: Record<string, MessageAttributeForMd5>,
-): string {
+export function md5OfMessageAttributes(attributes: Record<string, MessageAttributeForMd5>): string {
   const names = Object.keys(attributes).sort();
   if (names.length === 0) return "";
 

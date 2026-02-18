@@ -1,13 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { SnsError } from "../../common/errors.js";
 import { snsSuccessResponse } from "../../common/xml.js";
-import { md5 } from "../../common/md5.js";
-import { parseArn } from "../../common/arnHelper.js";
 import type { SnsStore } from "../snsStore.js";
 import type { SqsStore } from "../../sqs/sqsStore.js";
 import { SqsStore as SqsStoreClass } from "../../sqs/sqsStore.js";
-import type { SnsMessageAttribute } from "../snsTypes.js";
 import type { MessageAttributeValue } from "../../sqs/sqsTypes.js";
+import { SNS_MAX_MESSAGE_SIZE_BYTES } from "../../sqs/sqsTypes.js";
 import { matchesFilterPolicy, matchesFilterPolicyOnBody } from "../filter.js";
 
 export function publish(
@@ -28,6 +26,13 @@ export function publish(
   const message = params.Message;
   if (!message) {
     throw new SnsError("InvalidParameter", "Message is required");
+  }
+
+  if (Buffer.byteLength(message, "utf8") > SNS_MAX_MESSAGE_SIZE_BYTES) {
+    throw new SnsError(
+      "InvalidParameter",
+      `Invalid parameter: Message too long. Message must be shorter than ${SNS_MAX_MESSAGE_SIZE_BYTES} bytes.`,
+    );
   }
 
   const messageId = randomUUID();
@@ -81,7 +86,8 @@ export function publish(
         Timestamp: new Date().toISOString(),
         SignatureVersion: "1",
         Signature: "EXAMPLE",
-        SigningCertURL: "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem",
+        SigningCertURL:
+          "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem",
         UnsubscribeURL: `https://sns.us-east-1.amazonaws.com/?Action=Unsubscribe&SubscriptionArn=${sub.arn}`,
         MessageAttributes: formatEnvelopeAttributes(messageAttributes),
       });
@@ -91,10 +97,7 @@ export function publish(
     queue.enqueue(sqsMsg);
   }
 
-  return snsSuccessResponse(
-    "Publish",
-    `<MessageId>${messageId}</MessageId>`,
-  );
+  return snsSuccessResponse("Publish", `<MessageId>${messageId}</MessageId>`);
 }
 
 export function publishBatch(
@@ -116,8 +119,16 @@ export function publishBatch(
   const entries = parseBatchEntries(params);
 
   const successfulXml: string[] = [];
+  const failedXml: string[] = [];
 
   for (const entry of entries) {
+    if (Buffer.byteLength(entry.message, "utf8") > SNS_MAX_MESSAGE_SIZE_BYTES) {
+      failedXml.push(
+        `<member><Id>${entry.id}</Id><Code>InvalidParameter</Code><Message>Message too long</Message><SenderFault>true</SenderFault></member>`,
+      );
+      continue;
+    }
+
     const messageId = randomUUID();
 
     // Fan out each entry
@@ -143,7 +154,8 @@ export function publishBatch(
           Timestamp: new Date().toISOString(),
           SignatureVersion: "1",
           Signature: "EXAMPLE",
-          SigningCertURL: "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem",
+          SigningCertURL:
+            "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem",
           UnsubscribeURL: `https://sns.us-east-1.amazonaws.com/?Action=Unsubscribe&SubscriptionArn=${sub.arn}`,
         });
       }
@@ -152,14 +164,12 @@ export function publishBatch(
       queue.enqueue(sqsMsg);
     }
 
-    successfulXml.push(
-      `<member><Id>${entry.id}</Id><MessageId>${messageId}</MessageId></member>`,
-    );
+    successfulXml.push(`<member><Id>${entry.id}</Id><MessageId>${messageId}</MessageId></member>`);
   }
 
   return snsSuccessResponse(
     "PublishBatch",
-    `<Successful>${successfulXml.join("")}</Successful><Failed></Failed>`,
+    `<Successful>${successfulXml.join("")}</Successful><Failed>${failedXml.join("")}</Failed>`,
   );
 }
 
@@ -170,9 +180,7 @@ function parseMessageAttributes(
   const indices = new Set<string>();
 
   for (const key of Object.keys(params)) {
-    const match = key.match(
-      /^MessageAttributes\.entry\.(\d+)\./,
-    );
+    const match = key.match(/^MessageAttributes\.entry\.(\d+)\./);
     if (match) {
       indices.add(match[1]);
     }
@@ -180,12 +188,9 @@ function parseMessageAttributes(
 
   for (const idx of indices) {
     const name = params[`MessageAttributes.entry.${idx}.Name`];
-    const dataType =
-      params[`MessageAttributes.entry.${idx}.Value.DataType`];
-    const stringValue =
-      params[`MessageAttributes.entry.${idx}.Value.StringValue`];
-    const binaryValue =
-      params[`MessageAttributes.entry.${idx}.Value.BinaryValue`];
+    const dataType = params[`MessageAttributes.entry.${idx}.Value.DataType`];
+    const stringValue = params[`MessageAttributes.entry.${idx}.Value.StringValue`];
+    const binaryValue = params[`MessageAttributes.entry.${idx}.Value.BinaryValue`];
 
     if (name && dataType) {
       result[name] = { DataType: dataType };
@@ -204,9 +209,7 @@ function parseBatchEntries(
   const indices = new Set<string>();
 
   for (const key of Object.keys(params)) {
-    const match = key.match(
-      /^PublishBatchRequestEntries\.member\.(\d+)\./,
-    );
+    const match = key.match(/^PublishBatchRequestEntries\.member\.(\d+)\./);
     if (match) {
       indices.add(match[1]);
     }

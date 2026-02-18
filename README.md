@@ -71,6 +71,25 @@ await server.stop();
 
 Pass `port: 0` to let the OS assign a random available port (useful in tests).
 
+### Configurable queue URL host
+
+By default, queue URLs use the request's `Host` header (e.g., `http://127.0.0.1:4566/000000000000/myQueue`). To match the AWS-style `sqs.<region>.<host>` format, pass the `host` option:
+
+```typescript
+import { startFauxqs } from "fauxqs";
+
+const server = await startFauxqs({ port: 4566, host: "localhost" });
+// Queue URLs: http://sqs.us-east-1.localhost:4566/000000000000/myQueue
+```
+
+This also works with `buildApp`:
+
+```typescript
+import { buildApp } from "fauxqs";
+
+const app = buildApp({ host: "localhost" });
+```
+
 ## Supported API Actions
 
 ### SQS
@@ -125,6 +144,9 @@ Pass `port: 0` to let the OS assign a random available port (useful in tests).
 - **Long polling** — `WaitTimeSeconds` on ReceiveMessage blocks until messages arrive or timeout
 - **Dead letter queues** — messages exceeding `maxReceiveCount` are moved to the configured DLQ
 - **Batch operations** — SendMessageBatch, DeleteMessageBatch, ChangeMessageVisibilityBatch
+- **Message size validation** — rejects messages exceeding 1 MiB (1,048,576 bytes)
+- **Unicode character validation** — rejects messages with characters outside the AWS-allowed set
+- **KMS attributes** — `KmsMasterKeyId` and `KmsDataKeyReusePeriodSeconds` are accepted and stored (no actual encryption)
 - **Queue tags**
 
 ## SNS Features
@@ -132,6 +154,7 @@ Pass `port: 0` to let the OS assign a random available port (useful in tests).
 - **SNS-to-SQS fan-out** — publish to a topic and messages are delivered to all confirmed SQS subscriptions
 - **Filter policies** — both `MessageAttributes` and `MessageBody` scope, supporting exact match, prefix, suffix, anything-but, numeric ranges, and exists
 - **Raw message delivery** — configurable per subscription
+- **Message size validation** — rejects messages exceeding 256 KB (262,144 bytes)
 - **Topic and subscription tags**
 - **Batch publish**
 
@@ -139,7 +162,7 @@ Pass `port: 0` to let the OS assign a random available port (useful in tests).
 
 - Account ID: `000000000000`
 - Region: `us-east-1`
-- Queue URL format: `http://{host}:{port}/000000000000/{queueName}`
+- Queue URL format: `http://{host}:{port}/000000000000/{queueName}` (or `http://sqs.us-east-1.{host}:{port}/000000000000/{queueName}` when `host` is configured)
 - Queue ARN format: `arn:aws:sqs:us-east-1:000000000000:{queueName}`
 - Topic ARN format: `arn:aws:sns:us-east-1:000000000000:{topicName}`
 
@@ -151,7 +174,6 @@ fauxqs is designed for development and testing. It does not support:
 - Non-SQS SNS delivery protocols (HTTP/S, Lambda, email, SMS)
 - Persistence across restarts
 - Authentication or authorization
-- Message size limits
 - Cross-region or cross-account operations
 
 ## License

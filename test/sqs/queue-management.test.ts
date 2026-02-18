@@ -9,7 +9,7 @@ import {
   PurgeQueueCommand,
 } from "@aws-sdk/client-sqs";
 import { createSqsClient } from "../helpers/clients.js";
-import { startFauxqsTestServer, type FauxqsServer } from "../helpers/setup.js";
+import { startFauxqsTestServer, startFauxqsTestServerWithHost, type FauxqsServer } from "../helpers/setup.js";
 
 describe("SQS Queue Management", () => {
   let server: FauxqsServer;
@@ -186,5 +186,79 @@ describe("SQS Queue Management", () => {
       }),
     );
     expect(attrs.Attributes?.ApproximateNumberOfMessages).toBe("0");
+  });
+
+  it("creates and updates KMS attributes", async () => {
+    const created = await sqs.send(
+      new CreateQueueCommand({
+        QueueName: "kms-queue",
+        Attributes: {
+          KmsMasterKeyId: "alias/my-key",
+          KmsDataKeyReusePeriodSeconds: "300",
+        },
+      }),
+    );
+
+    const attrs = await sqs.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: created.QueueUrl,
+        AttributeNames: ["All"],
+      }),
+    );
+    expect(attrs.Attributes?.KmsMasterKeyId).toBe("alias/my-key");
+    expect(attrs.Attributes?.KmsDataKeyReusePeriodSeconds).toBe("300");
+
+    await sqs.send(
+      new SetQueueAttributesCommand({
+        QueueUrl: created.QueueUrl,
+        Attributes: { KmsMasterKeyId: "alias/other-key" },
+      }),
+    );
+
+    const updated = await sqs.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: created.QueueUrl,
+        AttributeNames: ["KmsMasterKeyId"],
+      }),
+    );
+    expect(updated.Attributes?.KmsMasterKeyId).toBe("alias/other-key");
+  });
+});
+
+describe("SQS Queue URL with configured host", () => {
+  let server: FauxqsServer;
+  let sqs: ReturnType<typeof createSqsClient>;
+
+  beforeAll(async () => {
+    server = await startFauxqsTestServerWithHost("localhost");
+    sqs = createSqsClient(server.port);
+  });
+
+  afterAll(async () => {
+    sqs.destroy();
+    await server.stop();
+  });
+
+  it("returns queue URL in sqs.<region>.<host> format", async () => {
+    const result = await sqs.send(
+      new CreateQueueCommand({ QueueName: "host-test-queue" }),
+    );
+    expect(result.QueueUrl).toBe(
+      `http://sqs.us-east-1.localhost:${server.port}/000000000000/host-test-queue`,
+    );
+  });
+
+  it("operations work with configured host URLs", async () => {
+    const created = await sqs.send(
+      new CreateQueueCommand({ QueueName: "host-ops-queue" }),
+    );
+
+    const attrs = await sqs.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: created.QueueUrl,
+        AttributeNames: ["All"],
+      }),
+    );
+    expect(attrs.Attributes?.QueueArn).toContain("host-ops-queue");
   });
 });

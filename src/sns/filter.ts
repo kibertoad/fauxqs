@@ -114,9 +114,7 @@ function matchesSingleCondition(
         excluded !== null &&
         "prefix" in (excluded as Record<string, unknown>)
       ) {
-        return !value.startsWith(
-          (excluded as Record<string, string>).prefix,
-        );
+        return !value.startsWith((excluded as Record<string, string>).prefix);
       }
 
       if (typeof excluded === "string") return value !== excluded;
@@ -141,10 +139,7 @@ function getStringValue(attr: MessageAttributeValue): string {
 }
 
 function getNumericValue(attr: MessageAttributeValue): number | undefined {
-  if (
-    attr.DataType === "Number" ||
-    attr.DataType.startsWith("Number.")
-  ) {
+  if (attr.DataType === "Number" || attr.DataType.startsWith("Number.")) {
     const num = Number(attr.StringValue);
     return isNaN(num) ? undefined : num;
   }
@@ -156,10 +151,7 @@ function getNumericValue(attr: MessageAttributeValue): number | undefined {
   return undefined;
 }
 
-function evaluateNumeric(
-  value: number,
-  conditions: unknown[],
-): boolean {
+function evaluateNumeric(value: number, conditions: unknown[]): boolean {
   let i = 0;
   while (i < conditions.length) {
     const operator = conditions[i] as string;

@@ -6,10 +6,7 @@ interface BatchEntry {
   ReceiptHandle: string;
 }
 
-export function deleteMessageBatch(
-  body: Record<string, unknown>,
-  store: SqsStore,
-): unknown {
+export function deleteMessageBatch(body: Record<string, unknown>, store: SqsStore): unknown {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -17,18 +14,12 @@ export function deleteMessageBatch(
 
   const queue = store.getQueue(queueUrl);
   if (!queue) {
-    throw new SqsError(
-      "NonExistentQueue",
-      "The specified queue does not exist.",
-    );
+    throw new SqsError("NonExistentQueue", "The specified queue does not exist.");
   }
 
   const entries = (body.Entries as BatchEntry[]) ?? [];
   if (entries.length === 0) {
-    throw new SqsError(
-      "EmptyBatchRequest",
-      "The batch request doesn't contain any entries.",
-    );
+    throw new SqsError("EmptyBatchRequest", "The batch request doesn't contain any entries.");
   }
   if (entries.length > 10) {
     throw new SqsError(
