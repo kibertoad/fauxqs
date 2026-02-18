@@ -10,17 +10,17 @@ import {
 } from "@aws-sdk/client-sns";
 import { CreateQueueCommand, GetQueueAttributesCommand } from "@aws-sdk/client-sqs";
 import { createSnsClient, createSqsClient } from "../helpers/clients.js";
-import { createTestServer, type TestServer } from "../helpers/setup.js";
+import { startFauxqsTestServer, type FauxqsServer } from "../helpers/setup.js";
 
 describe("SNS Subscriptions", () => {
-  let server: TestServer;
+  let server: FauxqsServer;
   let sns: ReturnType<typeof createSnsClient>;
   let sqs: ReturnType<typeof createSqsClient>;
   let topicArn: string;
   let queueArn: string;
 
   beforeAll(async () => {
-    server = await createTestServer();
+    server = await startFauxqsTestServer();
     sns = createSnsClient(server.port);
     sqs = createSqsClient(server.port);
 
@@ -44,7 +44,7 @@ describe("SNS Subscriptions", () => {
   afterAll(async () => {
     sns.destroy();
     sqs.destroy();
-    await server.app.close();
+    await server.stop();
   });
 
   it("subscribes an SQS queue to a topic", async () => {

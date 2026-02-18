@@ -6,15 +6,15 @@ import {
   ListQueueTagsCommand,
 } from "@aws-sdk/client-sqs";
 import { createSqsClient } from "../helpers/clients.js";
-import { createTestServer, type TestServer } from "../helpers/setup.js";
+import { startFauxqsTestServer, type FauxqsServer } from "../helpers/setup.js";
 
 describe("SQS Queue Tags", () => {
-  let server: TestServer;
+  let server: FauxqsServer;
   let sqs: ReturnType<typeof createSqsClient>;
   let queueUrl: string;
 
   beforeAll(async () => {
-    server = await createTestServer();
+    server = await startFauxqsTestServer();
     sqs = createSqsClient(server.port);
     const result = await sqs.send(
       new CreateQueueCommand({ QueueName: "tags-test-queue" }),
@@ -24,7 +24,7 @@ describe("SQS Queue Tags", () => {
 
   afterAll(async () => {
     sqs.destroy();
-    await server.app.close();
+    await server.stop();
   });
 
   it("tags a queue", async () => {

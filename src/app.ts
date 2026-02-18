@@ -131,3 +131,29 @@ export function buildApp(options?: { logger?: boolean }) {
 
   return app;
 }
+
+export interface FauxqsServer {
+  readonly port: number;
+  readonly address: string;
+  stop(): Promise<void>;
+}
+
+export async function startFauxqs(
+  options?: { port?: number; logger?: boolean },
+): Promise<FauxqsServer> {
+  const app = buildApp({ logger: options?.logger ?? true });
+  const listenAddress = await app.listen({ port: options?.port ?? 0, host: "127.0.0.1" });
+  const url = new URL(listenAddress);
+
+  return {
+    get port() {
+      return parseInt(url.port);
+    },
+    get address() {
+      return listenAddress;
+    },
+    stop() {
+      return app.close();
+    },
+  };
+}

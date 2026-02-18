@@ -7,20 +7,20 @@ import {
   SetTopicAttributesCommand,
 } from "@aws-sdk/client-sns";
 import { createSnsClient } from "../helpers/clients.js";
-import { createTestServer, type TestServer } from "../helpers/setup.js";
+import { startFauxqsTestServer, type FauxqsServer } from "../helpers/setup.js";
 
 describe("SNS Topic Management", () => {
-  let server: TestServer;
+  let server: FauxqsServer;
   let sns: ReturnType<typeof createSnsClient>;
 
   beforeAll(async () => {
-    server = await createTestServer();
+    server = await startFauxqsTestServer();
     sns = createSnsClient(server.port);
   });
 
   afterAll(async () => {
     sns.destroy();
-    await server.app.close();
+    await server.stop();
   });
 
   it("creates a topic and returns its ARN", async () => {

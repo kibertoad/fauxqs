@@ -7,21 +7,21 @@ import {
   GetQueueAttributesCommand,
 } from "@aws-sdk/client-sqs";
 import { createSqsClient } from "../helpers/clients.js";
-import { createTestServer, type TestServer } from "../helpers/setup.js";
+import { startFauxqsTestServer, type FauxqsServer } from "../helpers/setup.js";
 
 describe("SQS Send/Receive/Delete", () => {
-  let server: TestServer;
+  let server: FauxqsServer;
   let sqs: ReturnType<typeof createSqsClient>;
   let queueUrl: string;
 
   beforeAll(async () => {
-    server = await createTestServer();
+    server = await startFauxqsTestServer();
     sqs = createSqsClient(server.port);
   });
 
   afterAll(async () => {
     sqs.destroy();
-    await server.app.close();
+    await server.stop();
   });
 
   beforeEach(async () => {

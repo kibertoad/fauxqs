@@ -11,15 +11,15 @@ import {
   GetQueueAttributesCommand,
 } from "@aws-sdk/client-sqs";
 import { createSnsClient, createSqsClient } from "../helpers/clients.js";
-import { createTestServer, type TestServer } from "../helpers/setup.js";
+import { startFauxqsTestServer, type FauxqsServer } from "../helpers/setup.js";
 
 describe("SNS Filter Policies", () => {
-  let server: TestServer;
+  let server: FauxqsServer;
   let sns: ReturnType<typeof createSnsClient>;
   let sqs: ReturnType<typeof createSqsClient>;
 
   beforeAll(async () => {
-    server = await createTestServer();
+    server = await startFauxqsTestServer();
     sns = createSnsClient(server.port);
     sqs = createSqsClient(server.port);
   });
@@ -27,7 +27,7 @@ describe("SNS Filter Policies", () => {
   afterAll(async () => {
     sns.destroy();
     sqs.destroy();
-    await server.app.close();
+    await server.stop();
   });
 
   async function setupTopicAndQueue(
