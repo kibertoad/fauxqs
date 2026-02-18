@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   CreateQueueCommand,
   SendMessageCommand,
@@ -52,14 +53,14 @@ describe("SQS Long Polling", () => {
     );
 
     // Send a message after 500ms
-    setTimeout(async () => {
+    delay(500).then(async () => {
       await sqs.send(
         new SendMessageCommand({
           QueueUrl: queue.QueueUrl!,
           MessageBody: "delayed arrival",
         }),
       );
-    }, 500);
+    });
 
     const start = Date.now();
     const result = await sqs.send(
@@ -93,5 +94,41 @@ describe("SQS Long Polling", () => {
     expect(result.Messages).toBeUndefined();
     expect(elapsed).toBeGreaterThanOrEqual(900);
     expect(elapsed).toBeLessThan(3000);
+  });
+});
+
+describe("SQS Long Polling — shutdown", () => {
+  it("releases pending long-poll waiters when server closes", async () => {
+    const shutdownServer = await startFauxqsTestServer();
+    const shutdownSqs = createSqsClient(shutdownServer.port);
+
+    const queue = await shutdownSqs.send(
+      new CreateQueueCommand({ QueueName: "poll-shutdown" }),
+    );
+
+    // Start a long-poll that would normally wait 20 seconds
+    let pollSettled = false;
+    const pollPromise = shutdownSqs
+      .send(
+        new ReceiveMessageCommand({
+          QueueUrl: queue.QueueUrl!,
+          WaitTimeSeconds: 20,
+        }),
+      )
+      .catch(() => null)
+      .finally(() => {
+        pollSettled = true;
+      });
+
+    // Give the request time to reach the server and start waiting
+    await delay(100);
+
+    // Close the server — preClose hook should release waiters, then forceCloseConnections tears down sockets
+    await shutdownServer.stop();
+
+    // The poll request should settle promptly after server close
+    await vi.waitFor(() => expect(pollSettled).toBe(true), { timeout: 2000 });
+
+    shutdownSqs.destroy();
   });
 });

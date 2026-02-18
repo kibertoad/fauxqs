@@ -38,6 +38,7 @@ export function buildApp(options?: { logger?: boolean; host?: string; defaultReg
   const app = Fastify({
     logger: options?.logger ?? true,
     bodyLimit: 2 * 1_048_576, // 2 MiB — allow our handlers to validate message size
+    forceCloseConnections: true,
   });
 
   const sqsStore = new SqsStore();
@@ -119,6 +120,10 @@ export function buildApp(options?: { logger?: boolean; host?: string; defaultReg
       }
     },
   );
+
+  app.addHook("preClose", () => {
+    sqsStore.shutdown();
+  });
 
   app.get("/health", async () => {
     return { status: "ok" };

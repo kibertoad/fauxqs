@@ -224,6 +224,14 @@ export class SqsQueue {
     // Inflight messages are NOT purged (matches AWS behavior)
   }
 
+  cancelWaiters(): void {
+    for (const waiter of this.pollWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.resolve([]);
+    }
+    this.pollWaiters = [];
+  }
+
   private notifyWaiters(): void {
     while (this.pollWaiters.length > 0 && this.messages.length > 0) {
       const waiter = this.pollWaiters.shift()!;
@@ -291,6 +299,12 @@ export class SqsStore {
   processAllTimers(): void {
     for (const queue of this.queues.values()) {
       queue.processTimers();
+    }
+  }
+
+  shutdown(): void {
+    for (const queue of this.queues.values()) {
+      queue.cancelWaiters();
     }
   }
 
