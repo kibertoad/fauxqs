@@ -146,6 +146,14 @@ const server = await startFauxqs({ defaultRegion: "eu-west-1" });
 | UntagResource | Yes |
 | ListTagsForResource | Yes |
 
+### STS
+
+| Action | Supported |
+|--------|-----------|
+| GetCallerIdentity | Yes |
+
+Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000000000:root`. This allows tools like Terraform and the AWS CLI that call `sts:GetCallerIdentity` on startup to work without errors.
+
 ## SQS Features
 
 - **Message attributes** with MD5 checksums matching the AWS algorithm

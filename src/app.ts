@@ -33,6 +33,7 @@ import { getSubscriptionAttributes } from "./sns/actions/getSubscriptionAttribut
 import { setSubscriptionAttributes } from "./sns/actions/setSubscriptionAttributes.js";
 import { publish, publishBatch } from "./sns/actions/publish.js";
 import { tagResource, untagResource, listTagsForResource } from "./sns/actions/tagResource.js";
+import { getCallerIdentity } from "./sts/getCallerIdentity.js";
 
 export function buildApp(options?: { logger?: boolean; host?: string; defaultRegion?: string }) {
   const app = Fastify({
@@ -137,6 +138,11 @@ export function buildApp(options?: { logger?: boolean; host?: string; defaultReg
     }
 
     if (contentType.includes("application/x-www-form-urlencoded")) {
+      const body = request.body as Record<string, string>;
+      if (body.Action === "GetCallerIdentity") {
+        reply.header("content-type", "text/xml");
+        return getCallerIdentity();
+      }
       return snsRouter.handle(request, reply);
     }
 
