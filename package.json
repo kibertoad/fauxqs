@@ -14,6 +14,31 @@
     "format": "oxfmt --write src",
     "format:check": "oxfmt src"
   },
+  "keywords": [
+    "aws",
+    "sqs",
+    "sns",
+    "emulator",
+    "mock",
+    "localstack",
+    "testing",
+    "queue",
+    "pubsub",
+    "message-queue",
+    "fake",
+    "local"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kibertoad/fauxqs.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/kibertoad/fauxqs",
+  "bugs": {
+    "url": "https://github.com/kibertoad/fauxqs/issues"
+  },
   "license": "MIT",
   "author": "Igor Savin",
   "engines": {
