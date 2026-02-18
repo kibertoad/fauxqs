@@ -35,6 +35,7 @@ import { publish, publishBatch } from "./sns/actions/publish.js";
 import { tagResource, untagResource, listTagsForResource } from "./sns/actions/tagResource.js";
 import { S3Store } from "./s3/s3Store.js";
 import { registerS3Routes } from "./s3/s3Router.js";
+import { getCallerIdentity } from "./sts/getCallerIdentity.js";
 
 export function buildApp(options?: { logger?: boolean; host?: string; defaultRegion?: string }) {
   const app = Fastify({
@@ -147,6 +148,11 @@ export function buildApp(options?: { logger?: boolean; host?: string; defaultReg
     }
 
     if (contentType.includes("application/x-www-form-urlencoded")) {
+      const body = request.body as Record<string, string>;
+      if (body.Action === "GetCallerIdentity") {
+        reply.header("content-type", "text/xml");
+        return getCallerIdentity();
+      }
       return snsRouter.handle(request, reply);
     }
 
