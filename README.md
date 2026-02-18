@@ -2,7 +2,7 @@
 
 Local SNS/SQS emulator for development and testing. Point your `@aws-sdk/client-sqs` and `@aws-sdk/client-sns` clients at fauxqs instead of real AWS or LocalStack.
 
-All state is in-memory. No persistence, no external dependencies.
+All state is in-memory. No persistence, no external storage dependencies.
 
 ## Installation
 
