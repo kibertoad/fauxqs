@@ -108,7 +108,7 @@ describe("SQS Long Polling — shutdown", () => {
 
     // Start a long-poll that would normally wait 20 seconds
     let pollSettled = false;
-    const pollPromise = shutdownSqs
+    const _pollPromise = shutdownSqs
       .send(
         new ReceiveMessageCommand({
           QueueUrl: queue.QueueUrl!,
