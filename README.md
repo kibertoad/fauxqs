@@ -157,6 +157,7 @@ const server = await startFauxqs({ defaultRegion: "eu-west-1" });
 - **Message size validation** — rejects messages exceeding 1 MiB (1,048,576 bytes)
 - **Unicode character validation** — rejects messages with characters outside the AWS-allowed set
 - **KMS attributes** — `KmsMasterKeyId` and `KmsDataKeyReusePeriodSeconds` are accepted and stored (no actual encryption)
+- **FIFO queues** — `.fifo` suffix enforcement, `MessageGroupId` ordering, per-group locking (one inflight message per group), `MessageDeduplicationId`, content-based deduplication, sequence numbers, and FIFO-aware DLQ support
 - **Queue tags**
 
 ## SNS Features
@@ -166,6 +167,7 @@ const server = await startFauxqs({ defaultRegion: "eu-west-1" });
 - **Raw message delivery** — configurable per subscription
 - **Message size validation** — rejects messages exceeding 256 KB (262,144 bytes)
 - **Topic and subscription tags**
+- **FIFO topics** — `.fifo` suffix enforcement, `MessageGroupId` and `MessageDeduplicationId` passthrough to SQS subscriptions, content-based deduplication
 - **Batch publish**
 
 ## Conventions
@@ -180,7 +182,6 @@ const server = await startFauxqs({ defaultRegion: "eu-west-1" });
 
 fauxqs is designed for development and testing. It does not support:
 
-- FIFO queues and topics
 - Non-SQS SNS delivery protocols (HTTP/S, Lambda, email, SMS)
 - Persistence across restarts
 - Authentication or authorization

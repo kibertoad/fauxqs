@@ -9,7 +9,7 @@
     "dev": "node --watch src/server.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "lint": "oxlint && oxfmt src",
+    "lint": "oxlint && oxfmt src && tsc --noEmit",
     "lint:fix": "oxlint --fix && oxfmt --write src",
     "prepublishOnly": "npm run build"
   },

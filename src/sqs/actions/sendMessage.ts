@@ -108,7 +108,10 @@ function sendFifoMessage(
       MessageId: dedupResult.originalMessageId,
       MD5OfMessageBody: SqsStoreClass.createMessage(messageBody).md5OfBody,
     };
-    const md5OfAttrs = SqsStoreClass.createMessage(messageBody, messageAttributes).md5OfMessageAttributes;
+    const md5OfAttrs = SqsStoreClass.createMessage(
+      messageBody,
+      messageAttributes,
+    ).md5OfMessageAttributes;
     if (md5OfAttrs) {
       result.MD5OfMessageAttributes = md5OfAttrs;
     }

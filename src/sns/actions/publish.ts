@@ -283,9 +283,7 @@ function parseMessageAttributes(
   return result;
 }
 
-function parseBatchEntries(
-  params: Record<string, string>,
-): Array<{
+function parseBatchEntries(params: Record<string, string>): Array<{
   id: string;
   message: string;
   subject?: string;
