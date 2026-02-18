@@ -8,11 +8,10 @@
     "start": "node dist/server.js",
     "dev": "node --watch src/server.ts",
     "test": "vitest run",
-    "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "lint": "oxlint",
-    "format": "oxfmt --write src",
-    "format:check": "oxfmt src"
+    "lint": "oxlint && oxfmt src",
+    "lint:fix": "oxlint --fix && oxfmt --write src",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "aws",
