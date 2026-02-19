@@ -1,4 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
+import type { QueueAttributeName } from "@aws-sdk/client-sqs";
 import { md5, md5OfMessageAttributes } from "../common/md5.ts";
 import type {
   SqsMessage,
@@ -58,7 +59,9 @@ export class SqsQueue {
   }
 
   getAllAttributes(requested: string[]): Record<string, string> {
-    const names = requested.includes("All") ? ALL_ATTRIBUTE_NAMES : requested;
+    const names = requested.includes("All")
+      ? ALL_ATTRIBUTE_NAMES
+      : (requested as QueueAttributeName[]);
 
     const result: Record<string, string> = {};
     for (const name of names) {
@@ -70,7 +73,7 @@ export class SqsQueue {
     return result;
   }
 
-  getAttribute(name: string): string | undefined {
+  getAttribute(name: QueueAttributeName): string | undefined {
     switch (name) {
       case "QueueArn":
         return this.arn;

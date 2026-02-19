@@ -1,3 +1,5 @@
+import type { QueueAttributeName } from "@aws-sdk/client-sqs";
+
 export interface MessageAttributeValue {
   DataType: string;
   StringValue?: string;
@@ -35,15 +37,15 @@ export interface ReceivedMessage {
   MessageAttributes?: Record<string, MessageAttributeValue>;
 }
 
-export const DEFAULT_QUEUE_ATTRIBUTES: Record<string, string> = {
+export const DEFAULT_QUEUE_ATTRIBUTES = {
   VisibilityTimeout: "30",
   DelaySeconds: "0",
   MaximumMessageSize: "1048576",
   MessageRetentionPeriod: "345600",
   ReceiveMessageWaitTimeSeconds: "0",
-};
+} satisfies Partial<Record<QueueAttributeName, string>>;
 
-export const SETTABLE_ATTRIBUTES = new Set([
+export const SETTABLE_ATTRIBUTES: ReadonlySet<string> = new Set([
   "VisibilityTimeout",
   "DelaySeconds",
   "MaximumMessageSize",
@@ -55,7 +57,7 @@ export const SETTABLE_ATTRIBUTES = new Set([
   "KmsDataKeyReusePeriodSeconds",
   "FifoQueue",
   "ContentBasedDeduplication",
-]);
+] satisfies QueueAttributeName[]);
 
 // AWS SQS allowed unicode characters: #x9 | #xA | #xD | #x20 to #xD7FF | #xE000 to #xFFFD
 // eslint-disable-next-line no-control-regex
@@ -97,13 +99,13 @@ export function validateQueueAttributes(
   attributes: Record<string, string>,
   SqsError: new (code: string, message: string, statusCode?: number) => Error,
 ): void {
-  const ranges: Record<string, { min: number; max: number }> = {
+  const ranges = {
     VisibilityTimeout: { min: 0, max: 43_200 },
     DelaySeconds: { min: 0, max: 900 },
     ReceiveMessageWaitTimeSeconds: { min: 0, max: 20 },
     MaximumMessageSize: { min: 1_024, max: 1_048_576 },
     MessageRetentionPeriod: { min: 60, max: 1_209_600 },
-  };
+  } satisfies Partial<Record<QueueAttributeName, { min: number; max: number }>>;
 
   for (const [attr, range] of Object.entries(ranges)) {
     if (attr in attributes) {
@@ -138,4 +140,4 @@ export const ALL_ATTRIBUTE_NAMES = [
   "ContentBasedDeduplication",
   "DeduplicationScope",
   "FifoThroughputLimit",
-];
+] satisfies QueueAttributeName[];
