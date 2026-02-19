@@ -187,6 +187,8 @@ const server = await startFauxqs({ defaultRegion: "eu-west-1" });
 | CreateBucket | Yes |
 | HeadBucket | Yes |
 | ListObjects | Yes |
+| ListObjectsV2 | Yes |
+| CopyObject | Yes |
 | PutObject | Yes |
 | GetObject | Yes |
 | DeleteObject | Yes |
@@ -208,7 +210,8 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Delay queues** — per-queue default delay and per-message delay overrides
 - **Long polling** — `WaitTimeSeconds` on ReceiveMessage blocks until messages arrive or timeout
 - **Dead letter queues** — messages exceeding `maxReceiveCount` are moved to the configured DLQ
-- **Batch operations** — SendMessageBatch, DeleteMessageBatch, ChangeMessageVisibilityBatch
+- **Batch operations** — SendMessageBatch, DeleteMessageBatch, ChangeMessageVisibilityBatch with entry ID validation (`InvalidBatchEntryId`) and total batch size validation (`BatchRequestTooLong`)
+- **Queue attribute range validation** — validates `VisibilityTimeout`, `DelaySeconds`, `ReceiveMessageWaitTimeSeconds`, `MaximumMessageSize`, and `MessageRetentionPeriod` on both CreateQueue and SetQueueAttributes
 - **Message size validation** — rejects messages exceeding 1 MiB (1,048,576 bytes)
 - **Unicode character validation** — rejects messages with characters outside the AWS-allowed set
 - **KMS attributes** — `KmsMasterKeyId` and `KmsDataKeyReusePeriodSeconds` are accepted and stored (no actual encryption)
@@ -218,20 +221,24 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 ## SNS Features
 
 - **SNS-to-SQS fan-out** — publish to a topic and messages are delivered to all confirmed SQS subscriptions
-- **Filter policies** — both `MessageAttributes` and `MessageBody` scope, supporting exact match, prefix, suffix, anything-but, numeric ranges, and exists
+- **Filter policies** — both `MessageAttributes` and `MessageBody` scope, supporting exact match, prefix, suffix, anything-but (including anything-but with suffix), numeric ranges, exists, null conditions, and `$or` top-level grouping. MessageBody scope supports nested key matching
 - **Raw message delivery** — configurable per subscription
 - **Message size validation** — rejects messages exceeding 256 KB (262,144 bytes)
-- **Topic idempotency with conflict detection** — `CreateTopic` returns the existing topic when called with the same name and tags, but throws when tags differ
+- **Topic idempotency with conflict detection** — `CreateTopic` returns the existing topic when called with the same name, attributes, and tags, but throws when attributes or tags differ
 - **Subscription idempotency with conflict detection** — `Subscribe` returns the existing subscription when the same (topic, protocol, endpoint) combination is used with matching attributes, but throws when attributes differ
+- **Subscription attribute validation** — `SetSubscriptionAttributes` validates attribute names and rejects unknown or read-only attributes
 - **Topic and subscription tags**
 - **FIFO topics** — `.fifo` suffix enforcement, `MessageGroupId` and `MessageDeduplicationId` passthrough to SQS subscriptions, content-based deduplication
 - **Batch publish**
 
 ## S3 Features
 
-- **Bucket management** — CreateBucket (idempotent), HeadBucket, ListObjects
-- **Object operations** — PutObject, GetObject, DeleteObject, HeadObject with ETag, Content-Type, and Last-Modified headers
-- **Bulk delete** — DeleteObjects for batch key deletion
+- **Bucket management** — CreateBucket (idempotent), HeadBucket, ListObjects (V1 and V2)
+- **Object operations** — PutObject, GetObject, DeleteObject, HeadObject, CopyObject with ETag, Content-Type, and Last-Modified headers
+- **ListObjects V2** — prefix filtering, delimiter-based virtual directories, MaxKeys, continuation tokens, StartAfter
+- **CopyObject** — same-bucket and cross-bucket copy via `x-amz-copy-source` header, with metadata preservation
+- **User metadata** — `x-amz-meta-*` headers are stored and returned on GetObject and HeadObject
+- **Bulk delete** — DeleteObjects for batch key deletion with proper XML entity handling
 - **Keys with slashes** — full support for slash-delimited keys (e.g., `path/to/file.txt`)
 - **Stream uploads** — handles AWS chunked transfer encoding (`Content-Encoding: aws-chunked`) for stream bodies
 - **Path-style and virtual-hosted-style** — both S3 URL styles are supported (see below)
