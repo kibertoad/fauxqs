@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { snsTopicArn, snsSubscriptionArn } from "../common/arnHelper.js";
+import { SnsError } from "../common/errors.js";
 import type { SnsTopic, SnsSubscription } from "./snsTypes.js";
 
 export class SnsStore {
@@ -15,7 +16,27 @@ export class SnsStore {
     const arn = snsTopicArn(name, this.region);
 
     const existing = this.topics.get(arn);
-    if (existing) return existing;
+    if (existing) {
+      // Check for tag conflicts
+      if (tags) {
+        const newTags = new Map(Object.entries(tags));
+        if (existing.tags.size !== newTags.size) {
+          throw new SnsError(
+            "InvalidParameter",
+            "Invalid parameter: Tags Reason: Topic already exists with different tags",
+          );
+        }
+        for (const [key, value] of newTags) {
+          if (existing.tags.get(key) !== value) {
+            throw new SnsError(
+              "InvalidParameter",
+              "Invalid parameter: Tags Reason: Topic already exists with different tags",
+            );
+          }
+        }
+      }
+      return existing;
+    }
 
     const topic: SnsTopic = {
       arn,
@@ -57,6 +78,31 @@ export class SnsStore {
   ): SnsSubscription | undefined {
     const topic = this.topics.get(topicArn);
     if (!topic) return undefined;
+
+    // Check for existing subscription with same (topicArn, protocol, endpoint)
+    for (const subArn of topic.subscriptionArns) {
+      const existing = this.subscriptions.get(subArn);
+      if (existing && existing.protocol === protocol && existing.endpoint === endpoint) {
+        // Check if attributes differ
+        const newAttrs = attributes ?? {};
+        const existingAttrs = existing.attributes;
+        const allKeys = new Set([...Object.keys(newAttrs), ...Object.keys(existingAttrs)]);
+        let differs = false;
+        for (const key of allKeys) {
+          if (newAttrs[key] !== existingAttrs[key]) {
+            differs = true;
+            break;
+          }
+        }
+        if (differs) {
+          throw new SnsError(
+            "InvalidParameter",
+            "Invalid parameter: Attributes Reason: Subscription already exists with different attributes",
+          );
+        }
+        return existing;
+      }
+    }
 
     const id = randomUUID();
     const arn = snsSubscriptionArn(topic.name, id, this.region);

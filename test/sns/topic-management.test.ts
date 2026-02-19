@@ -82,6 +82,42 @@ describe("SNS Topic Management", () => {
     expect(result.Attributes?.DisplayName).toBe("My Display Name");
   });
 
+  it("throws when creating topic with different tags", async () => {
+    await sns.send(
+      new CreateTopicCommand({
+        Name: "tag-conflict-topic",
+        Tags: [{ Key: "env", Value: "prod" }],
+      }),
+    );
+
+    await expect(
+      sns.send(
+        new CreateTopicCommand({
+          Name: "tag-conflict-topic",
+          Tags: [{ Key: "env", Value: "staging" }],
+        }),
+      ),
+    ).rejects.toThrow("already exists with different tags");
+  });
+
+  it("allows creating topic with same tags (idempotent)", async () => {
+    await sns.send(
+      new CreateTopicCommand({
+        Name: "tag-same-topic",
+        Tags: [{ Key: "team", Value: "backend" }],
+      }),
+    );
+
+    const result = await sns.send(
+      new CreateTopicCommand({
+        Name: "tag-same-topic",
+        Tags: [{ Key: "team", Value: "backend" }],
+      }),
+    );
+
+    expect(result.TopicArn).toContain("tag-same-topic");
+  });
+
   it("deletes a topic", async () => {
     const created = await sns.send(
       new CreateTopicCommand({ Name: "delete-topic" }),

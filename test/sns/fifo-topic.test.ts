@@ -145,6 +145,17 @@ describe("SNS FIFO Topics", () => {
     expect(first.Messages).toHaveLength(1);
   });
 
+  it("throws when FifoTopic=true but name does not end with .fifo", async () => {
+    await expect(
+      sns.send(
+        new CreateTopicCommand({
+          Name: "not-fifo-topic",
+          Attributes: { FifoTopic: "true" },
+        }),
+      ),
+    ).rejects.toThrow(/Fifo Topic names must end with .fifo/i);
+  });
+
   it("errors when MessageGroupId is missing on FIFO topic publish", async () => {
     const topic = await sns.send(
       new CreateTopicCommand({

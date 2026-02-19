@@ -227,6 +227,47 @@ describe("SQS Send/Receive/Delete", () => {
     );
   });
 
+  it("receives system attributes via MessageSystemAttributeNames", async () => {
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: queueUrl,
+        MessageBody: "modern-attrs",
+      }),
+    );
+
+    const received = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: queueUrl,
+        MessageSystemAttributeNames: ["SentTimestamp", "ApproximateReceiveCount"],
+      }),
+    );
+
+    const attrs = received.Messages![0].Attributes;
+    expect(attrs?.SentTimestamp).toBeDefined();
+    expect(attrs?.ApproximateReceiveCount).toBe("1");
+  });
+
+  it("merges MessageSystemAttributeNames with AttributeNames", async () => {
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: queueUrl,
+        MessageBody: "merged-attrs",
+      }),
+    );
+
+    const received = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: queueUrl,
+        AttributeNames: ["SenderId"],
+        MessageSystemAttributeNames: ["SentTimestamp"],
+      }),
+    );
+
+    const attrs = received.Messages![0].Attributes;
+    expect(attrs?.SenderId).toBe("000000000000");
+    expect(attrs?.SentTimestamp).toBeDefined();
+  });
+
   it("rejects message with forbidden unicode characters", async () => {
     await expect(
       sqs.send(

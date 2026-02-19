@@ -392,15 +392,25 @@ export class SqsQueue {
 
   waitForMessages(maxMessages: number, waitTimeSeconds: number): Promise<SqsMessage[]> {
     return new Promise((resolve) => {
+      // Periodically check for delayed/inflight messages that have become available
+      const tickTimer = setInterval(() => {
+        this.processTimers();
+      }, 20);
+
+      const wrappedResolve = (msgs: SqsMessage[]) => {
+        clearInterval(tickTimer);
+        resolve(msgs);
+      };
+
       const timer = setTimeout(() => {
-        const idx = this.pollWaiters.findIndex((w) => w.resolve === resolve);
+        const idx = this.pollWaiters.findIndex((w) => w.resolve === wrappedResolve);
         if (idx !== -1) {
           this.pollWaiters.splice(idx, 1);
         }
-        resolve([]);
+        wrappedResolve([]);
       }, waitTimeSeconds * 1000);
 
-      this.pollWaiters.push({ resolve, maxMessages, timer });
+      this.pollWaiters.push({ resolve: wrappedResolve, maxMessages, timer });
     });
   }
 

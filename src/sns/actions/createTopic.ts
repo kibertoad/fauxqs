@@ -67,7 +67,7 @@ export function createTopic(params: Record<string, string>, snsStore: SnsStore):
   } else if (isFifoAttr && !isFifoName) {
     throw new SnsError(
       "InvalidParameter",
-      "Invalid parameter: Topic name must end with .fifo suffix for FIFO topics.",
+      "Invalid parameter: Fifo Topic names must end with .fifo suffix",
     );
   }
 

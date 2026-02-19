@@ -24,6 +24,7 @@ export function getSubscriptionAttributes(
     Owner: "000000000000",
     ConfirmationWasAuthenticated: "true",
     PendingConfirmation: subscription.confirmed ? "false" : "true",
+    SubscriptionPrincipal: "arn:aws:iam::000000000000:user/local",
     RawMessageDelivery: subscription.attributes.RawMessageDelivery ?? "false",
     ...subscription.attributes,
   };

@@ -68,11 +68,15 @@ test/
 
 - **Handler pattern**: Each action is a standalone function in `actions/`. Handlers are registered on the router in `app.ts`. This makes it easy to add new actions without modifying existing code.
 - **SqsQueue owns messages**: The `SqsQueue` class has `enqueue()`, `dequeue()`, `deleteMessage()`, `changeVisibility()`, `processTimers()`, and `waitForMessages()`. The store is just a collection of queues.
-- **Lazy timer processing**: Visibility timeout expiration and delayed message promotion happen lazily on each `dequeue()` call rather than via a background interval. This keeps tests deterministic.
+- **Timer processing**: Visibility timeout expiration and delayed message promotion happen lazily on each `dequeue()` call. During long-poll waits (`waitForMessages`), a 20ms background interval calls `processTimers()` so that delayed messages and visibility-timeout-expired messages become available without waiting for the next explicit dequeue.
 - **Long polling**: Uses a waiter pattern. `waitForMessages()` returns a Promise that resolves when messages arrive or timeout expires. `enqueue()` notifies waiters via `notifyWaiters()`.
 - **DLQ**: Checked during `dequeue()`. When `approximateReceiveCount > maxReceiveCount`, the message is moved to the DLQ queue (resolved by ARN).
+- **ReceiveMessage attribute merging**: `ReceiveMessage` merges both `AttributeNames` (legacy) and `MessageSystemAttributeNames` (modern) arrays. This is important because sqs-consumer and newer SDKs send `MessageSystemAttributeNames` while also sending an empty `AttributeNames: []`.
 - **SNS→SQS fan-out**: `publish.ts` iterates confirmed SQS subscriptions, evaluates filter policies, and enqueues into the target SQS queue directly (both wrapped envelope and raw delivery).
 - **Filter policies**: Evaluated as a pure function in `filter.ts`. Supports exact match, prefix, suffix, anything-but, numeric ranges, and exists. AND between top-level keys, OR within arrays. Supports both `MessageAttributes` and `MessageBody` scope.
+- **SNS topic idempotency**: `createTopic` in `snsStore.ts` returns the existing topic when called with the same name and matching tags. Throws `SnsError` when tags differ.
+- **SNS subscription idempotency**: `subscribe` in `snsStore.ts` finds existing subscriptions by (topicArn, protocol, endpoint). Returns the existing subscription when attributes match. Throws `SnsError` when attributes differ.
+- **SubscriptionPrincipal**: `GetSubscriptionAttributes` includes `SubscriptionPrincipal` (`arn:aws:iam::000000000000:user/local`) in the response, matching AWS behavior.
 - **S3 store**: Simple Map-based store. `buckets: Map<string, Map<string, S3Object>>`. CreateBucket is idempotent, DeleteObject silently succeeds for missing keys. ETag is quoted MD5 hex of object body.
 
 ## Protocols
@@ -116,4 +120,4 @@ Coverage thresholds: 70% statements/functions/lines, 50% branches.
 
 ## Out of Scope
 
-See `OUT_OF_SCOPE.md` for the full list. Key exclusions: FIFO queues/topics, non-SQS SNS delivery (HTTP, Lambda, SMS), persistence, auth validation, message size limits.
+See `OUT_OF_SCOPE.md` for the full list. Key exclusions: non-SQS SNS delivery (HTTP, Lambda, SMS), persistence, auth validation.

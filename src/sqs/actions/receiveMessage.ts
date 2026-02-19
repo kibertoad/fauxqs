@@ -48,9 +48,10 @@ export async function receiveMessage(
     }
   }
 
-  // Add system attributes if requested
-  const systemAttributeNames =
-    (body.AttributeNames as string[]) ?? (body.MessageSystemAttributeNames as string[]) ?? [];
+  // Add system attributes if requested (merge both legacy and modern parameter names)
+  const legacyNames = (body.AttributeNames as string[] | undefined) ?? [];
+  const modernNames = (body.MessageSystemAttributeNames as string[] | undefined) ?? [];
+  const systemAttributeNames = [...legacyNames, ...modernNames];
 
   if (systemAttributeNames.length > 0) {
     addSystemAttributes(messages, queue, systemAttributeNames);

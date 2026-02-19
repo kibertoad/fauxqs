@@ -4,6 +4,7 @@ import {
   CreateQueueCommand,
   SendMessageCommand,
   ReceiveMessageCommand,
+  ChangeMessageVisibilityCommand,
 } from "@aws-sdk/client-sqs";
 import { createSqsClient } from "../helpers/clients.js";
 import { startFauxqsTestServer, type FauxqsServer } from "../helpers/setup.js";
@@ -92,6 +93,91 @@ describe("SQS Long Polling", () => {
     const elapsed = Date.now() - start;
 
     expect(result.Messages).toBeUndefined();
+    expect(elapsed).toBeGreaterThanOrEqual(900);
+    expect(elapsed).toBeLessThan(3000);
+  });
+});
+
+describe("SQS Long Polling — timer processing during wait", () => {
+  let server: FauxqsServer;
+  let sqs: ReturnType<typeof createSqsClient>;
+
+  beforeAll(async () => {
+    server = await startFauxqsTestServer();
+    sqs = createSqsClient(server.port);
+  });
+
+  afterAll(async () => {
+    sqs.destroy();
+    await server.stop();
+  });
+
+  it("delivers delayed message during long-poll wait", async () => {
+    const queue = await sqs.send(
+      new CreateQueueCommand({ QueueName: "poll-delayed-msg" }),
+    );
+
+    // Send a message with 1-second delay
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: queue.QueueUrl!,
+        MessageBody: "delayed-body",
+        DelaySeconds: 1,
+      }),
+    );
+
+    // Long-poll should wait, then receive the delayed message once it becomes available
+    const start = Date.now();
+    const result = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: queue.QueueUrl!,
+        WaitTimeSeconds: 5,
+      }),
+    );
+    const elapsed = Date.now() - start;
+
+    expect(result.Messages).toHaveLength(1);
+    expect(result.Messages![0].Body).toBe("delayed-body");
+    // Should have waited at least ~1 second for the delay
+    expect(elapsed).toBeGreaterThanOrEqual(900);
+    // But not the full 5 second wait time
+    expect(elapsed).toBeLessThan(3000);
+  });
+
+  it("returns message when visibility timeout expires during long-poll", async () => {
+    const queue = await sqs.send(
+      new CreateQueueCommand({
+        QueueName: "poll-vis-expire",
+        Attributes: { VisibilityTimeout: "1" },
+      }),
+    );
+
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: queue.QueueUrl!,
+        MessageBody: "vis-timeout-body",
+      }),
+    );
+
+    // First consumer receives the message (visibility timeout = 1s)
+    const first = await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: queue.QueueUrl! }),
+    );
+    expect(first.Messages).toHaveLength(1);
+
+    // Second consumer long-polls — should get the message after visibility timeout expires
+    const start = Date.now();
+    const second = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: queue.QueueUrl!,
+        WaitTimeSeconds: 5,
+      }),
+    );
+    const elapsed = Date.now() - start;
+
+    expect(second.Messages).toHaveLength(1);
+    expect(second.Messages![0].Body).toBe("vis-timeout-body");
+    // Should have waited ~1 second for visibility timeout to expire
     expect(elapsed).toBeGreaterThanOrEqual(900);
     expect(elapsed).toBeLessThan(3000);
   });

@@ -195,6 +195,8 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Filter policies** — both `MessageAttributes` and `MessageBody` scope, supporting exact match, prefix, suffix, anything-but, numeric ranges, and exists
 - **Raw message delivery** — configurable per subscription
 - **Message size validation** — rejects messages exceeding 256 KB (262,144 bytes)
+- **Topic idempotency with conflict detection** — `CreateTopic` returns the existing topic when called with the same name and tags, but throws when tags differ
+- **Subscription idempotency with conflict detection** — `Subscribe` returns the existing subscription when the same (topic, protocol, endpoint) combination is used with matching attributes, but throws when attributes differ
 - **Topic and subscription tags**
 - **FIFO topics** — `.fifo` suffix enforcement, `MessageGroupId` and `MessageDeduplicationId` passthrough to SQS subscriptions, content-based deduplication
 - **Batch publish**

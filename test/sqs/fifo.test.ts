@@ -562,4 +562,32 @@ describe("SQS FIFO Queues", () => {
     );
     expect(attrs.Attributes?.ApproximateNumberOfMessages).toBe("2");
   });
+
+  it("returns MessageGroupId via MessageSystemAttributeNames", async () => {
+    const { QueueUrl } = await sqs.send(
+      new CreateQueueCommand({
+        QueueName: `sysattr-fifo-${Date.now()}.fifo`,
+        Attributes: { FifoQueue: "true", ContentBasedDeduplication: "true" },
+      }),
+    );
+
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: QueueUrl!,
+        MessageBody: "system-attrs-test",
+        MessageGroupId: "my-group",
+      }),
+    );
+
+    const received = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: QueueUrl!,
+        MessageSystemAttributeNames: ["MessageGroupId", "MessageDeduplicationId"],
+      }),
+    );
+
+    const attrs = received.Messages![0].Attributes;
+    expect(attrs?.MessageGroupId).toBe("my-group");
+    expect(attrs?.MessageDeduplicationId).toBeDefined();
+  });
 });
