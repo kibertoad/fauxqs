@@ -190,7 +190,7 @@ const s3Client = new S3Client({
 
 Any credentials are accepted and never validated.
 
-> **Note:** The `fauxqs.dev` wildcard DNS (`*.localhost.fauxqs.dev` → `127.0.0.1`) replicates the approach [pioneered by LocalStack](https://docs.localstack.cloud/aws/services/s3/) with `localhost.localstack.cloud`. A public DNS entry resolves all subdomains to localhost, so virtual-hosted-style S3 requests work without `/etc/hosts` changes, custom request handlers, or `forcePathStyle`. See [S3 URL styles](#s3-url-styles) for alternative approaches.
+> **Note:** The `fauxqs.dev` wildcard DNS (`*.localhost.fauxqs.dev` → `127.0.0.1`) replicates the approach [pioneered by LocalStack](https://docs.localstack.cloud/aws/capabilities/networking/accessing-endpoint-url/) with `localhost.localstack.cloud`. A public DNS entry resolves all subdomains to localhost, so virtual-hosted-style S3 requests work without `/etc/hosts` changes, custom request handlers, or `forcePathStyle`. See [S3 URL styles](#s3-url-styles) for alternative approaches.
 
 ### Programmatic usage
 
