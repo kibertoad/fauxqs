@@ -4,7 +4,6 @@ import {
   CreateQueueCommand,
   SendMessageCommand,
   ReceiveMessageCommand,
-  ChangeMessageVisibilityCommand,
 } from "@aws-sdk/client-sqs";
 import { createSqsClient } from "../helpers/clients.js";
 import { startFauxqsTestServer, type FauxqsServer } from "../helpers/setup.js";

@@ -182,25 +182,23 @@ function evaluateNumeric(value: number, conditions: unknown[]): boolean {
 }
 
 /**
- * Evaluates a filter policy against the message body (when FilterPolicyScope is "MessageBody").
- * The message body is parsed as JSON, and the policy is matched against it.
+ * Parses a JSON message body into attribute-like format for filter policy evaluation.
+ * Returns undefined if the body is not valid JSON or not an object.
  */
-export function matchesFilterPolicyOnBody(
-  policy: Record<string, unknown>,
+export function parseBodyAsAttributes(
   messageBody: string,
-): boolean {
+): Record<string, MessageAttributeValue> | undefined {
   let body: Record<string, unknown>;
   try {
     body = JSON.parse(messageBody);
   } catch {
-    return false;
+    return undefined;
   }
 
   if (typeof body !== "object" || body === null) {
-    return false;
+    return undefined;
   }
 
-  // Convert body values to attribute-like format for reuse
   const attrs: Record<string, MessageAttributeValue> = {};
   for (const [key, value] of Object.entries(body)) {
     if (typeof value === "string") {
@@ -212,5 +210,18 @@ export function matchesFilterPolicyOnBody(
     }
   }
 
+  return attrs;
+}
+
+/**
+ * Evaluates a filter policy against the message body (when FilterPolicyScope is "MessageBody").
+ * The message body is parsed as JSON, and the policy is matched against it.
+ */
+export function matchesFilterPolicyOnBody(
+  policy: Record<string, unknown>,
+  messageBody: string,
+): boolean {
+  const attrs = parseBodyAsAttributes(messageBody);
+  if (!attrs) return false;
   return matchesFilterPolicy(policy, attrs);
 }

@@ -6,7 +6,7 @@ import type { SqsStore } from "../../sqs/sqsStore.ts";
 import { SqsStore as SqsStoreClass } from "../../sqs/sqsStore.ts";
 import type { MessageAttributeValue } from "../../sqs/sqsTypes.ts";
 import { SNS_MAX_MESSAGE_SIZE_BYTES } from "../../sqs/sqsTypes.ts";
-import { matchesFilterPolicy, matchesFilterPolicyOnBody } from "../filter.ts";
+import { matchesFilterPolicy, parseBodyAsAttributes } from "../filter.ts";
 
 export function publish(
   params: Record<string, string>,
@@ -68,6 +68,27 @@ export function publish(
     }
   }
 
+  // Pre-parse body for MessageBody-scoped filter policies (done once, not per subscription)
+  let parsedBodyAttrs: Record<string, MessageAttributeValue> | undefined;
+  let bodyAttrsParsed = false;
+
+  // Pre-build envelope template for non-raw subscriptions (stringify once, not per subscription)
+  const UNSUB_PLACEHOLDER = "__UNSUB_ARN_PLACEHOLDER__";
+  const envelopeTemplate = JSON.stringify({
+    Type: "Notification",
+    MessageId: messageId,
+    TopicArn: topicArn,
+    Subject: subject ?? null,
+    Message: message,
+    Timestamp: new Date().toISOString(),
+    SignatureVersion: "1",
+    Signature: "EXAMPLE",
+    SigningCertURL:
+      "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem",
+    UnsubscribeURL: UNSUB_PLACEHOLDER,
+    MessageAttributes: formatEnvelopeAttributes(messageAttributes),
+  });
+
   // Fan out to subscriptions
   for (const subArn of topic.subscriptionArns) {
     const sub = snsStore.getSubscription(subArn);
@@ -81,7 +102,11 @@ export function publish(
         const scope = sub.attributes.FilterPolicyScope ?? "MessageAttributes";
 
         if (scope === "MessageBody") {
-          if (!matchesFilterPolicyOnBody(filterPolicy, message)) continue;
+          if (!bodyAttrsParsed) {
+            parsedBodyAttrs = parseBodyAsAttributes(message);
+            bodyAttrsParsed = true;
+          }
+          if (!parsedBodyAttrs || !matchesFilterPolicy(filterPolicy, parsedBodyAttrs)) continue;
         } else {
           if (!matchesFilterPolicy(filterPolicy, messageAttributes)) continue;
         }
@@ -103,21 +128,11 @@ export function publish(
       sqsBody = message;
       sqsAttributes = messageAttributes;
     } else {
-      // Wrap in SNS envelope
-      sqsBody = JSON.stringify({
-        Type: "Notification",
-        MessageId: messageId,
-        TopicArn: topicArn,
-        Subject: subject ?? null,
-        Message: message,
-        Timestamp: new Date().toISOString(),
-        SignatureVersion: "1",
-        Signature: "EXAMPLE",
-        SigningCertURL:
-          "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem",
-        UnsubscribeURL: `https://sns.us-east-1.amazonaws.com/?Action=Unsubscribe&SubscriptionArn=${sub.arn}`,
-        MessageAttributes: formatEnvelopeAttributes(messageAttributes),
-      });
+      // Wrap in SNS envelope (reuse pre-built template, only substitute UnsubscribeURL)
+      sqsBody = envelopeTemplate.replace(
+        UNSUB_PLACEHOLDER,
+        `https://sns.us-east-1.amazonaws.com/?Action=Unsubscribe&SubscriptionArn=${sub.arn}`,
+      );
     }
 
     const sqsMsg = SqsStoreClass.createMessage(

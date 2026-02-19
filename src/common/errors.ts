@@ -5,7 +5,12 @@ export class SqsError extends Error {
   readonly statusCode: number;
   readonly senderFault: boolean;
 
-  constructor(code: string, message: string, statusCode: number = 400, senderFault: boolean = true) {
+  constructor(
+    code: string,
+    message: string,
+    statusCode: number = 400,
+    senderFault: boolean = true,
+  ) {
     super(message);
     this.name = "SqsError";
     this.code = code;
@@ -31,7 +36,12 @@ export class SnsError extends Error {
   readonly statusCode: number;
   readonly senderFault: boolean;
 
-  constructor(code: string, message: string, statusCode: number = 400, senderFault: boolean = true) {
+  constructor(
+    code: string,
+    message: string,
+    statusCode: number = 400,
+    senderFault: boolean = true,
+  ) {
     super(message);
     this.name = "SnsError";
     this.code = code;

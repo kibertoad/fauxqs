@@ -1,4 +1,5 @@
 import { SqsError } from "../../common/errors.ts";
+import { md5, md5OfMessageAttributes } from "../../common/md5.ts";
 import type { SqsStore } from "../sqsStore.ts";
 import { SqsStore as SqsStoreClass } from "../sqsStore.ts";
 import type { MessageAttributeValue } from "../sqsTypes.ts";
@@ -106,14 +107,11 @@ function sendFifoMessage(
     // Return the original message ID without re-enqueue
     const result: Record<string, unknown> = {
       MessageId: dedupResult.originalMessageId,
-      MD5OfMessageBody: SqsStoreClass.createMessage(messageBody).md5OfBody,
+      MD5OfMessageBody: md5(messageBody),
     };
-    const md5OfAttrs = SqsStoreClass.createMessage(
-      messageBody,
-      messageAttributes,
-    ).md5OfMessageAttributes;
-    if (md5OfAttrs) {
-      result.MD5OfMessageAttributes = md5OfAttrs;
+    const attrsDigest = md5OfMessageAttributes(messageAttributes);
+    if (attrsDigest) {
+      result.MD5OfMessageAttributes = attrsDigest;
     }
     result.SequenceNumber = queue.nextSequenceNumber();
     return result;

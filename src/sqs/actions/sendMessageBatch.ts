@@ -1,4 +1,5 @@
 import { SqsError } from "../../common/errors.ts";
+import { md5, md5OfMessageAttributes } from "../../common/md5.ts";
 import type { SqsStore } from "../sqsStore.ts";
 import { SqsStore as SqsStoreClass } from "../sqsStore.ts";
 import type { MessageAttributeValue } from "../sqsTypes.ts";
@@ -130,15 +131,12 @@ export function sendMessageBatch(body: Record<string, unknown>, store: SqsStore)
         const result: (typeof successful)[number] = {
           Id: entry.Id,
           MessageId: dedupResult.originalMessageId!,
-          MD5OfMessageBody: SqsStoreClass.createMessage(entry.MessageBody).md5OfBody,
+          MD5OfMessageBody: md5(entry.MessageBody),
           SequenceNumber: queue.nextSequenceNumber(),
         };
-        const md5OfAttrs = SqsStoreClass.createMessage(
-          entry.MessageBody,
-          entry.MessageAttributes ?? {},
-        ).md5OfMessageAttributes;
-        if (md5OfAttrs) {
-          result.MD5OfMessageAttributes = md5OfAttrs;
+        const attrsDigest = md5OfMessageAttributes(entry.MessageAttributes ?? {});
+        if (attrsDigest) {
+          result.MD5OfMessageAttributes = attrsDigest;
         }
         successful.push(result);
         continue;

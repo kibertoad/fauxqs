@@ -509,6 +509,7 @@ export class SqsQueue {
 export class SqsStore {
   private queues = new Map<string, SqsQueue>();
   private queuesByName = new Map<string, SqsQueue>();
+  private queuesByArn = new Map<string, SqsQueue>();
   host?: string;
   region?: string;
 
@@ -522,6 +523,7 @@ export class SqsStore {
     const queue = new SqsQueue(name, url, arn, attributes, tags);
     this.queues.set(url, queue);
     this.queuesByName.set(name, queue);
+    this.queuesByArn.set(arn, queue);
     return queue;
   }
 
@@ -530,6 +532,7 @@ export class SqsStore {
     if (!queue) return false;
     this.queues.delete(url);
     this.queuesByName.delete(queue.name);
+    this.queuesByArn.delete(queue.arn);
     return true;
   }
 
@@ -553,10 +556,7 @@ export class SqsStore {
   }
 
   getQueueByArn(arn: string): SqsQueue | undefined {
-    for (const queue of this.queues.values()) {
-      if (queue.arn === arn) return queue;
-    }
-    return undefined;
+    return this.queuesByArn.get(arn);
   }
 
   processAllTimers(): void {
