@@ -80,7 +80,8 @@ test/
 - **SNS subscription attribute validation**: `setSubscriptionAttributes` only allows: `RawMessageDelivery`, `FilterPolicy`, `FilterPolicyScope`, `RedrivePolicy`, `DeliveryPolicy`, `SubscriptionRoleArn`. Invalid attribute names are rejected.
 - **SQS queue attribute validation**: `createQueue` and `setQueueAttributes` validate attribute ranges (VisibilityTimeout 0-43200, DelaySeconds 0-900, ReceiveMessageWaitTimeSeconds 0-20, MaximumMessageSize 1024-1048576, MessageRetentionPeriod 60-1209600). `ReceiveMessage` validates MaxNumberOfMessages 1-10.
 - **SQS batch validation**: `sendMessageBatch` validates entry IDs (alphanumeric/hyphen/underscore only) and rejects batches where total size across all entries exceeds 1 MiB.
-- **S3 store**: Simple Map-based store. `buckets: Map<string, Map<string, S3Object>>`. CreateBucket is idempotent, DeleteBucket rejects non-empty buckets, DeleteObject silently succeeds for missing keys but returns `NoSuchBucket` for non-existent buckets. ETag is quoted MD5 hex of object body. S3Object supports user metadata (`x-amz-meta-*` headers).
+- **S3 store**: Map-based store. `buckets: Map<string, Map<string, S3Object>>` for objects, `bucketCreationDates: Map<string, Date>` for ListBuckets, `multipartUploads: Map<string, MultipartUpload>` for in-progress multipart uploads. CreateBucket is idempotent, DeleteBucket rejects non-empty buckets (including those with active multipart uploads), DeleteObject silently succeeds for missing keys but returns `NoSuchBucket` for non-existent buckets. ETag is quoted MD5 hex of object body. Multipart ETag is `"MD5-of-concatenated-part-digests-partCount"`. S3Object supports user metadata (`x-amz-meta-*` headers).
+- **Multipart upload routing**: The S3 router differentiates multipart operations from regular operations using query parameters: `?uploads` for CreateMultipartUpload, `?uploadId=&partNumber=` for UploadPart, `?uploadId=` on POST for CompleteMultipartUpload, `?uploadId=` on DELETE for AbortMultipartUpload.
 
 ## Protocols
 
@@ -97,12 +98,14 @@ test/
 - Complex params use dotted notation: `Tags.member.1.Key=k1`
 
 ### S3 (REST)
-- Uses HTTP method + URL path to determine action
+- Uses HTTP method + URL path + query params to determine action
+- `GET /` → ListBuckets
 - `PUT /:bucket` → CreateBucket, `HEAD /:bucket` → HeadBucket, `GET /:bucket` → ListObjects, `DELETE /:bucket` → DeleteBucket
 - `PUT /:bucket/:key` → PutObject (or CopyObject when `x-amz-copy-source` header is present), `GET /:bucket/:key` → GetObject, `DELETE /:bucket/:key` → DeleteObject, `HEAD /:bucket/:key` → HeadObject
 - `GET /:bucket?list-type=2` → ListObjectsV2 (supports `prefix`, `delimiter`, `max-keys`, `start-after`, `continuation-token`)
 - `POST /:bucket?delete` → DeleteObjects (bulk delete via XML body)
-- XML responses for list/delete/error operations
+- `POST /:bucket/:key?uploads` → CreateMultipartUpload, `PUT /:bucket/:key?partNumber=N&uploadId=ID` → UploadPart, `POST /:bucket/:key?uploadId=ID` → CompleteMultipartUpload, `DELETE /:bucket/:key?uploadId=ID` → AbortMultipartUpload
+- XML responses for list/delete/multipart/error operations
 - SDK must use `forcePathStyle: true` or a virtual-hosted-style helper (`createLocalhostHandler` / `interceptLocalhostDns`) for local emulators
 
 ## Conventions

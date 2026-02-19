@@ -367,7 +367,14 @@ function parseBatchEntries(params: Record<string, string>): Array<{
     }
 
     if (id && message) {
-      entries.push({ id, message, subject, messageGroupId, messageDeduplicationId, messageAttributes });
+      entries.push({
+        id,
+        message,
+        subject,
+        messageGroupId,
+        messageDeduplicationId,
+        messageAttributes,
+      });
     }
   }
 

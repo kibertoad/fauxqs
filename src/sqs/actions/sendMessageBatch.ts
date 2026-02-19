@@ -3,7 +3,11 @@ import { md5, md5OfMessageAttributes } from "../../common/md5.ts";
 import type { SqsStore } from "../sqsStore.ts";
 import { SqsStore as SqsStoreClass } from "../sqsStore.ts";
 import type { MessageAttributeValue } from "../sqsTypes.ts";
-import { INVALID_MESSAGE_BODY_CHAR, SQS_MAX_MESSAGE_SIZE_BYTES, calculateMessageSize } from "../sqsTypes.ts";
+import {
+  INVALID_MESSAGE_BODY_CHAR,
+  SQS_MAX_MESSAGE_SIZE_BYTES,
+  calculateMessageSize,
+} from "../sqsTypes.ts";
 
 const VALID_BATCH_ENTRY_ID = /^[a-zA-Z0-9_-]+$/;
 

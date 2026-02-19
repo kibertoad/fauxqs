@@ -7,3 +7,20 @@ export interface S3Object {
   lastModified: Date;
   metadata: Record<string, string>;
 }
+
+export interface MultipartPart {
+  partNumber: number;
+  body: Buffer;
+  etag: string;
+  lastModified: Date;
+}
+
+export interface MultipartUpload {
+  uploadId: string;
+  bucket: string;
+  key: string;
+  contentType: string;
+  metadata: Record<string, string>;
+  parts: Map<number, MultipartPart>;
+  initiated: Date;
+}

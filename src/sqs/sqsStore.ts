@@ -30,7 +30,10 @@ export class SqsQueue {
   // FIFO-specific fields
   fifoMessages: Map<string, SqsMessage[]> = new Map();
   fifoDelayed: Map<string, SqsMessage[]> = new Map();
-  deduplicationCache: Map<string, { messageId: string; timestamp: number; sequenceNumber?: string }> = new Map();
+  deduplicationCache: Map<
+    string,
+    { messageId: string; timestamp: number; sequenceNumber?: string }
+  > = new Map();
   sequenceCounter = 0;
 
   constructor(
@@ -436,7 +439,11 @@ export class SqsQueue {
     this.pollWaiters = [];
   }
 
-  checkDeduplication(dedupId: string): { isDuplicate: boolean; originalMessageId?: string; originalSequenceNumber?: string } {
+  checkDeduplication(dedupId: string): {
+    isDuplicate: boolean;
+    originalMessageId?: string;
+    originalSequenceNumber?: string;
+  } {
     const now = Date.now();
     // Lazy cleanup of expired entries
     for (const [key, entry] of this.deduplicationCache) {
@@ -447,7 +454,11 @@ export class SqsQueue {
 
     const existing = this.deduplicationCache.get(dedupId);
     if (existing && now - existing.timestamp <= DEDUP_WINDOW_MS) {
-      return { isDuplicate: true, originalMessageId: existing.messageId, originalSequenceNumber: existing.sequenceNumber };
+      return {
+        isDuplicate: true,
+        originalMessageId: existing.messageId,
+        originalSequenceNumber: existing.sequenceNumber,
+      };
     }
 
     return { isDuplicate: false };

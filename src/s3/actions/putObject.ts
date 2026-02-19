@@ -28,7 +28,9 @@ function decodeAwsChunked(buf: Buffer): Buffer {
   return Buffer.concat(chunks);
 }
 
-function extractMetadata(headers: Record<string, string | string[] | undefined>): Record<string, string> {
+function extractMetadata(
+  headers: Record<string, string | string[] | undefined>,
+): Record<string, string> {
   const metadata: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
     if (key.toLowerCase().startsWith("x-amz-meta-") && value) {
@@ -61,10 +63,18 @@ export function putObject(
     const srcKey = decoded.substring(slashIdx + 1);
 
     const srcObj = store.getObject(srcBucket, srcKey);
-    const metadata = extractMetadata(request.headers as Record<string, string | string[] | undefined>);
+    const metadata = extractMetadata(
+      request.headers as Record<string, string | string[] | undefined>,
+    );
     const hasMetadata = Object.keys(metadata).length > 0;
 
-    const obj = store.putObject(bucket, key, srcObj.body, srcObj.contentType, hasMetadata ? metadata : srcObj.metadata);
+    const obj = store.putObject(
+      bucket,
+      key,
+      srcObj.body,
+      srcObj.contentType,
+      hasMetadata ? metadata : srcObj.metadata,
+    );
 
     const xml = [
       `<?xml version="1.0" encoding="UTF-8"?>`,
@@ -87,7 +97,9 @@ export function putObject(
     body = decodeAwsChunked(body);
   }
 
-  const metadata = extractMetadata(request.headers as Record<string, string | string[] | undefined>);
+  const metadata = extractMetadata(
+    request.headers as Record<string, string | string[] | undefined>,
+  );
   const obj = store.putObject(bucket, key, body, contentType, metadata);
 
   reply.header("etag", obj.etag);

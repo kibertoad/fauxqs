@@ -206,12 +206,12 @@ Platform application, SMS, and phone number actions are not supported.
 | DeleteObject | Yes |
 | HeadObject | Yes |
 | DeleteObjects | Yes |
-| DeleteBucket | No |
-| ListBuckets | No |
-| CreateMultipartUpload | No |
-| UploadPart | No |
-| CompleteMultipartUpload | No |
-| AbortMultipartUpload | No |
+| DeleteBucket | Yes |
+| ListBuckets | Yes |
+| CreateMultipartUpload | Yes |
+| UploadPart | Yes |
+| CompleteMultipartUpload | Yes |
+| AbortMultipartUpload | Yes |
 | ListObjectVersions | No |
 | GetBucketLocation | No |
 
@@ -258,8 +258,9 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 
 ## S3 Features
 
-- **Bucket management** — CreateBucket (idempotent), HeadBucket, ListObjects (V1 and V2)
+- **Bucket management** — CreateBucket (idempotent), DeleteBucket (rejects non-empty), HeadBucket, ListBuckets, ListObjects (V1 and V2)
 - **Object operations** — PutObject, GetObject, DeleteObject, HeadObject, CopyObject with ETag, Content-Type, and Last-Modified headers
+- **Multipart uploads** — CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload with correct multipart ETag calculation (`MD5-of-part-digests-partCount`), metadata preservation, and part overwrite support
 - **ListObjects V2** — prefix filtering, delimiter-based virtual directories, MaxKeys, continuation tokens, StartAfter
 - **CopyObject** — same-bucket and cross-bucket copy via `x-amz-copy-source` header, with metadata preservation
 - **User metadata** — `x-amz-meta-*` headers are stored and returned on GetObject and HeadObject
