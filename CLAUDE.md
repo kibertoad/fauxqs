@@ -77,7 +77,7 @@ test/
 - **SNS topic idempotency**: `createTopic` in `snsStore.ts` returns the existing topic when called with the same name and matching tags. Throws `SnsError` when tags differ.
 - **SNS subscription idempotency**: `subscribe` in `snsStore.ts` finds existing subscriptions by (topicArn, protocol, endpoint). Returns the existing subscription when attributes match. Throws `SnsError` when attributes differ.
 - **SubscriptionPrincipal**: `GetSubscriptionAttributes` includes `SubscriptionPrincipal` (`arn:aws:iam::000000000000:user/local`) in the response, matching AWS behavior.
-- **S3 store**: Simple Map-based store. `buckets: Map<string, Map<string, S3Object>>`. CreateBucket is idempotent, DeleteObject silently succeeds for missing keys. ETag is quoted MD5 hex of object body.
+- **S3 store**: Simple Map-based store. `buckets: Map<string, Map<string, S3Object>>`. CreateBucket is idempotent, DeleteBucket rejects non-empty buckets, DeleteObject silently succeeds for missing keys but returns `NoSuchBucket` for non-existent buckets. ETag is quoted MD5 hex of object body.
 
 ## Protocols
 
@@ -95,7 +95,7 @@ test/
 
 ### S3 (REST)
 - Uses HTTP method + URL path to determine action
-- `PUT /:bucket` → CreateBucket, `HEAD /:bucket` → HeadBucket, `GET /:bucket` → ListObjects
+- `PUT /:bucket` → CreateBucket, `HEAD /:bucket` → HeadBucket, `GET /:bucket` → ListObjects, `DELETE /:bucket` → DeleteBucket
 - `PUT /:bucket/:key` → PutObject, `GET /:bucket/:key` → GetObject, `DELETE /:bucket/:key` → DeleteObject, `HEAD /:bucket/:key` → HeadObject
 - `POST /:bucket?delete` → DeleteObjects (bulk delete via XML body)
 - XML responses for list/delete/error operations

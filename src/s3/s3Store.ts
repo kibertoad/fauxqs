@@ -11,6 +11,17 @@ export class S3Store {
     }
   }
 
+  deleteBucket(name: string): void {
+    const objects = this.buckets.get(name);
+    if (!objects) {
+      throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${name}`, 404);
+    }
+    if (objects.size > 0) {
+      throw new S3Error("BucketNotEmpty", "The bucket you tried to delete is not empty.", 409);
+    }
+    this.buckets.delete(name);
+  }
+
   hasBucket(name: string): boolean {
     return this.buckets.has(name);
   }
@@ -51,9 +62,10 @@ export class S3Store {
 
   deleteObject(bucket: string, key: string): void {
     const objects = this.buckets.get(bucket);
-    if (objects) {
-      objects.delete(key);
+    if (!objects) {
+      throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
     }
+    objects.delete(key);
   }
 
   headObject(bucket: string, key: string): S3Object {

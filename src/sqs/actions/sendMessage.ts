@@ -3,7 +3,7 @@ import { md5, md5OfMessageAttributes } from "../../common/md5.ts";
 import type { SqsStore } from "../sqsStore.ts";
 import { SqsStore as SqsStoreClass } from "../sqsStore.ts";
 import type { MessageAttributeValue } from "../sqsTypes.ts";
-import { INVALID_MESSAGE_BODY_CHAR, SQS_MAX_MESSAGE_SIZE_BYTES } from "../sqsTypes.ts";
+import { INVALID_MESSAGE_BODY_CHAR, calculateMessageSize } from "../sqsTypes.ts";
 
 export function sendMessage(body: Record<string, unknown>, store: SqsStore): unknown {
   const queueUrl = body.QueueUrl as string | undefined;
@@ -28,14 +28,16 @@ export function sendMessage(body: Record<string, unknown>, store: SqsStore): unk
     );
   }
 
-  if (Buffer.byteLength(messageBody, "utf8") > SQS_MAX_MESSAGE_SIZE_BYTES) {
+  const messageAttributes = (body.MessageAttributes as Record<string, MessageAttributeValue>) ?? {};
+
+  const maxMessageSize = parseInt(queue.attributes.MaximumMessageSize);
+  const totalSize = calculateMessageSize(messageBody, messageAttributes);
+  if (totalSize > maxMessageSize) {
     throw new SqsError(
       "InvalidParameterValue",
-      `One or more parameters are invalid. Reason: Message must be shorter than ${SQS_MAX_MESSAGE_SIZE_BYTES} bytes.`,
+      `One or more parameters are invalid. Reason: Message must be shorter than ${maxMessageSize} bytes.`,
     );
   }
-
-  const messageAttributes = (body.MessageAttributes as Record<string, MessageAttributeValue>) ?? {};
 
   if (queue.isFifo()) {
     return sendFifoMessage(body, queue, messageBody, messageAttributes);
@@ -104,7 +106,7 @@ function sendFifoMessage(
   // Check deduplication
   const dedupResult = queue.checkDeduplication(messageDeduplicationId);
   if (dedupResult.isDuplicate) {
-    // Return the original message ID without re-enqueue
+    // Return the original message ID and sequence number without re-enqueue
     const result: Record<string, unknown> = {
       MessageId: dedupResult.originalMessageId,
       MD5OfMessageBody: md5(messageBody),
@@ -113,7 +115,7 @@ function sendFifoMessage(
     if (attrsDigest) {
       result.MD5OfMessageAttributes = attrsDigest;
     }
-    result.SequenceNumber = queue.nextSequenceNumber();
+    result.SequenceNumber = dedupResult.originalSequenceNumber;
     return result;
   }
 
@@ -128,7 +130,7 @@ function sendFifoMessage(
   );
 
   msg.sequenceNumber = queue.nextSequenceNumber();
-  queue.recordDeduplication(messageDeduplicationId, msg.messageId);
+  queue.recordDeduplication(messageDeduplicationId, msg.messageId, msg.sequenceNumber);
   queue.enqueue(msg);
 
   const result: Record<string, unknown> = {

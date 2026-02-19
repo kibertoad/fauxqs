@@ -38,7 +38,7 @@ export interface ReceivedMessage {
 export const DEFAULT_QUEUE_ATTRIBUTES: Record<string, string> = {
   VisibilityTimeout: "30",
   DelaySeconds: "0",
-  MaximumMessageSize: "262144",
+  MaximumMessageSize: "1048576",
   MessageRetentionPeriod: "345600",
   ReceiveMessageWaitTimeSeconds: "0",
 };
@@ -66,6 +66,28 @@ export const SQS_MAX_MESSAGE_SIZE_BYTES = 1_048_576;
 
 // Max message size: 256 KB (262,144 bytes) for SNS
 export const SNS_MAX_MESSAGE_SIZE_BYTES = 262_144;
+
+/**
+ * Calculate total message size including body and all message attributes.
+ * AWS counts: body bytes + for each attribute: name bytes + data type bytes + value bytes.
+ */
+export function calculateMessageSize(
+  body: string,
+  attributes: Record<string, MessageAttributeValue>,
+): number {
+  let size = Buffer.byteLength(body, "utf8");
+  for (const [name, attr] of Object.entries(attributes)) {
+    size += Buffer.byteLength(name, "utf8");
+    size += Buffer.byteLength(attr.DataType, "utf8");
+    if (attr.StringValue !== undefined) {
+      size += Buffer.byteLength(attr.StringValue, "utf8");
+    }
+    if (attr.BinaryValue !== undefined) {
+      size += Buffer.byteLength(attr.BinaryValue, "utf8");
+    }
+  }
+  return size;
+}
 
 export const ALL_ATTRIBUTE_NAMES = [
   "QueueArn",

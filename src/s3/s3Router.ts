@@ -101,6 +101,8 @@ export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
   app.delete("/:bucket/*", async (request, reply) => {
     try {
       if (!getKey(request.params as Record<string, unknown>)) {
+        const bucket = (request.params as Record<string, string>).bucket;
+        store.deleteBucket(bucket);
         reply.status(204).send();
       } else {
         deleteObject(request as any, reply, store);

@@ -3,7 +3,7 @@ import { md5, md5OfMessageAttributes } from "../../common/md5.ts";
 import type { SqsStore } from "../sqsStore.ts";
 import { SqsStore as SqsStoreClass } from "../sqsStore.ts";
 import type { MessageAttributeValue } from "../sqsTypes.ts";
-import { INVALID_MESSAGE_BODY_CHAR, SQS_MAX_MESSAGE_SIZE_BYTES } from "../sqsTypes.ts";
+import { INVALID_MESSAGE_BODY_CHAR, calculateMessageSize } from "../sqsTypes.ts";
 
 interface BatchEntry {
   Id: string;
@@ -77,12 +77,14 @@ export function sendMessageBatch(body: Record<string, unknown>, store: SqsStore)
       continue;
     }
 
-    if (Buffer.byteLength(entry.MessageBody, "utf8") > SQS_MAX_MESSAGE_SIZE_BYTES) {
+    const maxMessageSize = parseInt(queue.attributes.MaximumMessageSize);
+    const totalSize = calculateMessageSize(entry.MessageBody, entry.MessageAttributes ?? {});
+    if (totalSize > maxMessageSize) {
       failed.push({
         Id: entry.Id,
         SenderFault: true,
         Code: "InvalidParameterValue",
-        Message: `One or more parameters are invalid. Reason: Message must be shorter than ${SQS_MAX_MESSAGE_SIZE_BYTES} bytes.`,
+        Message: `One or more parameters are invalid. Reason: Message must be shorter than ${maxMessageSize} bytes.`,
       });
       continue;
     }
@@ -132,7 +134,7 @@ export function sendMessageBatch(body: Record<string, unknown>, store: SqsStore)
           Id: entry.Id,
           MessageId: dedupResult.originalMessageId!,
           MD5OfMessageBody: md5(entry.MessageBody),
-          SequenceNumber: queue.nextSequenceNumber(),
+          SequenceNumber: dedupResult.originalSequenceNumber,
         };
         const attrsDigest = md5OfMessageAttributes(entry.MessageAttributes ?? {});
         if (attrsDigest) {
@@ -152,7 +154,7 @@ export function sendMessageBatch(body: Record<string, unknown>, store: SqsStore)
       );
 
       msg.sequenceNumber = queue.nextSequenceNumber();
-      queue.recordDeduplication(dedupId, msg.messageId);
+      queue.recordDeduplication(dedupId, msg.messageId, msg.sequenceNumber);
       queue.enqueue(msg);
 
       const result: (typeof successful)[number] = {

@@ -30,7 +30,7 @@ export class SqsQueue {
   // FIFO-specific fields
   fifoMessages: Map<string, SqsMessage[]> = new Map();
   fifoDelayed: Map<string, SqsMessage[]> = new Map();
-  deduplicationCache: Map<string, { messageId: string; timestamp: number }> = new Map();
+  deduplicationCache: Map<string, { messageId: string; timestamp: number; sequenceNumber?: string }> = new Map();
   sequenceCounter = 0;
 
   constructor(
@@ -423,9 +423,9 @@ export class SqsQueue {
   purge(): void {
     this.messages = [];
     this.delayedMessages = [];
+    this.inflightMessages.clear();
     this.fifoMessages.clear();
     this.fifoDelayed.clear();
-    // Inflight messages are NOT purged (matches AWS behavior)
   }
 
   cancelWaiters(): void {
@@ -436,7 +436,7 @@ export class SqsQueue {
     this.pollWaiters = [];
   }
 
-  checkDeduplication(dedupId: string): { isDuplicate: boolean; originalMessageId?: string } {
+  checkDeduplication(dedupId: string): { isDuplicate: boolean; originalMessageId?: string; originalSequenceNumber?: string } {
     const now = Date.now();
     // Lazy cleanup of expired entries
     for (const [key, entry] of this.deduplicationCache) {
@@ -447,14 +447,14 @@ export class SqsQueue {
 
     const existing = this.deduplicationCache.get(dedupId);
     if (existing && now - existing.timestamp <= DEDUP_WINDOW_MS) {
-      return { isDuplicate: true, originalMessageId: existing.messageId };
+      return { isDuplicate: true, originalMessageId: existing.messageId, originalSequenceNumber: existing.sequenceNumber };
     }
 
     return { isDuplicate: false };
   }
 
-  recordDeduplication(dedupId: string, messageId: string): void {
-    this.deduplicationCache.set(dedupId, { messageId, timestamp: Date.now() });
+  recordDeduplication(dedupId: string, messageId: string, sequenceNumber?: string): void {
+    this.deduplicationCache.set(dedupId, { messageId, timestamp: Date.now(), sequenceNumber });
   }
 
   nextSequenceNumber(): string {
@@ -530,6 +530,7 @@ export class SqsStore {
   deleteQueue(url: string): boolean {
     const queue = this.queues.get(url);
     if (!queue) return false;
+    queue.cancelWaiters();
     this.queues.delete(url);
     this.queuesByName.delete(queue.name);
     this.queuesByArn.delete(queue.arn);
