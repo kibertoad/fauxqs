@@ -76,6 +76,16 @@ export function putObject(
       hasMetadata ? metadata : srcObj.metadata,
     );
 
+    if (store.spy) {
+      store.spy.addMessage({
+        service: "s3",
+        bucket,
+        key,
+        status: "copied",
+        timestamp: Date.now(),
+      });
+    }
+
     const xml = [
       `<?xml version="1.0" encoding="UTF-8"?>`,
       `<CopyObjectResult>`,

@@ -16,6 +16,7 @@ All state is in-memory. No persistence, no external storage dependencies.
     - [Programmatic state setup](#programmatic-state-setup)
     - [Init config file](#init-config-file)
     - [Init config schema reference](#init-config-schema-reference)
+    - [Message spy](#message-spy)
   - [Configurable queue URL host](#configurable-queue-url-host)
   - [Region](#region)
 - [Supported API Actions](#supported-api-actions)
@@ -400,6 +401,137 @@ Array of bucket name strings.
   "buckets": ["uploads", "exports", "temp"]
 }
 ```
+
+#### Message spy
+
+`MessageSpyReader` lets you await specific events flowing through SQS, SNS, and S3 in your tests — without polling queues yourself. Inspired by `HandlerSpy` from `message-queue-toolkit`.
+
+Enable it with the `messageSpies` option:
+
+```typescript
+const server = await startFauxqs({ port: 0, logger: false, messageSpies: true });
+```
+
+The spy tracks events across all three services using a discriminated union on `service`:
+
+**SQS events** (`service: 'sqs'`):
+- **`published`** — message was enqueued (via SendMessage, SendMessageBatch, or SNS fan-out)
+- **`consumed`** — message was deleted (via DeleteMessage / DeleteMessageBatch)
+- **`dlq`** — message exceeded `maxReceiveCount` and was moved to a dead-letter queue
+
+**SNS events** (`service: 'sns'`):
+- **`published`** — message was published to a topic (before fan-out to SQS subscriptions)
+
+**S3 events** (`service: 's3'`):
+- **`uploaded`** — object was put (PutObject or CompleteMultipartUpload)
+- **`downloaded`** — object was retrieved (GetObject)
+- **`deleted`** — object was deleted (DeleteObject, only when key existed)
+- **`copied`** — object was copied (CopyObject; also emits `uploaded` for the destination)
+
+##### Awaiting messages
+
+```typescript
+// Wait for a specific SQS message (resolves immediately if already in buffer)
+const msg = await server.spy.waitForMessage(
+  (m) => m.service === "sqs" && m.body === "order.created" && m.queueName === "orders",
+  "published",
+);
+
+// Wait by SQS message ID
+const msg = await server.spy.waitForMessageWithId(messageId, "consumed");
+
+// Partial object match (deep-equal on specified fields)
+const msg = await server.spy.waitForMessage({ service: "sqs", queueName: "orders", status: "published" });
+
+// Wait for an SNS publish event
+const msg = await server.spy.waitForMessage({ service: "sns", topicName: "my-topic", status: "published" });
+
+// Wait for an S3 upload event
+const msg = await server.spy.waitForMessage({ service: "s3", bucket: "my-bucket", key: "file.txt", status: "uploaded" });
+```
+
+`waitForMessage` checks the buffer first (retroactive resolution). If no match is found, it returns a Promise that resolves when a matching message arrives.
+
+##### Synchronous check
+
+```typescript
+const msg = server.spy.checkForMessage(
+  (m) => m.service === "sqs" && m.queueName === "my-queue",
+  "published",
+);
+// returns SpyMessage | undefined
+```
+
+##### Buffer management
+
+```typescript
+// Get all tracked messages (oldest to newest)
+const all = server.spy.getAllMessages();
+
+// Clear buffer and reject pending waiters
+server.spy.clear();
+```
+
+The buffer defaults to 100 messages (FIFO eviction). Configure with:
+
+```typescript
+const server = await startFauxqs({
+  messageSpies: { bufferSize: 500 },
+});
+```
+
+##### Types
+
+`server.spy` returns a `MessageSpyReader` — a read-only interface that exposes query and await methods but not internal mutation (e.g. recording new events):
+
+```typescript
+interface MessageSpyReader {
+  waitForMessage(filter: MessageSpyFilter, status?: string): Promise<SpyMessage>;
+  waitForMessageWithId(messageId: string, status?: string): Promise<SpyMessage>;
+  checkForMessage(filter: MessageSpyFilter, status?: string): SpyMessage | undefined;
+  getAllMessages(): SpyMessage[];
+  clear(): void;
+}
+```
+
+`SpyMessage` is a discriminated union:
+
+```typescript
+interface SqsSpyMessage {
+  service: "sqs";
+  queueName: string;
+  messageId: string;
+  body: string;
+  messageAttributes: Record<string, MessageAttributeValue>;
+  status: "published" | "consumed" | "dlq";
+  timestamp: number;
+}
+
+interface SnsSpyMessage {
+  service: "sns";
+  topicArn: string;
+  topicName: string;
+  messageId: string;
+  body: string;
+  messageAttributes: Record<string, MessageAttributeValue>;
+  status: "published";
+  timestamp: number;
+}
+
+interface S3SpyEvent {
+  service: "s3";
+  bucket: string;
+  key: string;
+  status: "uploaded" | "downloaded" | "deleted" | "copied";
+  timestamp: number;
+}
+
+type SpyMessage = SqsSpyMessage | SnsSpyMessage | S3SpyEvent;
+```
+
+##### Spy disabled by default
+
+Accessing `server.spy` when `messageSpies` is not set throws an error. There is no overhead on the message flow when spies are disabled.
 
 ### Configurable queue URL host
 

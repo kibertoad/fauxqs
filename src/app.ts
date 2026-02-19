@@ -39,8 +39,22 @@ import { getCallerIdentity } from "./sts/getCallerIdentity.ts";
 import { sqsQueueArn, snsTopicArn } from "./common/arnHelper.ts";
 import { DEFAULT_REGION } from "./common/types.ts";
 import { loadInitConfig, applyInitConfig } from "./initConfig.ts";
+import { MessageSpy, type MessageSpyReader } from "./spy.ts";
 export type { FauxqsInitConfig } from "./initConfig.ts";
 export { createLocalhostHandler, interceptLocalhostDns } from "./localhost.ts";
+export type {
+  MessageSpyReader,
+  SpyMessage,
+  SqsSpyMessage,
+  SnsSpyMessage,
+  S3SpyEvent,
+  SpyMessageStatus,
+  SqsSpyMessageStatus,
+  SnsSpyMessageStatus,
+  S3SpyEventStatus,
+  MessageSpyFilter,
+  MessageSpyParams,
+} from "./spy.ts";
 
 export interface BuildAppOptions {
   logger?: boolean;
@@ -199,6 +213,7 @@ export function buildApp(options?: BuildAppOptions) {
 export interface FauxqsServer {
   readonly port: number;
   readonly address: string;
+  readonly spy: MessageSpyReader;
   stop(): Promise<void>;
 
   createQueue(
@@ -223,6 +238,8 @@ export async function startFauxqs(options?: {
   defaultRegion?: string;
   /** Path to a JSON init config file, or an inline config object. Resources are created after the server starts. */
   init?: string | import("./initConfig.ts").FauxqsInitConfig;
+  /** Enable message spying. Pass `true` for defaults or `MessageSpyParams` to configure buffer size. */
+  messageSpies?: boolean | import("./spy.ts").MessageSpyParams;
 }): Promise<FauxqsServer> {
   const port = options?.port ?? parseInt(process.env.FAUXQS_PORT ?? "4566");
   const host = options?.host ?? process.env.FAUXQS_HOST;
@@ -234,6 +251,16 @@ export async function startFauxqs(options?: {
   const sqsStore = new SqsStore();
   const snsStore = new SnsStore();
   const s3Store = new S3Store();
+
+  const spyOption = options?.messageSpies;
+  const messageSpy = spyOption
+    ? new MessageSpy(typeof spyOption === "object" ? spyOption : undefined)
+    : undefined;
+  if (messageSpy) {
+    sqsStore.spy = messageSpy;
+    snsStore.spy = messageSpy;
+    s3Store.spy = messageSpy;
+  }
 
   const app = buildApp({
     logger,
@@ -258,6 +285,14 @@ export async function startFauxqs(options?: {
     },
     get address() {
       return listenAddress;
+    },
+    get spy() {
+      if (!messageSpy) {
+        throw new Error(
+          "MessageSpy is not enabled. Pass { messageSpies: true } to startFauxqs() to enable.",
+        );
+      }
+      return messageSpy;
     },
     stop() {
       return app.close();

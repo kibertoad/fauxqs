@@ -41,6 +41,20 @@ export function publish(
   // Parse message attributes
   const messageAttributes = parseMessageAttributes(params);
 
+  // Emit SNS spy event
+  if (snsStore.spy) {
+    snsStore.spy.addMessage({
+      service: "sns",
+      topicArn,
+      topicName: topic.name,
+      messageId,
+      body: message,
+      messageAttributes,
+      status: "published",
+      timestamp: Date.now(),
+    });
+  }
+
   // FIFO topic handling
   const isFifoTopic = topic.attributes.FifoTopic === "true";
   let messageGroupId: string | undefined;
@@ -204,6 +218,20 @@ export function publishBatch(
     }
 
     const messageId = randomUUID();
+
+    // Emit SNS spy event
+    if (snsStore.spy) {
+      snsStore.spy.addMessage({
+        service: "sns",
+        topicArn,
+        topicName: topic.name,
+        messageId,
+        body: entry.message,
+        messageAttributes: entry.messageAttributes,
+        status: "published",
+        timestamp: Date.now(),
+      });
+    }
 
     // Fan out each entry
     for (const subArn of topic.subscriptionArns) {

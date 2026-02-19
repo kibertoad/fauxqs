@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { snsTopicArn, snsSubscriptionArn } from "../common/arnHelper.ts";
 import { SnsError } from "../common/errors.ts";
+import type { MessageSpy } from "../spy.ts";
 import type { SnsTopic, SnsSubscription } from "./snsTypes.ts";
 
 export class SnsStore {
   topics = new Map<string, SnsTopic>();
   subscriptions = new Map<string, SnsSubscription>();
   region?: string;
+  spy?: MessageSpy;
 
   createTopic(
     name: string,

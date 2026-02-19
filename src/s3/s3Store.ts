@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { S3Error } from "../common/errors.ts";
+import type { MessageSpy } from "../spy.ts";
 import type { S3Object, MultipartUpload } from "./s3Types.ts";
 
 export class S3Store {
   private buckets = new Map<string, Map<string, S3Object>>();
   private bucketCreationDates = new Map<string, Date>();
   private multipartUploads = new Map<string, MultipartUpload>();
+  spy?: MessageSpy;
 
   createBucket(name: string): void {
     if (!this.buckets.has(name)) {
@@ -75,6 +77,17 @@ export class S3Store {
     };
 
     objects.set(key, obj);
+
+    if (this.spy) {
+      this.spy.addMessage({
+        service: "s3",
+        bucket,
+        key,
+        status: "uploaded",
+        timestamp: Date.now(),
+      });
+    }
+
     return obj;
   }
 
@@ -89,6 +102,16 @@ export class S3Store {
       throw new S3Error("NoSuchKey", `The specified key does not exist.`, 404, `/${bucket}/${key}`);
     }
 
+    if (this.spy) {
+      this.spy.addMessage({
+        service: "s3",
+        bucket,
+        key,
+        status: "downloaded",
+        timestamp: Date.now(),
+      });
+    }
+
     return obj;
   }
 
@@ -97,6 +120,17 @@ export class S3Store {
     if (!objects) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
     }
+
+    if (this.spy && objects.has(key)) {
+      this.spy.addMessage({
+        service: "s3",
+        bucket,
+        key,
+        status: "deleted",
+        timestamp: Date.now(),
+      });
+    }
+
     objects.delete(key);
   }
 
@@ -303,6 +337,16 @@ export class S3Store {
 
     objects.set(upload.key, obj);
     this.multipartUploads.delete(uploadId);
+
+    if (this.spy) {
+      this.spy.addMessage({
+        service: "s3",
+        bucket: upload.bucket,
+        key: upload.key,
+        status: "uploaded",
+        timestamp: Date.now(),
+      });
+    }
 
     return obj;
   }

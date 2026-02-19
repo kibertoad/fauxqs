@@ -2,6 +2,7 @@ import { randomUUID, createHash } from "node:crypto";
 import type { QueueAttributeName } from "@aws-sdk/client-sqs";
 import { md5, md5OfMessageAttributes } from "../common/md5.ts";
 import { DEFAULT_ACCOUNT_ID } from "../common/types.ts";
+import type { MessageSpy } from "../spy.ts";
 import type {
   SqsMessage,
   InflightEntry,
@@ -28,6 +29,8 @@ export class SqsQueue {
     maxMessages: number;
     timer: ReturnType<typeof setTimeout>;
   }> = [];
+
+  spy?: MessageSpy;
 
   // FIFO-specific fields
   fifoMessages: Map<string, SqsMessage[]> = new Map();
@@ -113,6 +116,18 @@ export class SqsQueue {
   }
 
   enqueue(msg: SqsMessage): void {
+    if (this.spy) {
+      this.spy.addMessage({
+        service: "sqs",
+        queueName: this.name,
+        messageId: msg.messageId,
+        body: msg.body,
+        messageAttributes: msg.messageAttributes,
+        status: "published",
+        timestamp: Date.now(),
+      });
+    }
+
     if (this.isFifo()) {
       const groupId = msg.messageGroupId ?? "__default";
       if (msg.delayUntil && msg.delayUntil > Date.now()) {
@@ -180,6 +195,17 @@ export class SqsQueue {
       if (dlqArn && dlqResolver && msg.approximateReceiveCount > maxReceiveCount) {
         const dlq = dlqResolver(dlqArn);
         if (dlq) {
+          if (this.spy) {
+            this.spy.addMessage({
+              service: "sqs",
+              queueName: this.name,
+              messageId: msg.messageId,
+              body: msg.body,
+              messageAttributes: msg.messageAttributes,
+              status: "dlq",
+              timestamp: Date.now(),
+            });
+          }
           dlq.enqueue(msg);
           continue;
         }
@@ -268,6 +294,17 @@ export class SqsQueue {
         if (dlqArn && dlqResolver && msg.approximateReceiveCount > maxReceiveCount) {
           const dlq = dlqResolver(dlqArn);
           if (dlq) {
+            if (this.spy) {
+              this.spy.addMessage({
+                service: "sqs",
+                queueName: this.name,
+                messageId: msg.messageId,
+                body: msg.body,
+                messageAttributes: msg.messageAttributes,
+                status: "dlq",
+                timestamp: Date.now(),
+              });
+            }
             dlq.enqueue(msg);
             continue;
           }
@@ -314,6 +351,20 @@ export class SqsQueue {
   }
 
   deleteMessage(receiptHandle: string): boolean {
+    if (this.spy) {
+      const entry = this.inflightMessages.get(receiptHandle);
+      if (entry) {
+        this.spy.addMessage({
+          service: "sqs",
+          queueName: this.name,
+          messageId: entry.message.messageId,
+          body: entry.message.body,
+          messageAttributes: entry.message.messageAttributes,
+          status: "consumed",
+          timestamp: Date.now(),
+        });
+      }
+    }
     return this.inflightMessages.delete(receiptHandle);
   }
 
@@ -527,6 +578,7 @@ export class SqsStore {
   private queuesByArn = new Map<string, SqsQueue>();
   host: string = "localhost";
   region?: string;
+  spy?: MessageSpy;
 
   createQueue(
     name: string,
@@ -536,6 +588,9 @@ export class SqsStore {
     tags?: Record<string, string>,
   ): SqsQueue {
     const queue = new SqsQueue(name, url, arn, attributes, tags);
+    if (this.spy) {
+      queue.spy = this.spy;
+    }
     this.queues.set(url, queue);
     this.queuesByName.set(name, queue);
     this.queuesByArn.set(arn, queue);
