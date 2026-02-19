@@ -1,4 +1,4 @@
-import { DEFAULT_ACCOUNT_ID, DEFAULT_REGION } from "./types.js";
+import { DEFAULT_ACCOUNT_ID, DEFAULT_REGION } from "./types.ts";
 
 export function sqsQueueArn(queueName: string, region?: string): string {
   return `arn:aws:sqs:${region ?? DEFAULT_REGION}:${DEFAULT_ACCOUNT_ID}:${queueName}`;

@@ -1,14 +1,14 @@
 import type { FastifyInstance } from "fastify";
-import { S3Error } from "../common/errors.js";
-import type { S3Store } from "./s3Store.js";
-import { createBucket } from "./actions/createBucket.js";
-import { headBucket } from "./actions/headBucket.js";
-import { listObjects } from "./actions/listObjects.js";
-import { deleteObjects } from "./actions/deleteObjects.js";
-import { putObject } from "./actions/putObject.js";
-import { getObject } from "./actions/getObject.js";
-import { deleteObject } from "./actions/deleteObject.js";
-import { headObject } from "./actions/headObject.js";
+import { S3Error } from "../common/errors.ts";
+import type { S3Store } from "./s3Store.ts";
+import { createBucket } from "./actions/createBucket.ts";
+import { headBucket } from "./actions/headBucket.ts";
+import { listObjects } from "./actions/listObjects.ts";
+import { deleteObjects } from "./actions/deleteObjects.ts";
+import { putObject } from "./actions/putObject.ts";
+import { getObject } from "./actions/getObject.ts";
+import { deleteObject } from "./actions/deleteObject.ts";
+import { headObject } from "./actions/headObject.ts";
 
 export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
   const handleError = (err: unknown, reply: import("fastify").FastifyReply, isHead = false) => {

@@ -1,6 +1,6 @@
-import { SnsError } from "../../common/errors.js";
-import { snsSuccessResponse } from "../../common/xml.js";
-import type { SnsStore } from "../snsStore.js";
+import { SnsError } from "../../common/errors.ts";
+import { snsSuccessResponse } from "../../common/xml.ts";
+import type { SnsStore } from "../snsStore.ts";
 
 export function unsubscribe(params: Record<string, string>, snsStore: SnsStore): string {
   const subscriptionArn = params.SubscriptionArn;

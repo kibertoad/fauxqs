@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { S3Error } from "../common/errors.js";
-import type { S3Object } from "./s3Types.js";
+import { S3Error } from "../common/errors.ts";
+import type { S3Object } from "./s3Types.ts";
 
 export class S3Store {
   private buckets = new Map<string, Map<string, S3Object>>();

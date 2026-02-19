@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { DEFAULT_ACCOUNT_ID } from "../common/types.js";
+import { DEFAULT_ACCOUNT_ID } from "../common/types.ts";
 
 const STS_XMLNS = "https://sts.amazonaws.com/doc/2011-06-15/";
 

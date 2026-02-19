@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { snsTopicArn, snsSubscriptionArn } from "../common/arnHelper.js";
-import { SnsError } from "../common/errors.js";
-import type { SnsTopic, SnsSubscription } from "./snsTypes.js";
+import { snsTopicArn, snsSubscriptionArn } from "../common/arnHelper.ts";
+import { SnsError } from "../common/errors.ts";
+import type { SnsTopic, SnsSubscription } from "./snsTypes.ts";
 
 export class SnsStore {
   topics = new Map<string, SnsTopic>();

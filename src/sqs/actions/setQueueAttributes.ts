@@ -1,6 +1,6 @@
-import { SqsError } from "../../common/errors.js";
-import type { SqsStore } from "../sqsStore.js";
-import { SETTABLE_ATTRIBUTES } from "../sqsTypes.js";
+import { SqsError } from "../../common/errors.ts";
+import type { SqsStore } from "../sqsStore.ts";
+import { SETTABLE_ATTRIBUTES } from "../sqsTypes.ts";
 
 export function setQueueAttributes(body: Record<string, unknown>, store: SqsStore): unknown {
   const queueUrl = body.QueueUrl as string | undefined;

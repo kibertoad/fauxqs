@@ -1,7 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { SqsError } from "../common/errors.js";
-import { regionFromAuth } from "../common/types.js";
-import type { SqsStore } from "./sqsStore.js";
+import { SqsError } from "../common/errors.ts";
+import { regionFromAuth } from "../common/types.ts";
+import type { SqsStore } from "./sqsStore.ts";
 
 export type SqsActionHandler = (
   body: Record<string, unknown>,
@@ -11,8 +11,11 @@ export type SqsActionHandler = (
 
 export class SqsRouter {
   private handlers = new Map<string, SqsActionHandler>();
+  private store: SqsStore;
 
-  constructor(private store: SqsStore) {}
+  constructor(store: SqsStore) {
+    this.store = store;
+  }
 
   register(action: string, handler: SqsActionHandler): void {
     this.handlers.set(action, handler);

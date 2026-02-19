@@ -1,6 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { escapeXml } from "../../common/xml.js";
-import type { S3Store } from "../s3Store.js";
+import { escapeXml } from "../../common/xml.ts";
+import type { S3Store } from "../s3Store.ts";
 
 export function deleteObjects(
   request: FastifyRequest<{ Params: { bucket: string } }>,

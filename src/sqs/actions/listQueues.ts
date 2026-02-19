@@ -1,4 +1,4 @@
-import type { SqsStore } from "../sqsStore.js";
+import type { SqsStore } from "../sqsStore.ts";
 
 export function listQueues(body: Record<string, unknown>, store: SqsStore): unknown {
   const prefix = body.QueueNamePrefix as string | undefined;

@@ -1,9 +1,9 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { SnsError } from "../common/errors.js";
-import { regionFromAuth } from "../common/types.js";
-import { snsErrorResponse } from "../common/xml.js";
-import type { SnsStore } from "./snsStore.js";
-import type { SqsStore } from "../sqs/sqsStore.js";
+import { SnsError } from "../common/errors.ts";
+import { regionFromAuth } from "../common/types.ts";
+import { snsErrorResponse } from "../common/xml.ts";
+import type { SnsStore } from "./snsStore.ts";
+import type { SqsStore } from "../sqs/sqsStore.ts";
 
 export type SnsActionHandler = (
   params: Record<string, string>,
@@ -14,11 +14,13 @@ export type SnsActionHandler = (
 
 export class SnsRouter {
   private handlers = new Map<string, SnsActionHandler>();
+  private snsStore: SnsStore;
+  private sqsStore: SqsStore;
 
-  constructor(
-    private snsStore: SnsStore,
-    private sqsStore: SqsStore,
-  ) {}
+  constructor(snsStore: SnsStore, sqsStore: SqsStore) {
+    this.snsStore = snsStore;
+    this.sqsStore = sqsStore;
+  }
 
   register(action: string, handler: SnsActionHandler): void {
     this.handlers.set(action, handler);

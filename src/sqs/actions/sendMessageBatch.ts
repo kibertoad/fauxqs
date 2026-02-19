@@ -1,8 +1,8 @@
-import { SqsError } from "../../common/errors.js";
-import type { SqsStore } from "../sqsStore.js";
-import { SqsStore as SqsStoreClass } from "../sqsStore.js";
-import type { MessageAttributeValue } from "../sqsTypes.js";
-import { INVALID_MESSAGE_BODY_CHAR, SQS_MAX_MESSAGE_SIZE_BYTES } from "../sqsTypes.js";
+import { SqsError } from "../../common/errors.ts";
+import type { SqsStore } from "../sqsStore.ts";
+import { SqsStore as SqsStoreClass } from "../sqsStore.ts";
+import type { MessageAttributeValue } from "../sqsTypes.ts";
+import { INVALID_MESSAGE_BODY_CHAR, SQS_MAX_MESSAGE_SIZE_BYTES } from "../sqsTypes.ts";
 
 interface BatchEntry {
   Id: string;

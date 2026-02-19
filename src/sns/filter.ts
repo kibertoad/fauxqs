@@ -1,4 +1,4 @@
-import type { MessageAttributeValue } from "../sqs/sqsTypes.js";
+import type { MessageAttributeValue } from "../sqs/sqsTypes.ts";
 
 /**
  * Evaluates an SNS filter policy against message attributes.

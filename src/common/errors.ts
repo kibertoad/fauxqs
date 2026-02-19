@@ -1,14 +1,16 @@
-import { escapeXml } from "./xml.js";
+import { escapeXml } from "./xml.ts";
 
 export class SqsError extends Error {
-  constructor(
-    public readonly code: string,
-    message: string,
-    public readonly statusCode: number = 400,
-    public readonly senderFault: boolean = true,
-  ) {
+  readonly code: string;
+  readonly statusCode: number;
+  readonly senderFault: boolean;
+
+  constructor(code: string, message: string, statusCode: number = 400, senderFault: boolean = true) {
     super(message);
     this.name = "SqsError";
+    this.code = code;
+    this.statusCode = statusCode;
+    this.senderFault = senderFault;
   }
 
   toJSON() {
@@ -25,26 +27,30 @@ export class SqsError extends Error {
 }
 
 export class SnsError extends Error {
-  constructor(
-    public readonly code: string,
-    message: string,
-    public readonly statusCode: number = 400,
-    public readonly senderFault: boolean = true,
-  ) {
+  readonly code: string;
+  readonly statusCode: number;
+  readonly senderFault: boolean;
+
+  constructor(code: string, message: string, statusCode: number = 400, senderFault: boolean = true) {
     super(message);
     this.name = "SnsError";
+    this.code = code;
+    this.statusCode = statusCode;
+    this.senderFault = senderFault;
   }
 }
 
 export class S3Error extends Error {
-  constructor(
-    public readonly code: string,
-    message: string,
-    public readonly statusCode: number = 400,
-    public readonly resource?: string,
-  ) {
+  readonly code: string;
+  readonly statusCode: number;
+  readonly resource?: string;
+
+  constructor(code: string, message: string, statusCode: number = 400, resource?: string) {
     super(message);
     this.name = "S3Error";
+    this.code = code;
+    this.statusCode = statusCode;
+    this.resource = resource;
   }
 
   toXml(): string {

@@ -1,5 +1,5 @@
-import { snsSuccessResponse, escapeXml } from "../../common/xml.js";
-import type { SnsStore } from "../snsStore.js";
+import { snsSuccessResponse, escapeXml } from "../../common/xml.ts";
+import type { SnsStore } from "../snsStore.ts";
 
 export function listSubscriptions(_params: Record<string, string>, snsStore: SnsStore): string {
   const subscriptions = snsStore.listSubscriptions();

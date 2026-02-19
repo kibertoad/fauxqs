@@ -1,6 +1,6 @@
-import { SqsError } from "../../common/errors.js";
-import type { SqsStore } from "../sqsStore.js";
-import type { SqsMessage, ReceivedMessage } from "../sqsTypes.js";
+import { SqsError } from "../../common/errors.ts";
+import type { SqsStore } from "../sqsStore.ts";
+import type { SqsMessage, ReceivedMessage } from "../sqsTypes.ts";
 
 export async function receiveMessage(
   body: Record<string, unknown>,

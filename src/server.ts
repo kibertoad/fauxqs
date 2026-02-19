@@ -1,3 +1,3 @@
-import { startFauxqs } from "./app.js";
+import { startFauxqs } from "./app.ts";
 
 startFauxqs({ logger: true });

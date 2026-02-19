@@ -1,5 +1,5 @@
-import { SqsError } from "../../common/errors.js";
-import type { SqsStore } from "../sqsStore.js";
+import { SqsError } from "../../common/errors.ts";
+import type { SqsStore } from "../sqsStore.ts";
 
 interface BatchEntry {
   Id: string;

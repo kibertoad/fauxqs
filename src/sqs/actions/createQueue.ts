@@ -1,9 +1,9 @@
 import type { FastifyRequest } from "fastify";
-import { SqsError } from "../../common/errors.js";
-import { sqsQueueArn } from "../../common/arnHelper.js";
-import { DEFAULT_ACCOUNT_ID, DEFAULT_REGION, regionFromAuth } from "../../common/types.js";
-import type { SqsStore } from "../sqsStore.js";
-import { SETTABLE_ATTRIBUTES } from "../sqsTypes.js";
+import { SqsError } from "../../common/errors.ts";
+import { sqsQueueArn } from "../../common/arnHelper.ts";
+import { DEFAULT_ACCOUNT_ID, DEFAULT_REGION, regionFromAuth } from "../../common/types.ts";
+import type { SqsStore } from "../sqsStore.ts";
+import { SETTABLE_ATTRIBUTES } from "../sqsTypes.ts";
 
 export function createQueue(
   body: Record<string, unknown>,

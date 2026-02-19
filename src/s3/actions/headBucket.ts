@@ -1,6 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { S3Error } from "../../common/errors.js";
-import type { S3Store } from "../s3Store.js";
+import { S3Error } from "../../common/errors.ts";
+import type { S3Store } from "../s3Store.ts";
 
 export function headBucket(
   request: FastifyRequest<{ Params: { bucket: string } }>,

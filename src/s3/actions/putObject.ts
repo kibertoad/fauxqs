@@ -1,5 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import type { S3Store } from "../s3Store.js";
+import type { S3Store } from "../s3Store.ts";
 
 /**
  * Decode AWS chunked transfer encoding.

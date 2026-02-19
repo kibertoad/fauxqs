@@ -1,5 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import type { S3Store } from "../s3Store.js";
+import type { S3Store } from "../s3Store.ts";
 
 export function getObject(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,

@@ -1,5 +1,5 @@
-import { SqsError } from "../../common/errors.js";
-import type { SqsStore } from "../sqsStore.js";
+import { SqsError } from "../../common/errors.ts";
+import type { SqsStore } from "../sqsStore.ts";
 
 export function getQueueUrl(body: Record<string, unknown>, store: SqsStore): unknown {
   const queueName = body.QueueName as string | undefined;

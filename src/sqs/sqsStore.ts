@@ -1,16 +1,19 @@
 import { randomUUID, createHash } from "node:crypto";
-import { md5, md5OfMessageAttributes } from "../common/md5.js";
+import { md5, md5OfMessageAttributes } from "../common/md5.ts";
 import type {
   SqsMessage,
   InflightEntry,
   ReceivedMessage,
   MessageAttributeValue,
-} from "./sqsTypes.js";
-import { DEFAULT_QUEUE_ATTRIBUTES, ALL_ATTRIBUTE_NAMES } from "./sqsTypes.js";
+} from "./sqsTypes.ts";
+import { DEFAULT_QUEUE_ATTRIBUTES, ALL_ATTRIBUTE_NAMES } from "./sqsTypes.ts";
 
 const DEDUP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
 export class SqsQueue {
+  readonly name: string;
+  readonly url: string;
+  readonly arn: string;
   readonly createdTimestamp: number;
   lastModifiedTimestamp: number;
   attributes: Record<string, string>;
@@ -31,12 +34,15 @@ export class SqsQueue {
   sequenceCounter = 0;
 
   constructor(
-    public readonly name: string,
-    public readonly url: string,
-    public readonly arn: string,
+    name: string,
+    url: string,
+    arn: string,
     attributes?: Record<string, string>,
     tags?: Record<string, string>,
   ) {
+    this.name = name;
+    this.url = url;
+    this.arn = arn;
     const now = Math.floor(Date.now() / 1000);
     this.createdTimestamp = now;
     this.lastModifiedTimestamp = now;

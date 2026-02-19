@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { SnsError } from "../../common/errors.js";
-import { snsSuccessResponse } from "../../common/xml.js";
-import type { SnsStore } from "../snsStore.js";
-import type { SqsStore } from "../../sqs/sqsStore.js";
-import { SqsStore as SqsStoreClass } from "../../sqs/sqsStore.js";
-import type { MessageAttributeValue } from "../../sqs/sqsTypes.js";
-import { SNS_MAX_MESSAGE_SIZE_BYTES } from "../../sqs/sqsTypes.js";
-import { matchesFilterPolicy, matchesFilterPolicyOnBody } from "../filter.js";
+import { SnsError } from "../../common/errors.ts";
+import { snsSuccessResponse } from "../../common/xml.ts";
+import type { SnsStore } from "../snsStore.ts";
+import type { SqsStore } from "../../sqs/sqsStore.ts";
+import { SqsStore as SqsStoreClass } from "../../sqs/sqsStore.ts";
+import type { MessageAttributeValue } from "../../sqs/sqsTypes.ts";
+import { SNS_MAX_MESSAGE_SIZE_BYTES } from "../../sqs/sqsTypes.ts";
+import { matchesFilterPolicy, matchesFilterPolicyOnBody } from "../filter.ts";
 
 export function publish(
   params: Record<string, string>,
