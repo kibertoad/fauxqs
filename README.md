@@ -62,6 +62,56 @@ kill %1
 npx cross-port-killer 4566
 ```
 
+### Running in Docker Compose
+
+Use the `node:24-alpine` image with `npx fauxqs` and mount a JSON init config to pre-create resources:
+
+```json
+// scripts/fauxqs/init.json
+{
+  "queues": [
+    {
+      "name": "my-queue.fifo",
+      "attributes": { "FifoQueue": "true", "ContentBasedDeduplication": "true" }
+    },
+    { "name": "my-dlq" }
+  ],
+  "topics": [{ "name": "my-events" }],
+  "subscriptions": [{ "topic": "my-events", "queue": "my-dlq" }],
+  "buckets": ["my-uploads"]
+}
+```
+
+```yaml
+# docker-compose.yml
+services:
+  fauxqs:
+    image: node:24-alpine
+    working_dir: /app
+    command: npx fauxqs
+    ports:
+      - "4566:4566"
+    environment:
+      - FAUXQS_PORT=4566
+      - FAUXQS_INIT=/app/init.json
+      - FAUXQS_LOGGER=false
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:4566/health || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - ./scripts/fauxqs/init.json:/app/init.json
+
+  app:
+    # ...
+    depends_on:
+      fauxqs:
+        condition: service_healthy
+```
+
+Other containers reference fauxqs using the Docker service name (`http://fauxqs:4566`). The init config file creates all queues, topics, subscriptions, and buckets before the healthcheck passes, so dependent services start only after resources are ready.
+
 ### Configuring AWS SDK clients
 
 Point your SDK clients at the local server:
