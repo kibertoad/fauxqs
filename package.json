@@ -1,6 +1,6 @@
 {
   "name": "fauxqs",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "SNS/SQS emulator",
   "type": "module",
   "scripts": {
@@ -60,7 +60,7 @@
   "license": "MIT",
   "author": "Igor Savin",
   "engines": {
-    "node": ">=22"
+    "node": ">=20"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.993.0",
