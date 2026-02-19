@@ -92,6 +92,7 @@ services:
     ports:
       - "4566:4566"
     environment:
+      - FAUXQS_HOST=localhost
       - FAUXQS_INIT=/app/init.json
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:4566/health || exit 1"]
