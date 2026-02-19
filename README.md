@@ -116,7 +116,7 @@ services:
   fauxqs:
     image: node:24-alpine
     working_dir: /app
-    command: npx --yes fauxqs@1.3.3
+    command: npx --yes fauxqs@1.3.5
     ports:
       - "4566:4566"
     environment:
