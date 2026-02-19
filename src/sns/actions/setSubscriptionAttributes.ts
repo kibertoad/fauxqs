@@ -2,6 +2,15 @@ import { SnsError } from "../../common/errors.ts";
 import { snsSuccessResponse } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
 
+const VALID_SUBSCRIPTION_ATTRIBUTES = new Set([
+  "RawMessageDelivery",
+  "FilterPolicy",
+  "FilterPolicyScope",
+  "RedrivePolicy",
+  "DeliveryPolicy",
+  "SubscriptionRoleArn",
+]);
+
 export function setSubscriptionAttributes(
   params: Record<string, string>,
   snsStore: SnsStore,
@@ -20,6 +29,12 @@ export function setSubscriptionAttributes(
   const attributeValue = params.AttributeValue ?? "";
 
   if (attributeName) {
+    if (!VALID_SUBSCRIPTION_ATTRIBUTES.has(attributeName)) {
+      throw new SnsError(
+        "InvalidParameter",
+        `Invalid parameter: AttributeName Reason: Invalid attribute name: ${attributeName}`,
+      );
+    }
     subscription.attributes[attributeName] = attributeValue;
   }
 

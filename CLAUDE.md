@@ -73,11 +73,14 @@ test/
 - **DLQ**: Checked during `dequeue()`. When `approximateReceiveCount > maxReceiveCount`, the message is moved to the DLQ queue (resolved by ARN).
 - **ReceiveMessage attribute merging**: `ReceiveMessage` merges both `AttributeNames` (legacy) and `MessageSystemAttributeNames` (modern) arrays. This is important because sqs-consumer and newer SDKs send `MessageSystemAttributeNames` while also sending an empty `AttributeNames: []`.
 - **SNS→SQS fan-out**: `publish.ts` iterates confirmed SQS subscriptions, evaluates filter policies, and enqueues into the target SQS queue directly (both wrapped envelope and raw delivery).
-- **Filter policies**: Evaluated as a pure function in `filter.ts`. Supports exact match, prefix, suffix, anything-but, numeric ranges, and exists. AND between top-level keys, OR within arrays. Supports both `MessageAttributes` and `MessageBody` scope.
-- **SNS topic idempotency**: `createTopic` in `snsStore.ts` returns the existing topic when called with the same name and matching tags. Throws `SnsError` when tags differ.
+- **Filter policies**: Evaluated as a pure function in `filter.ts`. Supports exact match, prefix, suffix, anything-but (including `prefix` and `suffix` sub-operators), numeric ranges, exists, and `$or` top-level key for OR logic between key groups. AND between top-level keys, OR within arrays. Supports both `MessageAttributes` and `MessageBody` scope (with nested key matching for MessageBody).
+- **SNS topic idempotency**: `createTopic` in `snsStore.ts` returns the existing topic when called with the same name and matching attributes and tags. Throws `SnsError` when attributes or tags differ.
 - **SNS subscription idempotency**: `subscribe` in `snsStore.ts` finds existing subscriptions by (topicArn, protocol, endpoint). Returns the existing subscription when attributes match. Throws `SnsError` when attributes differ.
 - **SubscriptionPrincipal**: `GetSubscriptionAttributes` includes `SubscriptionPrincipal` (`arn:aws:iam::000000000000:user/local`) in the response, matching AWS behavior.
-- **S3 store**: Simple Map-based store. `buckets: Map<string, Map<string, S3Object>>`. CreateBucket is idempotent, DeleteBucket rejects non-empty buckets, DeleteObject silently succeeds for missing keys but returns `NoSuchBucket` for non-existent buckets. ETag is quoted MD5 hex of object body.
+- **SNS subscription attribute validation**: `setSubscriptionAttributes` only allows: `RawMessageDelivery`, `FilterPolicy`, `FilterPolicyScope`, `RedrivePolicy`, `DeliveryPolicy`, `SubscriptionRoleArn`. Invalid attribute names are rejected.
+- **SQS queue attribute validation**: `createQueue` and `setQueueAttributes` validate attribute ranges (VisibilityTimeout 0-43200, DelaySeconds 0-900, ReceiveMessageWaitTimeSeconds 0-20, MaximumMessageSize 1024-1048576, MessageRetentionPeriod 60-1209600). `ReceiveMessage` validates MaxNumberOfMessages 1-10.
+- **SQS batch validation**: `sendMessageBatch` validates entry IDs (alphanumeric/hyphen/underscore only) and rejects batches where total size across all entries exceeds 1 MiB.
+- **S3 store**: Simple Map-based store. `buckets: Map<string, Map<string, S3Object>>`. CreateBucket is idempotent, DeleteBucket rejects non-empty buckets, DeleteObject silently succeeds for missing keys but returns `NoSuchBucket` for non-existent buckets. ETag is quoted MD5 hex of object body. S3Object supports user metadata (`x-amz-meta-*` headers).
 
 ## Protocols
 
@@ -96,7 +99,8 @@ test/
 ### S3 (REST)
 - Uses HTTP method + URL path to determine action
 - `PUT /:bucket` → CreateBucket, `HEAD /:bucket` → HeadBucket, `GET /:bucket` → ListObjects, `DELETE /:bucket` → DeleteBucket
-- `PUT /:bucket/:key` → PutObject, `GET /:bucket/:key` → GetObject, `DELETE /:bucket/:key` → DeleteObject, `HEAD /:bucket/:key` → HeadObject
+- `PUT /:bucket/:key` → PutObject (or CopyObject when `x-amz-copy-source` header is present), `GET /:bucket/:key` → GetObject, `DELETE /:bucket/:key` → DeleteObject, `HEAD /:bucket/:key` → HeadObject
+- `GET /:bucket?list-type=2` → ListObjectsV2 (supports `prefix`, `delimiter`, `max-keys`, `start-after`, `continuation-token`)
 - `POST /:bucket?delete` → DeleteObjects (bulk delete via XML body)
 - XML responses for list/delete/error operations
 - SDK must use `forcePathStyle: true` or a virtual-hosted-style helper (`createLocalhostHandler` / `interceptLocalhostDns`) for local emulators

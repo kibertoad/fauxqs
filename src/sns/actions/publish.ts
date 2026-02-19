@@ -6,7 +6,7 @@ import type { SqsStore } from "../../sqs/sqsStore.ts";
 import { SqsStore as SqsStoreClass } from "../../sqs/sqsStore.ts";
 import type { MessageAttributeValue } from "../../sqs/sqsTypes.ts";
 import { SNS_MAX_MESSAGE_SIZE_BYTES } from "../../sqs/sqsTypes.ts";
-import { matchesFilterPolicy, parseBodyAsAttributes } from "../filter.ts";
+import { matchesFilterPolicy, matchesFilterPolicyOnBody } from "../filter.ts";
 
 export function publish(
   params: Record<string, string>,
@@ -68,10 +68,6 @@ export function publish(
     }
   }
 
-  // Pre-parse body for MessageBody-scoped filter policies (done once, not per subscription)
-  let parsedBodyAttrs: Record<string, MessageAttributeValue> | undefined;
-  let bodyAttrsParsed = false;
-
   // Pre-build envelope template for non-raw subscriptions (stringify once, not per subscription)
   const UNSUB_PLACEHOLDER = "__UNSUB_ARN_PLACEHOLDER__";
   const envelopeTemplate = JSON.stringify({
@@ -102,11 +98,7 @@ export function publish(
         const scope = sub.attributes.FilterPolicyScope ?? "MessageAttributes";
 
         if (scope === "MessageBody") {
-          if (!bodyAttrsParsed) {
-            parsedBodyAttrs = parseBodyAsAttributes(message);
-            bodyAttrsParsed = true;
-          }
-          if (!parsedBodyAttrs || !matchesFilterPolicy(filterPolicy, parsedBodyAttrs)) continue;
+          if (!matchesFilterPolicyOnBody(filterPolicy, message)) continue;
         } else {
           if (!matchesFilterPolicy(filterPolicy, messageAttributes)) continue;
         }
@@ -213,10 +205,6 @@ export function publishBatch(
 
     const messageId = randomUUID();
 
-    // Pre-parse body for MessageBody-scoped filter policies (done once per entry)
-    let parsedBodyAttrs: Record<string, MessageAttributeValue> | undefined;
-    let bodyAttrsParsed = false;
-
     // Fan out each entry
     for (const subArn of topic.subscriptionArns) {
       const sub = snsStore.getSubscription(subArn);
@@ -229,11 +217,7 @@ export function publishBatch(
           const scope = sub.attributes.FilterPolicyScope ?? "MessageAttributes";
 
           if (scope === "MessageBody") {
-            if (!bodyAttrsParsed) {
-              parsedBodyAttrs = parseBodyAsAttributes(entry.message);
-              bodyAttrsParsed = true;
-            }
-            if (!parsedBodyAttrs || !matchesFilterPolicy(filterPolicy, parsedBodyAttrs)) continue;
+            if (!matchesFilterPolicyOnBody(filterPolicy, entry.message)) continue;
           } else {
             if (!matchesFilterPolicy(filterPolicy, entry.messageAttributes)) continue;
           }

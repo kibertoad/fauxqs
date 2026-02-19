@@ -17,6 +17,17 @@ export class SnsStore {
 
     const existing = this.topics.get(arn);
     if (existing) {
+      // Check for attribute conflicts
+      if (attributes) {
+        for (const [key, value] of Object.entries(attributes)) {
+          if (existing.attributes[key] !== value) {
+            throw new SnsError(
+              "InvalidParameter",
+              "Invalid parameter: Attributes Reason: Topic already exists with different attributes",
+            );
+          }
+        }
+      }
       // Check for tag conflicts
       if (tags) {
         const newTags = new Map(Object.entries(tags));

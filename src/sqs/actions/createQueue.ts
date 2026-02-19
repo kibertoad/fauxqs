@@ -3,7 +3,7 @@ import { SqsError } from "../../common/errors.ts";
 import { sqsQueueArn } from "../../common/arnHelper.ts";
 import { DEFAULT_ACCOUNT_ID, DEFAULT_REGION, regionFromAuth } from "../../common/types.ts";
 import type { SqsStore } from "../sqsStore.ts";
-import { SETTABLE_ATTRIBUTES } from "../sqsTypes.ts";
+import { SETTABLE_ATTRIBUTES, validateQueueAttributes } from "../sqsTypes.ts";
 
 export function createQueue(
   body: Record<string, unknown>,
@@ -44,6 +44,9 @@ export function createQueue(
       attributes.FifoThroughputLimit = "perQueue";
     }
   }
+
+  // Validate attribute ranges
+  validateQueueAttributes(attributes, SqsError);
 
   // Check for existing queue with same name
   const existing = store.getQueueByName(queueName);

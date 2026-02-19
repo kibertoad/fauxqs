@@ -2,6 +2,15 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { escapeXml } from "../../common/xml.ts";
 import type { S3Store } from "../s3Store.ts";
 
+function unescapeXml(str: string): string {
+  return str
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
 export function deleteObjects(
   request: FastifyRequest<{ Params: { bucket: string } }>,
   reply: FastifyReply,
@@ -12,12 +21,12 @@ export function deleteObjects(
     ? request.body.toString("utf-8")
     : (request.body as string);
 
-  // Parse <Key> elements from XML body
+  // Parse <Key> elements from XML body with proper entity unescaping
   const keys: string[] = [];
-  const keyRegex = /<Key>([^<]+)<\/Key>/g;
+  const keyRegex = /<Key>([\s\S]*?)<\/Key>/g;
   let match: RegExpExecArray | null;
   while ((match = keyRegex.exec(body)) !== null) {
-    keys.push(match[1]);
+    keys.push(unescapeXml(match[1]));
   }
 
   const deleted = store.deleteObjects(bucket, keys);

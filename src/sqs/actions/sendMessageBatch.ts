@@ -3,7 +3,9 @@ import { md5, md5OfMessageAttributes } from "../../common/md5.ts";
 import type { SqsStore } from "../sqsStore.ts";
 import { SqsStore as SqsStoreClass } from "../sqsStore.ts";
 import type { MessageAttributeValue } from "../sqsTypes.ts";
-import { INVALID_MESSAGE_BODY_CHAR, calculateMessageSize } from "../sqsTypes.ts";
+import { INVALID_MESSAGE_BODY_CHAR, SQS_MAX_MESSAGE_SIZE_BYTES, calculateMessageSize } from "../sqsTypes.ts";
+
+const VALID_BATCH_ENTRY_ID = /^[a-zA-Z0-9_-]+$/;
 
 interface BatchEntry {
   Id: string;
@@ -36,9 +38,15 @@ export function sendMessageBatch(body: Record<string, unknown>, store: SqsStore)
     );
   }
 
-  // Check for duplicate IDs
+  // Check for duplicate IDs and validate entry IDs
   const ids = new Set<string>();
   for (const entry of entries) {
+    if (!VALID_BATCH_ENTRY_ID.test(entry.Id)) {
+      throw new SqsError(
+        "InvalidBatchEntryId",
+        `A batch entry id can only contain alphanumeric characters, hyphens and underscores. It can be at most 80 chars long.`,
+      );
+    }
     if (ids.has(entry.Id)) {
       throw new SqsError(
         "BatchEntryIdsNotDistinct",
@@ -46,6 +54,18 @@ export function sendMessageBatch(body: Record<string, unknown>, store: SqsStore)
       );
     }
     ids.add(entry.Id);
+  }
+
+  // Check total batch size across all entries
+  let totalBatchSize = 0;
+  for (const entry of entries) {
+    totalBatchSize += calculateMessageSize(entry.MessageBody, entry.MessageAttributes ?? {});
+  }
+  if (totalBatchSize > SQS_MAX_MESSAGE_SIZE_BYTES) {
+    throw new SqsError(
+      "BatchRequestTooLong",
+      `Batch requests cannot be longer than ${SQS_MAX_MESSAGE_SIZE_BYTES} bytes.`,
+    );
   }
 
   const isFifo = queue.isFifo();

@@ -89,6 +89,35 @@ export function calculateMessageSize(
   return size;
 }
 
+/**
+ * Validates SQS queue attribute values are within AWS-specified ranges.
+ * Throws SqsError for out-of-range values.
+ */
+export function validateQueueAttributes(
+  attributes: Record<string, string>,
+  SqsError: new (code: string, message: string, statusCode?: number) => Error,
+): void {
+  const ranges: Record<string, { min: number; max: number }> = {
+    VisibilityTimeout: { min: 0, max: 43_200 },
+    DelaySeconds: { min: 0, max: 900 },
+    ReceiveMessageWaitTimeSeconds: { min: 0, max: 20 },
+    MaximumMessageSize: { min: 1_024, max: 1_048_576 },
+    MessageRetentionPeriod: { min: 60, max: 1_209_600 },
+  };
+
+  for (const [attr, range] of Object.entries(ranges)) {
+    if (attr in attributes) {
+      const value = Number(attributes[attr]);
+      if (!Number.isInteger(value) || value < range.min || value > range.max) {
+        throw new SqsError(
+          "InvalidAttributeValue",
+          `Invalid value for the parameter ${attr}. Reason: Must be between ${range.min} and ${range.max}.`,
+        );
+      }
+    }
+  }
+}
+
 export const ALL_ATTRIBUTE_NAMES = [
   "QueueArn",
   "VisibilityTimeout",

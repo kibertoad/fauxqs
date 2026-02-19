@@ -8,9 +8,39 @@ export function listObjects(
   store: S3Store,
 ): void {
   const bucket = request.params.bucket;
-  const objects = store.listObjects(bucket);
+  const query = (request.query ?? {}) as Record<string, string>;
 
-  const contents = objects
+  const listType = query["list-type"];
+  const prefix = query["prefix"] ?? "";
+  const delimiter = query["delimiter"];
+  const maxKeysStr = query["max-keys"];
+  const maxKeys = maxKeysStr ? parseInt(maxKeysStr, 10) : 1000;
+
+  if (listType === "2") {
+    listObjectsV2(bucket, prefix, delimiter, maxKeys, query, reply, store);
+  } else {
+    listObjectsV1(bucket, prefix, delimiter, maxKeys, query, reply, store);
+  }
+}
+
+function listObjectsV1(
+  bucket: string,
+  prefix: string,
+  delimiter: string | undefined,
+  maxKeys: number,
+  query: Record<string, string>,
+  reply: FastifyReply,
+  store: S3Store,
+): void {
+  const marker = query["marker"] ?? "";
+  const { objects, commonPrefixes, isTruncated } = store.listObjects(bucket, {
+    prefix,
+    delimiter,
+    maxKeys,
+    marker,
+  });
+
+  const contentsXml = objects
     .map(
       (obj) =>
         `<Contents>` +
@@ -18,21 +48,109 @@ export function listObjects(
         `<Size>${obj.contentLength}</Size>` +
         `<ETag>${escapeXml(obj.etag)}</ETag>` +
         `<LastModified>${obj.lastModified.toISOString()}</LastModified>` +
+        `<StorageClass>STANDARD</StorageClass>` +
         `</Contents>`,
     )
     .join("\n    ");
 
-  const xml = [
+  const commonPrefixesXml = commonPrefixes
+    .map((p) => `<CommonPrefixes><Prefix>${escapeXml(p)}</Prefix></CommonPrefixes>`)
+    .join("\n    ");
+
+  const nextMarker = isTruncated && objects.length > 0 ? objects[objects.length - 1].key : "";
+
+  const parts = [
     `<?xml version="1.0" encoding="UTF-8"?>`,
     `<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`,
     `  <Name>${escapeXml(bucket)}</Name>`,
-    `  <IsTruncated>false</IsTruncated>`,
-    contents ? `  ${contents}` : "",
-    `</ListBucketResult>`,
-  ]
-    .filter(Boolean)
-    .join("\n");
+    `  <Prefix>${escapeXml(prefix)}</Prefix>`,
+    `  <Marker>${escapeXml(marker)}</Marker>`,
+    `  <MaxKeys>${maxKeys}</MaxKeys>`,
+    `  <IsTruncated>${isTruncated}</IsTruncated>`,
+  ];
+  if (isTruncated && nextMarker) {
+    parts.push(`  <NextMarker>${escapeXml(nextMarker)}</NextMarker>`);
+  }
+  if (delimiter) {
+    parts.push(`  <Delimiter>${escapeXml(delimiter)}</Delimiter>`);
+  }
+  if (contentsXml) parts.push(`  ${contentsXml}`);
+  if (commonPrefixesXml) parts.push(`  ${commonPrefixesXml}`);
+  parts.push(`</ListBucketResult>`);
 
   reply.header("content-type", "application/xml");
-  reply.status(200).send(xml);
+  reply.status(200).send(parts.join("\n"));
+}
+
+function listObjectsV2(
+  bucket: string,
+  prefix: string,
+  delimiter: string | undefined,
+  maxKeys: number,
+  query: Record<string, string>,
+  reply: FastifyReply,
+  store: S3Store,
+): void {
+  const startAfter = query["start-after"] ?? "";
+  const continuationToken = query["continuation-token"];
+  // Use continuation-token as the start-after if provided (it encodes the last key)
+  const effectiveStartAfter = continuationToken
+    ? Buffer.from(continuationToken, "base64").toString("utf-8")
+    : startAfter;
+
+  const { objects, commonPrefixes, isTruncated } = store.listObjects(bucket, {
+    prefix,
+    delimiter,
+    maxKeys,
+    startAfter: effectiveStartAfter,
+  });
+
+  const keyCount = objects.length + commonPrefixes.length;
+
+  const contentsXml = objects
+    .map(
+      (obj) =>
+        `<Contents>` +
+        `<Key>${escapeXml(obj.key)}</Key>` +
+        `<Size>${obj.contentLength}</Size>` +
+        `<ETag>${escapeXml(obj.etag)}</ETag>` +
+        `<LastModified>${obj.lastModified.toISOString()}</LastModified>` +
+        `<StorageClass>STANDARD</StorageClass>` +
+        `</Contents>`,
+    )
+    .join("\n    ");
+
+  const commonPrefixesXml = commonPrefixes
+    .map((p) => `<CommonPrefixes><Prefix>${escapeXml(p)}</Prefix></CommonPrefixes>`)
+    .join("\n    ");
+
+  const parts = [
+    `<?xml version="1.0" encoding="UTF-8"?>`,
+    `<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`,
+    `  <Name>${escapeXml(bucket)}</Name>`,
+    `  <Prefix>${escapeXml(prefix)}</Prefix>`,
+    `  <KeyCount>${keyCount}</KeyCount>`,
+    `  <MaxKeys>${maxKeys}</MaxKeys>`,
+    `  <IsTruncated>${isTruncated}</IsTruncated>`,
+  ];
+  if (startAfter) {
+    parts.push(`  <StartAfter>${escapeXml(startAfter)}</StartAfter>`);
+  }
+  if (continuationToken) {
+    parts.push(`  <ContinuationToken>${escapeXml(continuationToken)}</ContinuationToken>`);
+  }
+  if (isTruncated && objects.length > 0) {
+    const lastKey = objects[objects.length - 1].key;
+    const nextToken = Buffer.from(lastKey, "utf-8").toString("base64");
+    parts.push(`  <NextContinuationToken>${escapeXml(nextToken)}</NextContinuationToken>`);
+  }
+  if (delimiter) {
+    parts.push(`  <Delimiter>${escapeXml(delimiter)}</Delimiter>`);
+  }
+  if (contentsXml) parts.push(`  ${contentsXml}`);
+  if (commonPrefixesXml) parts.push(`  ${commonPrefixesXml}`);
+  parts.push(`</ListBucketResult>`);
+
+  reply.header("content-type", "application/xml");
+  reply.status(200).send(parts.join("\n"));
 }

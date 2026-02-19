@@ -15,5 +15,8 @@ export function headObject(
   reply.header("content-length", obj.contentLength);
   reply.header("etag", obj.etag);
   reply.header("last-modified", obj.lastModified.toUTCString());
+  for (const [metaKey, metaValue] of Object.entries(obj.metadata)) {
+    reply.header(`x-amz-meta-${metaKey}`, metaValue);
+  }
   reply.status(200).send();
 }

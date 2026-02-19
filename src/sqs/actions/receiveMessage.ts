@@ -17,6 +17,12 @@ export async function receiveMessage(
   }
 
   const maxNumberOfMessages = (body.MaxNumberOfMessages as number) ?? 1;
+  if (maxNumberOfMessages < 1 || maxNumberOfMessages > 10) {
+    throw new SqsError(
+      "InvalidParameterValue",
+      "Value for parameter MaxNumberOfMessages is invalid. Reason: Must be between 1 and 10.",
+    );
+  }
   const visibilityTimeout = body.VisibilityTimeout as number | undefined;
   const waitTimeSeconds =
     (body.WaitTimeSeconds as number) ?? parseInt(queue.attributes.ReceiveMessageWaitTimeSeconds);

@@ -5,4 +5,5 @@ export interface S3Object {
   contentLength: number;
   etag: string;
   lastModified: Date;
+  metadata: Record<string, string>;
 }

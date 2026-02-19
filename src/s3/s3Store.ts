@@ -26,7 +26,7 @@ export class S3Store {
     return this.buckets.has(name);
   }
 
-  putObject(bucket: string, key: string, body: Buffer, contentType?: string): S3Object {
+  putObject(bucket: string, key: string, body: Buffer, contentType?: string, metadata?: Record<string, string>): S3Object {
     const objects = this.buckets.get(bucket);
     if (!objects) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
@@ -40,6 +40,7 @@ export class S3Store {
       contentLength: body.length,
       etag,
       lastModified: new Date(),
+      metadata: metadata ?? {},
     };
 
     objects.set(key, obj);
@@ -72,12 +73,63 @@ export class S3Store {
     return this.getObject(bucket, key);
   }
 
-  listObjects(bucket: string): S3Object[] {
-    const objects = this.buckets.get(bucket);
-    if (!objects) {
+  listObjects(
+    bucket: string,
+    options?: { prefix?: string; delimiter?: string; maxKeys?: number; startAfter?: string; marker?: string },
+  ): { objects: S3Object[]; commonPrefixes: string[]; isTruncated: boolean } {
+    const objectsMap = this.buckets.get(bucket);
+    if (!objectsMap) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
     }
-    return Array.from(objects.values());
+
+    const prefix = options?.prefix ?? "";
+    const delimiter = options?.delimiter;
+    const maxKeys = options?.maxKeys ?? 1000;
+    const startAfter = options?.startAfter ?? options?.marker ?? "";
+
+    // Get all keys sorted lexicographically
+    const allObjects = Array.from(objectsMap.values())
+      .filter((obj) => obj.key.startsWith(prefix))
+      .sort((a, b) => a.key.localeCompare(b.key));
+
+    const result: S3Object[] = [];
+    const commonPrefixSet = new Set<string>();
+    let count = 0;
+    let isTruncated = false;
+
+    for (const obj of allObjects) {
+      if (startAfter && obj.key <= startAfter) continue;
+
+      if (delimiter) {
+        const rest = obj.key.slice(prefix.length);
+        const delimIdx = rest.indexOf(delimiter);
+        if (delimIdx >= 0) {
+          const commonPrefix = prefix + rest.slice(0, delimIdx + delimiter.length);
+          if (!commonPrefixSet.has(commonPrefix)) {
+            if (count >= maxKeys) {
+              isTruncated = true;
+              break;
+            }
+            commonPrefixSet.add(commonPrefix);
+            count++;
+          }
+          continue;
+        }
+      }
+
+      if (count >= maxKeys) {
+        isTruncated = true;
+        break;
+      }
+      result.push(obj);
+      count++;
+    }
+
+    return {
+      objects: result,
+      commonPrefixes: Array.from(commonPrefixSet).sort(),
+      isTruncated,
+    };
   }
 
   deleteObjects(bucket: string, keys: string[]): string[] {

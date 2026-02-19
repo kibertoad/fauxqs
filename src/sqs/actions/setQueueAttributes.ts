@@ -1,6 +1,6 @@
 import { SqsError } from "../../common/errors.ts";
 import type { SqsStore } from "../sqsStore.ts";
-import { SETTABLE_ATTRIBUTES } from "../sqsTypes.ts";
+import { SETTABLE_ATTRIBUTES, validateQueueAttributes } from "../sqsTypes.ts";
 
 export function setQueueAttributes(body: Record<string, unknown>, store: SqsStore): unknown {
   const queueUrl = body.QueueUrl as string | undefined;
@@ -20,6 +20,9 @@ export function setQueueAttributes(body: Record<string, unknown>, store: SqsStor
       throw new SqsError("InvalidAttributeName", `Unknown attribute: ${key}`);
     }
   }
+
+  // Validate attribute ranges
+  validateQueueAttributes(attributes, SqsError);
 
   // FifoQueue cannot be changed after creation
   if (attributes.FifoQueue !== undefined && attributes.FifoQueue !== queue.attributes.FifoQueue) {
