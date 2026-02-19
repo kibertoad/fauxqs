@@ -30,8 +30,9 @@ All state is in-memory. No persistence.
 
 ```
 src/
-  app.ts                     # Fastify app setup, content-type routing, handler registration
+  app.ts                     # Fastify app setup, content-type routing, handler registration, FauxqsServer API
   server.ts                  # Entry point (listen on port 3000)
+  initConfig.ts              # FauxqsInitConfig type, loadInitConfig(), applyInitConfig()
   common/
     types.ts                 # Constants: DEFAULT_ACCOUNT_ID, DEFAULT_REGION
     errors.ts                # SqsError, SnsError, S3Error classes
@@ -82,6 +83,10 @@ test/
 - **SQS batch validation**: `sendMessageBatch` validates entry IDs (alphanumeric/hyphen/underscore only) and rejects batches where total size across all entries exceeds 1 MiB.
 - **S3 store**: Map-based store. `buckets: Map<string, Map<string, S3Object>>` for objects, `bucketCreationDates: Map<string, Date>` for ListBuckets, `multipartUploads: Map<string, MultipartUpload>` for in-progress multipart uploads. CreateBucket is idempotent, DeleteBucket rejects non-empty buckets (including those with active multipart uploads), DeleteObject silently succeeds for missing keys but returns `NoSuchBucket` for non-existent buckets. ETag is quoted MD5 hex of object body. Multipart ETag is `"MD5-of-concatenated-part-digests-partCount"`. S3Object supports user metadata (`x-amz-meta-*` headers).
 - **Multipart upload routing**: The S3 router differentiates multipart operations from regular operations using query parameters: `?uploads` for CreateMultipartUpload, `?uploadId=&partNumber=` for UploadPart, `?uploadId=` on POST for CompleteMultipartUpload, `?uploadId=` on DELETE for AbortMultipartUpload.
+- **Env vars**: `startFauxqs` reads `FAUXQS_PORT`, `FAUXQS_HOST`, `FAUXQS_DEFAULT_REGION`, `FAUXQS_LOGGER`, and `FAUXQS_INIT` as fallbacks. Programmatic options take precedence over env vars.
+- **Init config**: `FAUXQS_INIT` (or the `init` option) points to a JSON file (or inline object) that pre-creates queues, topics, subscriptions, and buckets on startup. Resources are created in dependency order: queues first, then topics, then subscriptions, then buckets.
+- **Programmatic API**: `FauxqsServer` exposes `createQueue()`, `createTopic()`, `subscribe()`, `createBucket()`, `setup()`, and `purgeAll()` for state management without going through the SDK. `buildApp` accepts an optional `stores` parameter to use pre-created store instances.
+- **Store purgeAll**: Each store class (`SqsStore`, `SnsStore`, `S3Store`) has a `purgeAll()` method that clears all state. `SqsStore.purgeAll()` also cancels active poll waiters.
 
 ## Protocols
 

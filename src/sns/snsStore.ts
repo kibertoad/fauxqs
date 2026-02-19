@@ -160,4 +160,9 @@ export class SnsStore {
       .map((arn) => this.subscriptions.get(arn))
       .filter((s): s is SnsSubscription => s !== undefined);
   }
+
+  purgeAll(): void {
+    this.topics.clear();
+    this.subscriptions.clear();
+  }
 }

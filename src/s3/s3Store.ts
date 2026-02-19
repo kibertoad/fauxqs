@@ -319,4 +319,10 @@ export class S3Store {
 
     this.multipartUploads.delete(uploadId);
   }
+
+  purgeAll(): void {
+    this.buckets.clear();
+    this.bucketCreationDates.clear();
+    this.multipartUploads.clear();
+  }
 }

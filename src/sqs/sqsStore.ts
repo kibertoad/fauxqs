@@ -583,6 +583,13 @@ export class SqsStore {
     }
   }
 
+  purgeAll(): void {
+    this.shutdown();
+    this.queues.clear();
+    this.queuesByName.clear();
+    this.queuesByArn.clear();
+  }
+
   static createMessage(
     body: string,
     messageAttributes: Record<string, MessageAttributeValue> = {},

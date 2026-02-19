@@ -36,9 +36,20 @@ import { tagResource, untagResource, listTagsForResource } from "./sns/actions/t
 import { S3Store } from "./s3/s3Store.ts";
 import { registerS3Routes } from "./s3/s3Router.ts";
 import { getCallerIdentity } from "./sts/getCallerIdentity.ts";
+import { sqsQueueArn, snsTopicArn } from "./common/arnHelper.ts";
+import { DEFAULT_ACCOUNT_ID, DEFAULT_REGION } from "./common/types.ts";
+import { loadInitConfig, applyInitConfig } from "./initConfig.ts";
+export type { FauxqsInitConfig } from "./initConfig.ts";
 export { createLocalhostHandler, interceptLocalhostDns } from "./localhost.ts";
 
-export function buildApp(options?: { logger?: boolean; host?: string; defaultRegion?: string }) {
+export interface BuildAppOptions {
+  logger?: boolean;
+  host?: string;
+  defaultRegion?: string;
+  stores?: { sqsStore: SqsStore; snsStore: SnsStore; s3Store: S3Store };
+}
+
+export function buildApp(options?: BuildAppOptions) {
   const app = Fastify({
     logger: options?.logger ?? true,
     bodyLimit: 2 * 1_048_576, // 2 MiB — allow our handlers to validate message size
@@ -58,14 +69,14 @@ export function buildApp(options?: { logger?: boolean; host?: string; defaultReg
     },
   });
 
-  const sqsStore = new SqsStore();
+  const sqsStore = options?.stores?.sqsStore ?? new SqsStore();
   if (options?.host) {
     sqsStore.host = options.host;
   }
   if (options?.defaultRegion) {
     sqsStore.region = options.defaultRegion;
   }
-  const snsStore = new SnsStore();
+  const snsStore = options?.stores?.snsStore ?? new SnsStore();
   if (options?.defaultRegion) {
     snsStore.region = options.defaultRegion;
   }
@@ -143,7 +154,7 @@ export function buildApp(options?: { logger?: boolean; host?: string; defaultReg
     done(null, body);
   });
 
-  const s3Store = new S3Store();
+  const s3Store = options?.stores?.s3Store ?? new S3Store();
   registerS3Routes(app, s3Store);
 
   app.addHook("preClose", () => {
@@ -181,6 +192,19 @@ export interface FauxqsServer {
   readonly port: number;
   readonly address: string;
   stop(): Promise<void>;
+
+  createQueue(
+    name: string,
+    options?: { attributes?: Record<string, string>; tags?: Record<string, string> },
+  ): void;
+  createTopic(
+    name: string,
+    options?: { attributes?: Record<string, string>; tags?: Record<string, string> },
+  ): void;
+  subscribe(options: { topic: string; queue: string; attributes?: Record<string, string> }): void;
+  createBucket(name: string): void;
+  setup(config: import("./initConfig.ts").FauxqsInitConfig): void;
+  purgeAll(): void;
 }
 
 export async function startFauxqs(options?: {
@@ -189,19 +213,42 @@ export async function startFauxqs(options?: {
   host?: string;
   /** Fallback region used only when the region cannot be resolved from request Authorization headers. Defaults to "us-east-1". */
   defaultRegion?: string;
+  /** Path to a JSON init config file, or an inline config object. Resources are created after the server starts. */
+  init?: string | import("./initConfig.ts").FauxqsInitConfig;
 }): Promise<FauxqsServer> {
   const port = options?.port ?? parseInt(process.env.FAUXQS_PORT ?? "4566");
+  const host = options?.host ?? process.env.FAUXQS_HOST;
+  const defaultRegion = options?.defaultRegion ?? process.env.FAUXQS_DEFAULT_REGION;
+  const loggerEnv = process.env.FAUXQS_LOGGER;
+  const logger = options?.logger ?? (loggerEnv !== undefined ? loggerEnv !== "false" : true);
+  const init = options?.init ?? process.env.FAUXQS_INIT;
+
+  const sqsStore = new SqsStore();
+  const snsStore = new SnsStore();
+  const s3Store = new S3Store();
+
   const app = buildApp({
-    logger: options?.logger ?? true,
-    host: options?.host,
-    defaultRegion: options?.defaultRegion,
+    logger,
+    host,
+    defaultRegion,
+    stores: { sqsStore, snsStore, s3Store },
   });
+
   const listenAddress = await app.listen({ port, host: "127.0.0.1" });
   const url = new URL(listenAddress);
+  const actualPort = parseInt(url.port);
+  const region = defaultRegion ?? DEFAULT_REGION;
 
-  return {
+  function makeQueueUrl(name: string): string {
+    if (host) {
+      return `http://sqs.${region}.${host}:${actualPort}/${DEFAULT_ACCOUNT_ID}/${name}`;
+    }
+    return `http://127.0.0.1:${actualPort}/${DEFAULT_ACCOUNT_ID}/${name}`;
+  }
+
+  const server: FauxqsServer = {
     get port() {
-      return parseInt(url.port);
+      return actualPort;
     },
     get address() {
       return listenAddress;
@@ -209,5 +256,41 @@ export async function startFauxqs(options?: {
     stop() {
       return app.close();
     },
+    createQueue(name, opts) {
+      const arn = sqsQueueArn(name, region);
+      const queueUrl = makeQueueUrl(name);
+      sqsStore.createQueue(name, queueUrl, arn, opts?.attributes, opts?.tags);
+    },
+    createTopic(name, opts) {
+      snsStore.createTopic(name, opts?.attributes, opts?.tags);
+    },
+    subscribe(opts) {
+      const topicArn = snsTopicArn(opts.topic, region);
+      const queueArn = sqsQueueArn(opts.queue, region);
+      snsStore.subscribe(topicArn, "sqs", queueArn, opts.attributes);
+    },
+    createBucket(name) {
+      s3Store.createBucket(name);
+    },
+    setup(config) {
+      applyInitConfig(config, sqsStore, snsStore, s3Store, {
+        host,
+        port: actualPort,
+        region,
+      });
+    },
+    purgeAll() {
+      sqsStore.purgeAll();
+      snsStore.purgeAll();
+      s3Store.purgeAll();
+    },
   };
+
+  // Apply init config if provided
+  if (init) {
+    const config = typeof init === "string" ? loadInitConfig(init) : init;
+    server.setup(config);
+  }
+
+  return server;
 }

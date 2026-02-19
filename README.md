@@ -20,10 +20,18 @@ npx fauxqs
 
 The server starts on port `4566` and handles SQS, SNS, and S3 on a single endpoint.
 
-Override the port with the `FAUXQS_PORT` environment variable:
+#### Environment variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `FAUXQS_PORT` | Port to listen on | `4566` |
+| `FAUXQS_HOST` | Host for queue URLs (enables `sqs.<region>.<host>` format) | (none) |
+| `FAUXQS_DEFAULT_REGION` | Fallback region for ARNs and URLs | `us-east-1` |
+| `FAUXQS_LOGGER` | Enable request logging (`true`/`false`) | `true` |
+| `FAUXQS_INIT` | Path to a JSON init config file (see [Init config file](#init-config-file)) | (none) |
 
 ```bash
-FAUXQS_PORT=3000 npx fauxqs
+FAUXQS_PORT=3000 FAUXQS_INIT=init.json npx fauxqs
 ```
 
 A health check is available at `GET /health`.
@@ -62,6 +70,7 @@ Point your SDK clients at the local server:
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { SNSClient } from "@aws-sdk/client-sns";
 import { S3Client } from "@aws-sdk/client-s3";
+import { createLocalhostHandler } from "fauxqs";
 
 const sqsClient = new SQSClient({
   endpoint: "http://localhost:4566",
@@ -76,10 +85,10 @@ const snsClient = new SNSClient({
 });
 
 const s3Client = new S3Client({
-  endpoint: "http://localhost:4566",
+  endpoint: "http://s3.localhost:4566",
   region: "us-east-1",
   credentials: { accessKeyId: "test", secretAccessKey: "test" },
-  forcePathStyle: true,
+  requestHandler: createLocalhostHandler(),
 });
 ```
 
@@ -104,6 +113,76 @@ await server.stop();
 ```
 
 Pass `port: 0` to let the OS assign a random available port (useful in tests).
+
+#### Programmatic state setup
+
+The server object exposes methods for pre-creating resources without going through the SDK:
+
+```typescript
+const server = await startFauxqs({ port: 0, logger: false });
+
+// Create individual resources
+server.createQueue("my-queue");
+server.createQueue("my-dlq", {
+  attributes: { VisibilityTimeout: "60" },
+  tags: { env: "test" },
+});
+server.createTopic("my-topic");
+server.subscribe({ topic: "my-topic", queue: "my-queue" });
+server.createBucket("my-bucket");
+
+// Or create everything at once
+server.setup({
+  queues: [
+    { name: "orders" },
+    { name: "notifications", attributes: { DelaySeconds: "5" } },
+  ],
+  topics: [{ name: "events" }],
+  subscriptions: [
+    { topic: "events", queue: "orders" },
+    { topic: "events", queue: "notifications" },
+  ],
+  buckets: ["uploads", "exports"],
+});
+
+// Reset all state between tests
+server.purgeAll();
+```
+
+#### Init config file
+
+Create a JSON file to pre-create resources on startup:
+
+```json
+{
+  "queues": [
+    { "name": "orders" },
+    { "name": "orders-dlq" },
+    { "name": "orders.fifo", "attributes": { "FifoQueue": "true", "ContentBasedDeduplication": "true" } }
+  ],
+  "topics": [
+    { "name": "events" }
+  ],
+  "subscriptions": [
+    { "topic": "events", "queue": "orders" }
+  ],
+  "buckets": ["uploads", "exports"]
+}
+```
+
+Pass it via the `FAUXQS_INIT` environment variable or the `init` option:
+
+```bash
+FAUXQS_INIT=init.json npx fauxqs
+```
+
+```typescript
+const server = await startFauxqs({ init: "init.json" });
+// or inline:
+const server = await startFauxqs({
+  init: { queues: [{ name: "my-queue" }], buckets: ["my-bucket"] },
+});
+```
 
 ### Configurable queue URL host
 
@@ -271,25 +350,11 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 
 ### S3 URL styles
 
-**Path-style** (recommended for local development):
+The AWS SDK sends S3 requests using virtual-hosted-style URLs by default (e.g., `my-bucket.s3.localhost:4566`). This requires `*.localhost` to resolve to `127.0.0.1`. fauxqs provides helpers for this, plus a simple fallback.
 
-```typescript
-const s3 = new S3Client({
-  endpoint: "http://localhost:4566",
-  forcePathStyle: true,
-  // ...
-});
-```
+#### Option 1: `createLocalhostHandler()` (recommended)
 
-**Virtual-hosted-style** (bucket name in `Host` header):
-
-The server automatically extracts the bucket name from the `Host` header when it contains subdomains (e.g., `my-bucket.s3.localhost:4566`). This is useful for compatibility with libraries that don't set `forcePathStyle: true`.
-
-Virtual-hosted-style requires `*.localhost` to resolve to `127.0.0.1`. fauxqs provides two helpers for this — pick whichever fits your use case:
-
-#### Option 1: `createLocalhostHandler()` (per-client, no side effects)
-
-Creates an HTTP request handler that resolves all hostnames to `127.0.0.1`. Scoped to a single client instance.
+Creates an HTTP request handler that resolves all hostnames to `127.0.0.1`. Scoped to a single client instance — no side effects.
 
 ```typescript
 import { S3Client } from "@aws-sdk/client-s3";
@@ -300,13 +365,10 @@ const s3 = new S3Client({
   region: "us-east-1",
   credentials: { accessKeyId: "test", secretAccessKey: "test" },
   requestHandler: createLocalhostHandler(),
-  // no forcePathStyle needed
 });
 ```
 
-**Tradeoffs:** Requires one extra option (`requestHandler`) on each S3 client. Only affects the client it's attached to — safe for production code and tests alike.
-
-#### Option 2: `interceptLocalhostDns()` (global, fully transparent)
+#### Option 2: `interceptLocalhostDns()` (global, for test suites)
 
 Patches Node.js `dns.lookup` so that any hostname ending in `.localhost` resolves to `127.0.0.1`. No client changes needed.
 
@@ -315,7 +377,6 @@ import { interceptLocalhostDns } from "fauxqs";
 
 const restore = interceptLocalhostDns();
 
-// S3 clients work without forcePathStyle or custom requestHandler
 const s3 = new S3Client({
   endpoint: "http://s3.localhost:4566",
   region: "us-east-1",
@@ -328,8 +389,59 @@ restore();
 
 The suffix is configurable: `interceptLocalhostDns("myhost.test")` matches `*.myhost.test`.
 
-**Tradeoffs:** Affects all DNS lookups in the process. Best suited for test suites (`beforeAll` / `afterAll`). Not recommended for production code.
+**Tradeoffs:** Affects all DNS lookups in the process. Best suited for test suites (`beforeAll` / `afterAll`).
 
+#### Option 3: `forcePathStyle` (simplest fallback)
+
+Forces the SDK to use path-style URLs (`http://localhost:4566/my-bucket/key`) instead of virtual-hosted-style. No DNS or handler changes needed, but affects how the SDK resolves S3 URLs at runtime.
+
+```typescript
+const s3 = new S3Client({
+  endpoint: "http://localhost:4566",
+  forcePathStyle: true,
+  // ...
+});
+```
+
+
+### Using with AWS CLI
+
+fauxqs is wire-compatible with the standard AWS CLI. Point it at the fauxqs endpoint:
+
+#### SQS
+
+```bash
+aws --endpoint-url http://localhost:4566 sqs create-queue --queue-name my-queue
+aws --endpoint-url http://localhost:4566 sqs create-queue \
+  --queue-name my-queue.fifo \
+  --attributes FifoQueue=true,ContentBasedDeduplication=true
+aws --endpoint-url http://localhost:4566 sqs send-message \
+  --queue-url http://localhost:4566/000000000000/my-queue \
+  --message-body "hello"
+```
+
+#### SNS
+
+```bash
+aws --endpoint-url http://localhost:4566 sns create-topic --name my-topic
+aws --endpoint-url http://localhost:4566 sns subscribe \
+  --topic-arn arn:aws:sns:us-east-1:000000000000:my-topic \
+  --protocol sqs \
+  --notification-endpoint arn:aws:sqs:us-east-1:000000000000:my-queue
+```
+
+#### S3
+
+```bash
+aws --endpoint-url http://localhost:4566 s3 mb s3://my-bucket
+aws --endpoint-url http://localhost:4566 s3 cp file.txt s3://my-bucket/file.txt
+```
+
+If the AWS CLI uses virtual-hosted-style S3 URLs by default, configure path-style:
+
+```bash
+aws configure set default.s3.addressing_style path
+```
 
 ## Conventions
 
