@@ -1,3 +1,4 @@
+import type { MessageSystemAttributeName } from "@aws-sdk/client-sqs";
 import { SqsError } from "../../common/errors.ts";
 import type { SqsStore } from "../sqsStore.ts";
 import type { SqsMessage, ReceivedMessage } from "../sqsTypes.ts";
@@ -66,6 +67,14 @@ export async function receiveMessage(
   return { Messages: messages.length > 0 ? messages : undefined };
 }
 
+function wants(
+  systemAttributeNames: string[],
+  wantsAll: boolean,
+  name: MessageSystemAttributeName,
+): boolean {
+  return wantsAll || systemAttributeNames.includes(name);
+}
+
 function addSystemAttributes(
   messages: ReceivedMessage[],
   queue: { inflightMessages: Map<string, { message: SqsMessage }> },
@@ -75,41 +84,41 @@ function addSystemAttributes(
     const entry = queue.inflightMessages.get(msg.ReceiptHandle);
     if (!entry) continue;
 
-    const attrs: Record<string, string> = {};
+    const attrs: Partial<Record<MessageSystemAttributeName, string>> = {};
     const wantsAll = systemAttributeNames.includes("All");
 
-    if (wantsAll || systemAttributeNames.includes("SenderId")) {
+    if (wants(systemAttributeNames, wantsAll, "SenderId")) {
       attrs.SenderId = "000000000000";
     }
-    if (wantsAll || systemAttributeNames.includes("SentTimestamp")) {
+    if (wants(systemAttributeNames, wantsAll, "SentTimestamp")) {
       attrs.SentTimestamp = String(entry.message.sentTimestamp);
     }
-    if (wantsAll || systemAttributeNames.includes("ApproximateReceiveCount")) {
+    if (wants(systemAttributeNames, wantsAll, "ApproximateReceiveCount")) {
       attrs.ApproximateReceiveCount = String(entry.message.approximateReceiveCount);
     }
-    if (wantsAll || systemAttributeNames.includes("ApproximateFirstReceiveTimestamp")) {
+    if (wants(systemAttributeNames, wantsAll, "ApproximateFirstReceiveTimestamp")) {
       attrs.ApproximateFirstReceiveTimestamp = String(
         entry.message.approximateFirstReceiveTimestamp ?? "",
       );
     }
-    if (wantsAll || systemAttributeNames.includes("MessageGroupId")) {
+    if (wants(systemAttributeNames, wantsAll, "MessageGroupId")) {
       if (entry.message.messageGroupId) {
         attrs.MessageGroupId = entry.message.messageGroupId;
       }
     }
-    if (wantsAll || systemAttributeNames.includes("MessageDeduplicationId")) {
+    if (wants(systemAttributeNames, wantsAll, "MessageDeduplicationId")) {
       if (entry.message.messageDeduplicationId) {
         attrs.MessageDeduplicationId = entry.message.messageDeduplicationId;
       }
     }
-    if (wantsAll || systemAttributeNames.includes("SequenceNumber")) {
+    if (wants(systemAttributeNames, wantsAll, "SequenceNumber")) {
       if (entry.message.sequenceNumber) {
         attrs.SequenceNumber = entry.message.sequenceNumber;
       }
     }
 
     if (Object.keys(attrs).length > 0) {
-      msg.Attributes = attrs;
+      msg.Attributes = attrs as Record<string, string>;
     }
   }
 }

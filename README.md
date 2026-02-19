@@ -201,7 +201,7 @@ server.purgeAll();
 
 #### Init config file
 
-Create a JSON file to pre-create resources on startup:
+Create a JSON file to pre-create resources on startup. The file is validated on load — malformed configs produce a clear error instead of silent failures.
 
 ```json
 {
@@ -232,6 +232,146 @@ const server = await startFauxqs({ init: "init.json" });
 const server = await startFauxqs({
   init: { queues: [{ name: "my-queue" }], buckets: ["my-bucket"] },
 });
+```
+
+#### Init config schema reference
+
+All top-level fields are optional. Resources are created in dependency order: queues, topics, subscriptions, buckets.
+
+##### `queues`
+
+Array of queue objects.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | `string` | Yes | Queue name. Use `.fifo` suffix for FIFO queues. |
+| `attributes` | `Record<string, string>` | No | Queue attributes (see table below). |
+| `tags` | `Record<string, string>` | No | Key-value tags for the queue. |
+
+Supported queue attributes:
+
+| Attribute | Default | Range / Values |
+|-----------|---------|----------------|
+| `VisibilityTimeout` | `"30"` | `0` – `43200` (seconds) |
+| `DelaySeconds` | `"0"` | `0` – `900` (seconds) |
+| `MaximumMessageSize` | `"1048576"` | `1024` – `1048576` (bytes) |
+| `MessageRetentionPeriod` | `"345600"` | `60` – `1209600` (seconds) |
+| `ReceiveMessageWaitTimeSeconds` | `"0"` | `0` – `20` (seconds) |
+| `RedrivePolicy` | — | JSON string: `{"deadLetterTargetArn": "arn:...", "maxReceiveCount": "5"}` |
+| `Policy` | — | Queue policy JSON string (stored, not enforced) |
+| `KmsMasterKeyId` | — | KMS key ID (stored, no actual encryption) |
+| `KmsDataKeyReusePeriodSeconds` | — | KMS data key reuse period (stored, no actual encryption) |
+| `FifoQueue` | — | `"true"` for FIFO queues (queue name must end with `.fifo`) |
+| `ContentBasedDeduplication` | — | `"true"` or `"false"` (FIFO queues only) |
+
+Example:
+
+```json
+{
+  "queues": [
+    {
+      "name": "orders",
+      "attributes": { "VisibilityTimeout": "60", "DelaySeconds": "5" },
+      "tags": { "env": "staging", "team": "platform" }
+    },
+    {
+      "name": "orders-dlq"
+    },
+    {
+      "name": "orders.fifo",
+      "attributes": {
+        "FifoQueue": "true",
+        "ContentBasedDeduplication": "true"
+      }
+    },
+    {
+      "name": "retry-queue",
+      "attributes": {
+        "RedrivePolicy": "{\"deadLetterTargetArn\":\"arn:aws:sqs:us-east-1:000000000000:orders-dlq\",\"maxReceiveCount\":\"3\"}"
+      }
+    }
+  ]
+}
+```
+
+##### `topics`
+
+Array of topic objects.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | `string` | Yes | Topic name. Use `.fifo` suffix for FIFO topics. |
+| `attributes` | `Record<string, string>` | No | Topic attributes (e.g., `DisplayName`). |
+| `tags` | `Record<string, string>` | No | Key-value tags for the topic. |
+
+Example:
+
+```json
+{
+  "topics": [
+    {
+      "name": "events",
+      "attributes": { "DisplayName": "Application Events" },
+      "tags": { "env": "staging" }
+    },
+    {
+      "name": "events.fifo",
+      "attributes": { "FifoQueue": "true", "ContentBasedDeduplication": "true" }
+    }
+  ]
+}
+```
+
+##### `subscriptions`
+
+Array of subscription objects. Referenced topics and queues must be defined in the same config (or already exist on the server).
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `topic` | `string` | Yes | Topic name (not ARN) to subscribe to. |
+| `queue` | `string` | Yes | Queue name (not ARN) to deliver messages to. |
+| `attributes` | `Record<string, string>` | No | Subscription attributes (see table below). |
+
+Supported subscription attributes:
+
+| Attribute | Values | Description |
+|-----------|--------|-------------|
+| `RawMessageDelivery` | `"true"` / `"false"` | Deliver the raw message body instead of the SNS envelope JSON. |
+| `FilterPolicy` | JSON string | SNS filter policy for message filtering (e.g., `"{\"color\": [\"blue\"]}"`) |
+| `FilterPolicyScope` | `"MessageAttributes"` / `"MessageBody"` | Whether the filter policy applies to message attributes or body. Defaults to `MessageAttributes`. |
+| `RedrivePolicy` | JSON string | Subscription-level dead-letter queue config. |
+| `DeliveryPolicy` | JSON string | Delivery retry policy (stored, not enforced). |
+| `SubscriptionRoleArn` | ARN string | IAM role ARN for delivery (stored, not enforced). |
+
+Example:
+
+```json
+{
+  "subscriptions": [
+    {
+      "topic": "events",
+      "queue": "orders",
+      "attributes": {
+        "RawMessageDelivery": "true",
+        "FilterPolicy": "{\"eventType\": [\"order.created\", \"order.updated\"]}"
+      }
+    },
+    {
+      "topic": "events",
+      "queue": "notifications"
+    }
+  ]
+}
+```
+
+##### `buckets`
+
+Array of bucket name strings.
+
+```json
+{
+  "buckets": ["uploads", "exports", "temp"]
+}
 ```
 
 ### Configurable queue URL host
