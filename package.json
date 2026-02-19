@@ -1,6 +1,6 @@
 {
   "name": "fauxqs",
-  "version": "0.6.2",
+  "version": "1.0.0",
   "description": "SNS/SQS emulator",
   "type": "module",
   "scripts": {
