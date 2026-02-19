@@ -4,6 +4,34 @@ Local SNS/SQS/S3 emulator for development and testing. Point your `@aws-sdk/clie
 
 All state is in-memory. No persistence, no external storage dependencies.
 
+## Table of Contents
+
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Running the server](#running-the-server)
+  - [Running in the background](#running-in-the-background)
+  - [Running in Docker Compose](#running-in-docker-compose)
+  - [Configuring AWS SDK clients](#configuring-aws-sdk-clients)
+  - [Programmatic usage](#programmatic-usage)
+    - [Programmatic state setup](#programmatic-state-setup)
+    - [Init config file](#init-config-file)
+    - [Init config schema reference](#init-config-schema-reference)
+  - [Configurable queue URL host](#configurable-queue-url-host)
+  - [Region](#region)
+- [Supported API Actions](#supported-api-actions)
+  - [SQS](#sqs)
+  - [SNS](#sns)
+  - [S3](#s3)
+  - [STS](#sts)
+- [SQS Features](#sqs-features)
+- [SNS Features](#sns-features)
+- [S3 Features](#s3-features)
+  - [S3 URL styles](#s3-url-styles)
+  - [Using with AWS CLI](#using-with-aws-cli)
+- [Conventions](#conventions)
+- [Limitations](#limitations)
+- [License](#license)
+
 ## Installation
 
 ```bash
