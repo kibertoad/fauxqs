@@ -96,7 +96,7 @@ services:
       - FAUXQS_INIT=/app/init.json
       - FAUXQS_LOGGER=false
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:4566/health || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:4566/health || exit 1"]
       interval: 2s
       timeout: 5s
       retries: 10
