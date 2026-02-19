@@ -1,6 +1,6 @@
 # fauxqs
 
-Local SNS/SQS/S3 emulator for development and testing. Applications using `@aws-sdk/client-sqs`, `@aws-sdk/client-sns`, and `@aws-sdk/client-s3` can point to this server instead of real AWS or LocalStack.
+Local SNS/SQS/S3 emulator for development and testing. Applications using `@aws-sdk/client-sqs`, `@aws-sdk/client-sns`, and `@aws-sdk/client-s3` can point to this server instead of real AWS.
 
 ## Quick Start
 
@@ -49,6 +49,7 @@ src/
     snsTypes.ts              # Interfaces
     filter.ts                # SNS filter policy evaluation engine
     actions/                 # One file per SNS API action
+  localhost.ts               # Virtual-hosted-style S3 helpers (createLocalhostHandler, interceptLocalhostDns)
   s3/
     s3Store.ts               # S3Store: buckets + objects in Maps
     s3Router.ts              # REST route registration (/:bucket, /:bucket/*)
@@ -94,7 +95,7 @@ test/
 - `PUT /:bucket/:key` → PutObject, `GET /:bucket/:key` → GetObject, `DELETE /:bucket/:key` → DeleteObject, `HEAD /:bucket/:key` → HeadObject
 - `POST /:bucket?delete` → DeleteObjects (bulk delete via XML body)
 - XML responses for list/delete/error operations
-- SDK must use `forcePathStyle: true` for local emulators
+- SDK must use `forcePathStyle: true` or a virtual-hosted-style helper (`createLocalhostHandler` / `interceptLocalhostDns`) for local emulators
 
 ## Conventions
 

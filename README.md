@@ -1,6 +1,6 @@
 # fauxqs
 
-Local SNS/SQS/S3 emulator for development and testing. Point your `@aws-sdk/client-sqs`, `@aws-sdk/client-sns`, and `@aws-sdk/client-s3` clients at fauxqs instead of real AWS or LocalStack.
+Local SNS/SQS/S3 emulator for development and testing. Point your `@aws-sdk/client-sqs`, `@aws-sdk/client-sns`, and `@aws-sdk/client-s3` clients at fauxqs instead of real AWS.
 
 All state is in-memory. No persistence, no external storage dependencies.
 
@@ -18,7 +18,7 @@ npm install fauxqs
 npx fauxqs
 ```
 
-The server starts on port `4566` (same as LocalStack) and handles SQS, SNS, and S3 on a single endpoint.
+The server starts on port `4566` and handles SQS, SNS, and S3 on a single endpoint.
 
 Override the port with the `FAUXQS_PORT` environment variable:
 
@@ -205,7 +205,70 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Object operations** — PutObject, GetObject, DeleteObject, HeadObject with ETag, Content-Type, and Last-Modified headers
 - **Bulk delete** — DeleteObjects for batch key deletion
 - **Keys with slashes** — full support for slash-delimited keys (e.g., `path/to/file.txt`)
-- **Path-style access** — SDK must use `forcePathStyle: true`
+- **Stream uploads** — handles AWS chunked transfer encoding (`Content-Encoding: aws-chunked`) for stream bodies
+- **Path-style and virtual-hosted-style** — both S3 URL styles are supported (see below)
+
+### S3 URL styles
+
+**Path-style** (recommended for local development):
+
+```typescript
+const s3 = new S3Client({
+  endpoint: "http://localhost:4566",
+  forcePathStyle: true,
+  // ...
+});
+```
+
+**Virtual-hosted-style** (bucket name in `Host` header):
+
+The server automatically extracts the bucket name from the `Host` header when it contains subdomains (e.g., `my-bucket.s3.localhost:4566`). This is useful for compatibility with libraries that don't set `forcePathStyle: true`.
+
+Virtual-hosted-style requires `*.localhost` to resolve to `127.0.0.1`. fauxqs provides two helpers for this — pick whichever fits your use case:
+
+#### Option 1: `createLocalhostHandler()` (per-client, no side effects)
+
+Creates an HTTP request handler that resolves all hostnames to `127.0.0.1`. Scoped to a single client instance.
+
+```typescript
+import { S3Client } from "@aws-sdk/client-s3";
+import { createLocalhostHandler } from "fauxqs";
+
+const s3 = new S3Client({
+  endpoint: "http://s3.localhost:4566",
+  region: "us-east-1",
+  credentials: { accessKeyId: "test", secretAccessKey: "test" },
+  requestHandler: createLocalhostHandler(),
+  // no forcePathStyle needed
+});
+```
+
+**Tradeoffs:** Requires one extra option (`requestHandler`) on each S3 client. Only affects the client it's attached to — safe for production code and tests alike.
+
+#### Option 2: `interceptLocalhostDns()` (global, fully transparent)
+
+Patches Node.js `dns.lookup` so that any hostname ending in `.localhost` resolves to `127.0.0.1`. No client changes needed.
+
+```typescript
+import { interceptLocalhostDns } from "fauxqs";
+
+const restore = interceptLocalhostDns();
+
+// S3 clients work without forcePathStyle or custom requestHandler
+const s3 = new S3Client({
+  endpoint: "http://s3.localhost:4566",
+  region: "us-east-1",
+  credentials: { accessKeyId: "test", secretAccessKey: "test" },
+});
+
+// When done (e.g., in afterAll):
+restore();
+```
+
+The suffix is configurable: `interceptLocalhostDns("myhost.test")` matches `*.myhost.test`.
+
+**Tradeoffs:** Affects all DNS lookups in the process. Best suited for test suites (`beforeAll` / `afterAll`). Not recommended for production code.
+
 
 ## Conventions
 

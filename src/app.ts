@@ -36,12 +36,26 @@ import { tagResource, untagResource, listTagsForResource } from "./sns/actions/t
 import { S3Store } from "./s3/s3Store.js";
 import { registerS3Routes } from "./s3/s3Router.js";
 import { getCallerIdentity } from "./sts/getCallerIdentity.js";
+export { createLocalhostHandler, interceptLocalhostDns } from "./localhost.js";
 
 export function buildApp(options?: { logger?: boolean; host?: string; defaultRegion?: string }) {
   const app = Fastify({
     logger: options?.logger ?? true,
     bodyLimit: 2 * 1_048_576, // 2 MiB — allow our handlers to validate message size
     forceCloseConnections: true,
+    // Support S3 virtual-hosted-style requests: bucket name in Host header (e.g. bucket.localhost:port)
+    // Rewrites to path-style (e.g. /bucket/key) before routing.
+    rewriteUrl: (req) => {
+      const host = req.headers.host ?? "";
+      const hostname = host.split(":")[0];
+      // No rewrite for plain hostnames (localhost) or IP addresses
+      if (!hostname.includes(".") || /^\d+\.\d+\.\d+\.\d+$/.test(hostname)) {
+        return req.url ?? "/";
+      }
+      const dotIndex = hostname.indexOf(".");
+      const bucket = hostname.substring(0, dotIndex);
+      return `/${bucket}${req.url ?? "/"}`;
+    },
   });
 
   const sqsStore = new SqsStore();
