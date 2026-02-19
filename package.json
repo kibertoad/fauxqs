@@ -9,6 +9,7 @@
     "dev": "node --watch src/server.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "bench": "node bench/getQueueByArn.bench.ts && node bench/createMessage.bench.ts && node bench/snsPublish.bench.ts",
     "lint": "oxlint && oxfmt src && tsc --noEmit",
     "lint:fix": "oxlint --fix && oxfmt --write src",
     "prepublishOnly": "npm run build"
@@ -74,6 +75,7 @@
     "@vitest/coverage-v8": "^4.0.18",
     "oxfmt": "^0.33.0",
     "oxlint": "^1.48.0",
+    "tinybench": "^6.0.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   }
