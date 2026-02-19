@@ -237,11 +237,23 @@ export class MessageSpy implements MessageSpyReader {
 
     // Register pending waiter (future)
     return new Promise<SpyMessage>((resolve, reject) => {
-      const waiter: PendingWaiter = { matcher, resolve, reject };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+
+      const waiter: PendingWaiter = {
+        matcher,
+        resolve: (msg) => {
+          if (timer !== undefined) clearTimeout(timer);
+          resolve(msg);
+        },
+        reject: (err) => {
+          if (timer !== undefined) clearTimeout(timer);
+          reject(err);
+        },
+      };
       this.pendingWaiters.push(waiter);
 
       if (timeout !== undefined) {
-        setTimeout(() => {
+        timer = setTimeout(() => {
           const idx = this.pendingWaiters.indexOf(waiter);
           if (idx !== -1) {
             this.pendingWaiters.splice(idx, 1);
@@ -260,7 +272,7 @@ export class MessageSpy implements MessageSpyReader {
     );
   }
 
-  waitForMessages(
+  async waitForMessages(
     filter: MessageSpyFilter,
     options: WaitForMessagesOptions,
   ): Promise<SpyMessage[]> {
@@ -277,59 +289,37 @@ export class MessageSpy implements MessageSpyReader {
     }
 
     if (collected.length >= count) {
-      return Promise.resolve(collected.slice(0, count));
+      return collected.slice(0, count);
     }
 
-    // Need more — register waiters for the remaining count
-    return new Promise<SpyMessage[]>((resolve, reject) => {
-      const remaining = count - collected.length;
-      let fulfilled = false;
+    // Await remaining messages one at a time via waitForMessage.
+    // Each call excludes already-collected messages so the same buffer
+    // entry is never counted twice.
+    const deadline = timeout !== undefined ? Date.now() + timeout : undefined;
 
-      const waiters: PendingWaiter[] = [];
-      let timer: ReturnType<typeof setTimeout> | undefined;
-
-      const cleanup = () => {
-        fulfilled = true;
-        if (timer !== undefined) clearTimeout(timer);
-        for (const w of waiters) {
-          const idx = this.pendingWaiters.indexOf(w);
-          if (idx !== -1) this.pendingWaiters.splice(idx, 1);
-        }
-      };
-
-      for (let i = 0; i < remaining; i++) {
-        const waiter: PendingWaiter = {
-          matcher,
-          resolve: (msg) => {
-            if (fulfilled) return;
-            collected.push(msg);
-            if (collected.length >= count) {
-              cleanup();
-              resolve(collected.slice(0, count));
-            }
-          },
-          reject: (err) => {
-            if (fulfilled) return;
-            cleanup();
-            reject(err);
-          },
-        };
-        waiters.push(waiter);
-        this.pendingWaiters.push(waiter);
+    while (collected.length < count) {
+      const remaining = deadline !== undefined ? deadline - Date.now() : undefined;
+      if (remaining !== undefined && remaining <= 0) {
+        throw new Error(
+          `waitForMessages timed out after ${timeout}ms (collected ${collected.length}/${count})`,
+        );
       }
 
-      if (timeout !== undefined) {
-        timer = setTimeout(() => {
-          if (fulfilled) return;
-          cleanup();
-          reject(
-            new Error(
-              `waitForMessages timed out after ${timeout}ms (collected ${collected.length}/${count})`,
-            ),
-          );
-        }, timeout);
+      try {
+        const msg = await this.waitForMessage(
+          (m) => matcher(m) && !collected.includes(m),
+          undefined,
+          remaining,
+        );
+        collected.push(msg);
+      } catch {
+        throw new Error(
+          `waitForMessages timed out after ${timeout}ms (collected ${collected.length}/${count})`,
+        );
       }
-    });
+    }
+
+    return collected.slice(0, count);
   }
 
   expectNoMessage(filter: MessageSpyFilter, options?: ExpectNoMessageOptions): Promise<void> {
