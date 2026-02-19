@@ -87,6 +87,7 @@ test/
 - **Init config**: `FAUXQS_INIT` (or the `init` option) points to a JSON file (or inline object) that pre-creates queues, topics, subscriptions, and buckets on startup. Resources are created in dependency order: queues first, then topics, then subscriptions, then buckets.
 - **Programmatic API**: `FauxqsServer` exposes `createQueue()`, `createTopic()`, `subscribe()`, `createBucket()`, `setup()`, and `purgeAll()` for state management without going through the SDK. `buildApp` accepts an optional `stores` parameter to use pre-created store instances.
 - **Store purgeAll**: Each store class (`SqsStore`, `SnsStore`, `S3Store`) has a `purgeAll()` method that clears all state. `SqsStore.purgeAll()` also cancels active poll waiters.
+- **Presigned URLs**: Supported for all S3 operations (GET, PUT, HEAD, DELETE). Since fauxqs never validates signatures, the `X-Amz-*` query parameters in presigned URLs are simply ignored. Fastify's default `application/json` and `text/plain` content-type parsers are removed so that S3 PUT requests with any content-type are correctly handled as raw binary via the wildcard `*` buffer parser.
 
 ## Protocols
 
@@ -112,6 +113,7 @@ test/
 - `POST /:bucket/:key?uploads` → CreateMultipartUpload, `PUT /:bucket/:key?partNumber=N&uploadId=ID` → UploadPart, `POST /:bucket/:key?uploadId=ID` → CompleteMultipartUpload, `DELETE /:bucket/:key?uploadId=ID` → AbortMultipartUpload
 - XML responses for list/delete/multipart/error operations
 - SDK must use `forcePathStyle: true` or a virtual-hosted-style helper (`createLocalhostHandler` / `interceptLocalhostDns`) for local emulators
+- Presigned URLs work out of the box — `X-Amz-*` query params are ignored by the router. Use `@aws-sdk/s3-request-presigner`'s `getSignedUrl()` then `fetch()` the URL directly.
 
 ## Conventions
 

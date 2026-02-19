@@ -149,6 +149,14 @@ export function buildApp(options?: BuildAppOptions) {
     },
   );
 
+  // Remove Fastify's default parsers so they fall through to the wildcard
+  // buffer parser below. S3 routes can receive any content-type (e.g.
+  // application/json via presigned URLs) and need the raw body as a Buffer.
+  // SQS and SNS use explicit parsers registered above (x-amz-json-1.0 and
+  // x-www-form-urlencoded) so they are unaffected.
+  app.removeContentTypeParser("application/json");
+  app.removeContentTypeParser("text/plain");
+
   // Wildcard parser for S3 (binary bodies)
   app.addContentTypeParser("*", { parseAs: "buffer" }, (_req, body, done) => {
     done(null, body);
