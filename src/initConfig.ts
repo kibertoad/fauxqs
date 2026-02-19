@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import * as v from "valibot";
 import { sqsQueueArn } from "./common/arnHelper.ts";
 import { snsTopicArn } from "./common/arnHelper.ts";
 import { DEFAULT_ACCOUNT_ID } from "./common/types.ts";
@@ -6,28 +7,42 @@ import type { SqsStore } from "./sqs/sqsStore.ts";
 import type { SnsStore } from "./sns/snsStore.ts";
 import type { S3Store } from "./s3/s3Store.ts";
 
-export interface FauxqsInitConfig {
-  queues?: Array<{
-    name: string;
-    attributes?: Record<string, string>;
-    tags?: Record<string, string>;
-  }>;
-  topics?: Array<{
-    name: string;
-    attributes?: Record<string, string>;
-    tags?: Record<string, string>;
-  }>;
-  subscriptions?: Array<{
-    topic: string;
-    queue: string;
-    attributes?: Record<string, string>;
-  }>;
-  buckets?: string[];
+const StringRecordSchema = v.record(v.string(), v.string());
+
+const QueueSchema = v.object({
+  name: v.string(),
+  attributes: v.optional(StringRecordSchema),
+  tags: v.optional(StringRecordSchema),
+});
+
+const TopicSchema = v.object({
+  name: v.string(),
+  attributes: v.optional(StringRecordSchema),
+  tags: v.optional(StringRecordSchema),
+});
+
+const SubscriptionSchema = v.object({
+  topic: v.string(),
+  queue: v.string(),
+  attributes: v.optional(StringRecordSchema),
+});
+
+const InitConfigSchema = v.object({
+  queues: v.optional(v.array(QueueSchema)),
+  topics: v.optional(v.array(TopicSchema)),
+  subscriptions: v.optional(v.array(SubscriptionSchema)),
+  buckets: v.optional(v.array(v.string())),
+});
+
+export type FauxqsInitConfig = v.InferOutput<typeof InitConfigSchema>;
+
+export function validateInitConfig(data: unknown): FauxqsInitConfig {
+  return v.parse(InitConfigSchema, data);
 }
 
 export function loadInitConfig(path: string): FauxqsInitConfig {
   const content = readFileSync(path, "utf-8");
-  return JSON.parse(content) as FauxqsInitConfig;
+  return validateInitConfig(JSON.parse(content));
 }
 
 export function applyInitConfig(

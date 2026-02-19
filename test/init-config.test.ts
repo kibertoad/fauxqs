@@ -12,7 +12,7 @@ import { ListTopicsCommand, PublishCommand } from "@aws-sdk/client-sns";
 import {
   ListBucketsCommand,
 } from "@aws-sdk/client-s3";
-import { loadInitConfig } from "../src/initConfig.js";
+import { loadInitConfig, validateInitConfig } from "../src/initConfig.js";
 
 describe("init config", () => {
   let server: FauxqsServer;
@@ -59,6 +59,53 @@ describe("init config", () => {
   it("loadInitConfig throws for invalid JSON", () => {
     const path = writeTempConfig({});
     writeFileSync(path, "not valid json {{{");
+    expect(() => loadInitConfig(path)).toThrow();
+    cleanupTempConfig(path);
+  });
+
+  it("validateInitConfig rejects non-object input", () => {
+    expect(() => validateInitConfig("not an object")).toThrow();
+    expect(() => validateInitConfig(42)).toThrow();
+    expect(() => validateInitConfig(null)).toThrow();
+  });
+
+  it("validateInitConfig rejects queues with missing name", () => {
+    expect(() => validateInitConfig({ queues: [{}] })).toThrow();
+  });
+
+  it("validateInitConfig rejects queues with wrong type for name", () => {
+    expect(() => validateInitConfig({ queues: [{ name: 123 }] })).toThrow();
+  });
+
+  it("validateInitConfig rejects buckets with wrong element type", () => {
+    expect(() => validateInitConfig({ buckets: [123] })).toThrow();
+  });
+
+  it("validateInitConfig rejects subscriptions with missing fields", () => {
+    expect(() => validateInitConfig({ subscriptions: [{ topic: "t1" }] })).toThrow();
+    expect(() => validateInitConfig({ subscriptions: [{ queue: "q1" }] })).toThrow();
+  });
+
+  it("validateInitConfig accepts empty config", () => {
+    const config = validateInitConfig({});
+    expect(config).toEqual({});
+  });
+
+  it("validateInitConfig accepts valid full config", () => {
+    const config = validateInitConfig({
+      queues: [{ name: "q1", attributes: { VisibilityTimeout: "30" }, tags: { env: "dev" } }],
+      topics: [{ name: "t1" }],
+      subscriptions: [{ topic: "t1", queue: "q1" }],
+      buckets: ["b1"],
+    });
+    expect(config.queues).toHaveLength(1);
+    expect(config.topics).toHaveLength(1);
+    expect(config.subscriptions).toHaveLength(1);
+    expect(config.buckets).toEqual(["b1"]);
+  });
+
+  it("loadInitConfig rejects file with invalid structure", () => {
+    const path = writeTempConfig({ queues: "not-an-array" });
     expect(() => loadInitConfig(path)).toThrow();
     cleanupTempConfig(path);
   });

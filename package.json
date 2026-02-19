@@ -67,7 +67,8 @@
     "@aws-sdk/client-sns": "^3.992.0",
     "@aws-sdk/client-sqs": "^3.992.0",
     "@smithy/node-http-handler": "^4.4.10",
-    "fastify": "^5.7.4"
+    "fastify": "^5.7.4",
+    "valibot": "^1.2.0"
   },
   "devDependencies": {
     "@message-queue-toolkit/s3-payload-store": "^3.0.0",
