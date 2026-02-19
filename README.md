@@ -37,6 +37,14 @@ All state is in-memory. No persistence, no external storage dependencies.
 
 ## Installation
 
+**Docker** (recommended for standalone usage) — [Docker Hub](https://hub.docker.com/r/kibertoad/fauxqs):
+
+```bash
+docker run -p 4566:4566 kibertoad/fauxqs
+```
+
+**npm** (for embedded library usage or CLI):
+
 ```bash
 npm install fauxqs
 ```
@@ -138,13 +146,7 @@ services:
     ports:
       - "4566:4566"
     environment:
-      - FAUXQS_HOST=localhost
       - FAUXQS_INIT=/app/init.json
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:4566/health || exit 1"]
-      interval: 2s
-      timeout: 5s
-      retries: 10
     volumes:
       - ./scripts/fauxqs/init.json:/app/init.json
 
@@ -155,7 +157,7 @@ services:
         condition: service_healthy
 ```
 
-Other containers reference fauxqs using the Docker service name (`http://fauxqs:4566`). The init config file creates all queues, topics, subscriptions, and buckets before the healthcheck passes, so dependent services start only after resources are ready.
+The image has a built-in `HEALTHCHECK`, so `service_healthy` works without extra configuration in your compose file. Other containers reference fauxqs using the Docker service name (`http://fauxqs:4566`). The init config file creates all queues, topics, subscriptions, and buckets before the healthcheck passes, so dependent services start only after resources are ready.
 
 ### Configuring AWS SDK clients
 
