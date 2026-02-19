@@ -17,6 +17,7 @@ All state is in-memory. No persistence, no external storage dependencies.
     - [Init config file](#init-config-file)
     - [Init config schema reference](#init-config-schema-reference)
     - [Message spy](#message-spy)
+    - [Queue inspection](#queue-inspection)
   - [Configurable queue URL host](#configurable-queue-url-host)
   - [Region](#region)
 - [Supported API Actions](#supported-api-actions)
@@ -452,6 +453,54 @@ const msg = await server.spy.waitForMessage({ service: "s3", bucket: "my-bucket"
 
 `waitForMessage` checks the buffer first (retroactive resolution). If no match is found, it returns a Promise that resolves when a matching message arrives.
 
+##### Timeout
+
+All `waitForMessage` and `waitForMessageWithId` calls accept an optional `timeout` parameter (ms) as the third argument. If no matching message arrives in time, the promise rejects with a timeout error — preventing tests from hanging indefinitely:
+
+```typescript
+// Reject after 2 seconds if no match
+const msg = await server.spy.waitForMessage(
+  { service: "sqs", queueName: "orders" },
+  "published",
+  2000,
+);
+
+// Also works with waitForMessageWithId
+const msg = await server.spy.waitForMessageWithId(messageId, "consumed", 5000);
+```
+
+##### Waiting for multiple messages
+
+`waitForMessages` collects `count` matching messages before resolving. It checks the buffer first, then awaits future arrivals:
+
+```typescript
+// Wait for 3 messages on the orders queue
+const msgs = await server.spy.waitForMessages(
+  { service: "sqs", queueName: "orders" },
+  { count: 3, status: "published", timeout: 5000 },
+);
+// msgs.length === 3
+```
+
+If the timeout expires before enough messages arrive, the promise rejects with a message showing how many were collected (e.g., `"collected 1/3"`).
+
+##### Negative assertions
+
+`expectNoMessage` asserts that no matching message appears within a time window. Useful for verifying that filter policies dropped a message or that a side effect did not occur:
+
+```typescript
+// Assert no message was delivered to the wrong queue (waits 200ms by default)
+await server.spy.expectNoMessage({ service: "sqs", queueName: "wrong-queue" });
+
+// Custom window and status filter
+await server.spy.expectNoMessage(
+  { service: "sqs", queueName: "orders" },
+  { status: "dlq", within: 500 },
+);
+```
+
+If a matching message is already in the buffer, `expectNoMessage` rejects immediately. If one arrives during the wait, it rejects with `"matching message arrived during wait"`.
+
 ##### Synchronous check
 
 ```typescript
@@ -486,11 +535,24 @@ const server = await startFauxqs({
 
 ```typescript
 interface MessageSpyReader {
-  waitForMessage(filter: MessageSpyFilter, status?: string): Promise<SpyMessage>;
-  waitForMessageWithId(messageId: string, status?: string): Promise<SpyMessage>;
+  waitForMessage(filter: MessageSpyFilter, status?: string, timeout?: number): Promise<SpyMessage>;
+  waitForMessageWithId(messageId: string, status?: string, timeout?: number): Promise<SpyMessage>;
+  waitForMessages(filter: MessageSpyFilter, options: WaitForMessagesOptions): Promise<SpyMessage[]>;
+  expectNoMessage(filter: MessageSpyFilter, options?: ExpectNoMessageOptions): Promise<void>;
   checkForMessage(filter: MessageSpyFilter, status?: string): SpyMessage | undefined;
   getAllMessages(): SpyMessage[];
   clear(): void;
+}
+
+interface WaitForMessagesOptions {
+  count: number;
+  status?: string;
+  timeout?: number;
+}
+
+interface ExpectNoMessageOptions {
+  status?: string;
+  within?: number; // ms, defaults to 200
 }
 ```
 
@@ -532,6 +594,41 @@ type SpyMessage = SqsSpyMessage | SnsSpyMessage | S3SpyEvent;
 ##### Spy disabled by default
 
 Accessing `server.spy` when `messageSpies` is not set throws an error. There is no overhead on the message flow when spies are disabled.
+
+#### Queue inspection
+
+Non-destructive inspection of SQS queue state — see all messages (ready, in-flight, and delayed) without consuming them or affecting visibility timeouts.
+
+##### Programmatic API
+
+```typescript
+const result = server.inspectQueue("my-queue");
+// result is undefined if queue doesn't exist
+if (result) {
+  console.log(result.name);           // "my-queue"
+  console.log(result.url);            // "http://sqs.us-east-1.localhost:4566/000000000000/my-queue"
+  console.log(result.arn);            // "arn:aws:sqs:us-east-1:000000000000:my-queue"
+  console.log(result.attributes);     // { VisibilityTimeout: "30", ... }
+  console.log(result.messages.ready);    // messages available for receive
+  console.log(result.messages.delayed);  // messages waiting for delay to expire
+  console.log(result.messages.inflight); // received but not yet deleted
+  // Each inflight entry includes: { message, receiptHandle, visibilityDeadline }
+}
+```
+
+##### HTTP endpoints
+
+```bash
+# List all queues with summary counts
+curl http://localhost:4566/_fauxqs/queues
+# [{ "name": "my-queue", "approximateMessageCount": 5, "approximateInflightCount": 2, "approximateDelayedCount": 0, ... }]
+
+# Inspect a specific queue (full state)
+curl http://localhost:4566/_fauxqs/queues/my-queue
+# { "name": "my-queue", "messages": { "ready": [...], "delayed": [...], "inflight": [...] }, ... }
+```
+
+Returns 404 for non-existent queues. Inspection never modifies queue state — messages remain exactly where they are.
 
 ### Configurable queue URL host
 

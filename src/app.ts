@@ -54,6 +54,8 @@ export type {
   S3SpyEventStatus,
   MessageSpyFilter,
   MessageSpyParams,
+  WaitForMessagesOptions,
+  ExpectNoMessageOptions,
 } from "./spy.ts";
 
 export interface BuildAppOptions {
@@ -187,6 +189,30 @@ export function buildApp(options?: BuildAppOptions) {
     return { status: "ok" };
   });
 
+  // Non-destructive queue inspection endpoints
+  app.get("/_fauxqs/queues", async () => {
+    return sqsStore.listQueues().map((q) => ({
+      name: q.name,
+      url: q.url,
+      arn: q.arn,
+      approximateMessageCount: Number(q.getAttribute("ApproximateNumberOfMessages")),
+      approximateInflightCount: Number(q.getAttribute("ApproximateNumberOfMessagesNotVisible")),
+      approximateDelayedCount: Number(q.getAttribute("ApproximateNumberOfMessagesDelayed")),
+    }));
+  });
+
+  app.get<{ Params: { queueName: string } }>(
+    "/_fauxqs/queues/:queueName",
+    async (request, reply) => {
+      const result = sqsStore.inspectQueue(request.params.queueName);
+      if (!result) {
+        reply.status(404);
+        return { error: `Queue '${request.params.queueName}' not found` };
+      }
+      return result;
+    },
+  );
+
   app.post("/", async (request, reply) => {
     const contentType = request.headers["content-type"] ?? "";
 
@@ -220,6 +246,24 @@ export interface FauxqsServer {
     name: string,
     options?: { attributes?: Record<string, string>; tags?: Record<string, string> },
   ): void;
+  /** Non-destructive inspection of all messages in a queue. Returns undefined if queue doesn't exist. */
+  inspectQueue(name: string):
+    | {
+        name: string;
+        url: string;
+        arn: string;
+        attributes: Record<string, string>;
+        messages: {
+          ready: import("./sqs/sqsTypes.ts").SqsMessage[];
+          delayed: import("./sqs/sqsTypes.ts").SqsMessage[];
+          inflight: Array<{
+            message: import("./sqs/sqsTypes.ts").SqsMessage;
+            receiptHandle: string;
+            visibilityDeadline: number;
+          }>;
+        };
+      }
+    | undefined;
   createTopic(
     name: string,
     options?: { attributes?: Record<string, string>; tags?: Record<string, string> },
@@ -301,6 +345,9 @@ export async function startFauxqs(options?: {
       const arn = sqsQueueArn(name, region);
       const queueUrl = makeQueueUrl(name);
       sqsStore.createQueue(name, queueUrl, arn, opts?.attributes, opts?.tags);
+    },
+    inspectQueue(name) {
+      return sqsStore.inspectQueue(name);
     },
     createTopic(name, opts) {
       snsStore.createTopic(name, opts?.attributes, opts?.tags);

@@ -486,6 +486,38 @@ export class SqsQueue {
     this.fifoDelayed.clear();
   }
 
+  /** Return a non-destructive snapshot of all messages in the queue, grouped by state. */
+  inspectMessages(): {
+    ready: SqsMessage[];
+    delayed: SqsMessage[];
+    inflight: Array<{ message: SqsMessage; receiptHandle: string; visibilityDeadline: number }>;
+  } {
+    let ready: SqsMessage[];
+    let delayed: SqsMessage[];
+
+    if (this.isFifo()) {
+      ready = [];
+      for (const msgs of this.fifoMessages.values()) {
+        ready.push(...msgs);
+      }
+      delayed = [];
+      for (const msgs of this.fifoDelayed.values()) {
+        delayed.push(...msgs);
+      }
+    } else {
+      ready = [...this.messages];
+      delayed = [...this.delayedMessages];
+    }
+
+    const inflight = Array.from(this.inflightMessages.values()).map((entry) => ({
+      message: entry.message,
+      receiptHandle: entry.receiptHandle,
+      visibilityDeadline: entry.visibilityDeadline,
+    }));
+
+    return { ready, delayed, inflight };
+  }
+
   cancelWaiters(): void {
     for (const waiter of this.pollWaiters) {
       clearTimeout(waiter.timer);
@@ -633,6 +665,34 @@ export class SqsStore {
 
   getQueueByArn(arn: string): SqsQueue | undefined {
     return this.queuesByArn.get(arn);
+  }
+
+  inspectQueue(name: string):
+    | {
+        name: string;
+        url: string;
+        arn: string;
+        attributes: Record<string, string>;
+        messages: {
+          ready: SqsMessage[];
+          delayed: SqsMessage[];
+          inflight: Array<{
+            message: SqsMessage;
+            receiptHandle: string;
+            visibilityDeadline: number;
+          }>;
+        };
+      }
+    | undefined {
+    const queue = this.queuesByName.get(name);
+    if (!queue) return undefined;
+    return {
+      name: queue.name,
+      url: queue.url,
+      arn: queue.arn,
+      attributes: queue.getAllAttributes(["All"]),
+      messages: queue.inspectMessages(),
+    };
   }
 
   processAllTimers(): void {
