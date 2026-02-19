@@ -1,0 +1,33 @@
+services:
+  fauxqs:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    hostname: fauxqs
+    networks:
+      default:
+        ipv4_address: 10.0.0.2
+    ports:
+      - "14566:4566"
+    environment:
+      - FAUXQS_INIT=/app/init.json
+      - FAUXQS_HOST=fauxqs
+    volumes:
+      - ./init.json:/app/init.json
+
+  test-app:
+    build:
+      context: test-app
+      dockerfile: Dockerfile
+    dns: 10.0.0.2
+    depends_on:
+      fauxqs:
+        condition: service_healthy
+    networks:
+      - default
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24

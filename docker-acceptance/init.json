@@ -1,0 +1,4 @@
+{
+  "queues": [{ "name": "acceptance-results" }],
+  "buckets": ["acceptance-bucket"]
+}

@@ -12,6 +12,7 @@ All state is in-memory. No persistence, no external storage dependencies.
   - [Running in the background](#running-in-the-background)
   - [Running with Docker](#running-with-docker)
   - [Running in Docker Compose](#running-in-docker-compose)
+    - [Container-to-container S3 virtual-hosted-style](#container-to-container-s3-virtual-hosted-style)
   - [Configuring AWS SDK clients](#configuring-aws-sdk-clients)
   - [Programmatic usage](#programmatic-usage)
     - [Programmatic state setup](#programmatic-state-setup)
@@ -68,6 +69,8 @@ The server starts on port `4566` and handles SQS, SNS, and S3 on a single endpoi
 | `FAUXQS_DEFAULT_REGION` | Fallback region for ARNs and URLs | `us-east-1` |
 | `FAUXQS_LOGGER` | Enable request logging (`true`/`false`) | `true` |
 | `FAUXQS_INIT` | Path to a JSON init config file (see [Init config file](#init-config-file)) | (none) |
+| `FAUXQS_DNS_NAME` | Domain that dnsmasq resolves (including all subdomains) to the container IP. Only needed when the container hostname doesn't match the docker-compose service name — e.g., when using `container_name` or running with plain `docker run`. In docker-compose the hostname is set to the service name automatically, so this is rarely needed. (Docker only) | container hostname |
+| `FAUXQS_DNS_UPSTREAM` | Where dnsmasq forwards non-fauxqs DNS queries (e.g., `registry.npmjs.org`). Change this if you're in a corporate network with an internal DNS server, or if you prefer a different public resolver like `1.1.1.1`. (Docker only) | `8.8.8.8` |
 
 ```bash
 FAUXQS_PORT=3000 FAUXQS_INIT=init.json npx fauxqs
@@ -158,6 +161,56 @@ services:
 ```
 
 The image has a built-in `HEALTHCHECK`, so `service_healthy` works without extra configuration in your compose file. Other containers reference fauxqs using the Docker service name (`http://fauxqs:4566`). The init config file creates all queues, topics, subscriptions, and buckets before the healthcheck passes, so dependent services start only after resources are ready.
+
+#### Container-to-container S3 virtual-hosted-style
+
+The Docker image includes a built-in DNS server ([dnsmasq](https://thekelleys.org.uk/dnsmasq/doc.html)) that resolves the container hostname and all its subdomains (e.g., `fauxqs`, `s3.fauxqs`, `my-bucket.s3.fauxqs`) to the container's own IP. This enables virtual-hosted-style S3 from other containers without `forcePathStyle`.
+
+To use it, assign fauxqs a static IP and point other containers' DNS to it:
+
+```yaml
+# docker-compose.yml
+services:
+  fauxqs:
+    image: kibertoad/fauxqs:latest
+    networks:
+      default:
+        ipv4_address: 10.0.0.2
+    ports:
+      - "4566:4566"
+    environment:
+      - FAUXQS_INIT=/app/init.json
+      - FAUXQS_HOST=fauxqs
+    volumes:
+      - ./scripts/fauxqs/init.json:/app/init.json
+
+  app:
+    dns: 10.0.0.2
+    depends_on:
+      fauxqs:
+        condition: service_healthy
+    environment:
+      - AWS_ENDPOINT=http://s3.fauxqs:4566
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+```
+
+From the `app` container, `my-bucket.s3.fauxqs` resolves to `10.0.0.2` (the fauxqs container), so virtual-hosted-style S3 works:
+
+```typescript
+const s3 = new S3Client({
+  endpoint: "http://s3.fauxqs:4566",
+  region: "us-east-1",
+  credentials: { accessKeyId: "test", secretAccessKey: "test" },
+  // No forcePathStyle needed!
+});
+```
+
+The DNS server is configured automatically using the container hostname (which docker-compose sets to the service name), so in most setups no extra configuration is needed. See the [environment variables table](#environment-variables) for `FAUXQS_DNS_NAME` and `FAUXQS_DNS_UPSTREAM` if you need to override the defaults.
 
 ### Configuring AWS SDK clients
 
@@ -845,7 +898,9 @@ curl -X PUT --data-binary @file.txt http://my-bucket.s3.localhost.fauxqs.dev:456
 curl http://my-bucket.s3.localhost.fauxqs.dev:4566/file.txt
 ```
 
-This is the recommended approach for Docker and docker-compose setups. If you are using fauxqs as an [embedded library](#programmatic-usage) in Node.js tests, prefer Option 2 (`interceptLocalhostDns`) instead — it patches DNS globally so all clients work without modification, and requires no external DNS.
+This is the recommended approach for host-to-Docker setups. If you are using fauxqs as an [embedded library](#programmatic-usage) in Node.js tests, prefer Option 2 (`interceptLocalhostDns`) instead — it patches DNS globally so all clients work without modification, and requires no external DNS.
+
+For **container-to-container** S3 virtual-hosted-style in docker-compose, use the [built-in DNS server](#container-to-container-s3-virtual-hosted-style) instead — it resolves `*.s3.fauxqs` to the fauxqs container IP so other containers can use virtual-hosted-style S3 without `forcePathStyle`.
 
 #### Option 2: `interceptLocalhostDns()` (recommended for embedded library)
 

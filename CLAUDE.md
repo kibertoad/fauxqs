@@ -64,8 +64,14 @@ test/
   sqs/                       # SQS integration tests (real SDK against server)
   sns/                       # SNS integration tests
   s3/                        # S3 integration tests
+docker/
+  entrypoint.sh              # Docker entrypoint: starts dnsmasq (wildcard DNS for container-to-container S3), then execs node
 docker-acceptance/
   docker-acceptance.ts       # Standalone Docker acceptance test (builds image, runs S3 virtual-hosted-style tests via fauxqs.dev DNS)
+  docker-compose-acceptance.ts  # Compose-based acceptance test orchestrator (container-to-container S3+SQS via dnsmasq)
+  docker-compose.test.yml    # Compose file for container-to-container acceptance test
+  init.json                  # Init config for acceptance test (pre-creates queue + bucket)
+  test-app/                  # Test container that exercises S3 virtual-hosted-style + SQS via dnsmasq DNS
 .github/workflows/
   ci.yml                     # CI pipeline
   publish.yml                # npm publish on PR merge with version label

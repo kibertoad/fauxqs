@@ -1,0 +1,9 @@
+{
+  "name": "fauxqs-test-app",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.993.0",
+    "@aws-sdk/client-sqs": "^3.992.0"
+  }
+}
