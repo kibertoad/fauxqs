@@ -157,6 +157,12 @@ const server = await startFauxqs({ defaultRegion: "eu-west-1" });
 | TagQueue | Yes |
 | UntagQueue | Yes |
 | ListQueueTags | Yes |
+| AddPermission | No |
+| RemovePermission | No |
+| ListDeadLetterSourceQueues | No |
+| StartMessageMoveTask | No |
+| CancelMessageMoveTask | No |
+| ListMessageMoveTasks | No |
 
 ### SNS
 
@@ -179,6 +185,12 @@ const server = await startFauxqs({ defaultRegion: "eu-west-1" });
 | TagResource | Yes |
 | UntagResource | Yes |
 | ListTagsForResource | Yes |
+| AddPermission | No |
+| RemovePermission | No |
+| GetDataProtectionPolicy | No |
+| PutDataProtectionPolicy | No |
+
+Platform application, SMS, and phone number actions are not supported.
 
 ### S3
 
@@ -194,14 +206,27 @@ const server = await startFauxqs({ defaultRegion: "eu-west-1" });
 | DeleteObject | Yes |
 | HeadObject | Yes |
 | DeleteObjects | Yes |
+| DeleteBucket | No |
+| ListBuckets | No |
+| CreateMultipartUpload | No |
+| UploadPart | No |
+| CompleteMultipartUpload | No |
+| AbortMultipartUpload | No |
+| ListObjectVersions | No |
+| GetBucketLocation | No |
+
+Bucket configuration (CORS, lifecycle, encryption, replication, etc.), ACLs, versioning, tagging, and other management actions are not supported.
 
 ### STS
 
 | Action | Supported |
 |--------|-----------|
 | GetCallerIdentity | Yes |
+| AssumeRole | No |
+| GetSessionToken | No |
+| GetFederationToken | No |
 
-Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000000000:root`. This allows tools like Terraform and the AWS CLI that call `sts:GetCallerIdentity` on startup to work without errors.
+Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000000000:root`. This allows tools like Terraform and the AWS CLI that call `sts:GetCallerIdentity` on startup to work without errors. Other STS actions are not supported.
 
 ## SQS Features
 
