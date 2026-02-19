@@ -53,7 +53,7 @@ The server starts on port `4566` and handles SQS, SNS, and S3 on a single endpoi
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `FAUXQS_PORT` | Port to listen on | `4566` |
-| `FAUXQS_HOST` | Host for queue URLs (enables `sqs.<region>.<host>` format) | (none) |
+| `FAUXQS_HOST` | Host for queue URLs (`sqs.<region>.<host>` format) | `localhost` |
 | `FAUXQS_DEFAULT_REGION` | Fallback region for ARNs and URLs | `us-east-1` |
 | `FAUXQS_LOGGER` | Enable request logging (`true`/`false`) | `true` |
 | `FAUXQS_INIT` | Path to a JSON init config file (see [Init config file](#init-config-file)) | (none) |
@@ -403,13 +403,15 @@ Array of bucket name strings.
 
 ### Configurable queue URL host
 
-By default, queue URLs use the request's `Host` header (e.g., `http://127.0.0.1:4566/000000000000/myQueue`). To match the AWS-style `sqs.<region>.<host>` format, pass the `host` option:
+Queue URLs use the AWS-style `sqs.<region>.<host>` format. The `host` defaults to `localhost`, producing URLs like `http://sqs.us-east-1.localhost:4566/000000000000/myQueue`.
+
+To override the host (e.g., for a custom domain):
 
 ```typescript
 import { startFauxqs } from "fauxqs";
 
-const server = await startFauxqs({ port: 4566, host: "localhost" });
-// Queue URLs: http://sqs.us-east-1.localhost:4566/000000000000/myQueue
+const server = await startFauxqs({ port: 4566, host: "myhost.local" });
+// Queue URLs: http://sqs.us-east-1.myhost.local:4566/000000000000/myQueue
 ```
 
 This also works with `buildApp`:
@@ -417,8 +419,10 @@ This also works with `buildApp`:
 ```typescript
 import { buildApp } from "fauxqs";
 
-const app = buildApp({ host: "localhost" });
+const app = buildApp({ host: "myhost.local" });
 ```
+
+The configured host ensures queue URLs are consistent across all creation paths (init config, programmatic API, and SDK requests), regardless of the request's `Host` header.
 
 ### Region
 
@@ -664,7 +668,7 @@ aws configure set default.s3.addressing_style path
 
 - Account ID: `000000000000`
 - Region: auto-detected from SDK `Authorization` header (defaults to `us-east-1`)
-- Queue URL format: `http://{host}:{port}/000000000000/{queueName}` (or `http://sqs.{region}.{host}:{port}/000000000000/{queueName}` when `host` is configured)
+- Queue URL format: `http://sqs.{region}.{host}:{port}/000000000000/{queueName}` (host defaults to `localhost`)
 - Queue ARN format: `arn:aws:sqs:{region}:000000000000:{queueName}`
 - Topic ARN format: `arn:aws:sns:{region}:000000000000:{topicName}`
 

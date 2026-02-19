@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import * as v from "valibot";
 import { sqsQueueArn } from "./common/arnHelper.ts";
 import { snsTopicArn } from "./common/arnHelper.ts";
-import { DEFAULT_ACCOUNT_ID } from "./common/types.ts";
+
 import type { SqsStore } from "./sqs/sqsStore.ts";
 import type { SnsStore } from "./sns/snsStore.ts";
 import type { S3Store } from "./s3/s3Store.ts";
@@ -50,20 +50,16 @@ export function applyInitConfig(
   sqsStore: SqsStore,
   snsStore: SnsStore,
   s3Store: S3Store,
-  context: { host?: string; port: number; region: string },
+  context: { port: number; region: string },
 ): void {
-  const { host, port, region } = context;
+  const { port, region } = context;
 
   // Create queues first (subscriptions depend on queue ARNs)
   if (config.queues) {
+    const defaultHost = `127.0.0.1:${port}`;
     for (const q of config.queues) {
       const arn = sqsQueueArn(q.name, region);
-      let url: string;
-      if (host) {
-        url = `http://sqs.${region}.${host}:${port}/${DEFAULT_ACCOUNT_ID}/${q.name}`;
-      } else {
-        url = `http://127.0.0.1:${port}/${DEFAULT_ACCOUNT_ID}/${q.name}`;
-      }
+      const url = sqsStore.buildQueueUrl(q.name, String(port), defaultHost, region);
       sqsStore.createQueue(q.name, url, arn, q.attributes, q.tags);
     }
   }

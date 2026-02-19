@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from "node:crypto";
 import type { QueueAttributeName } from "@aws-sdk/client-sqs";
 import { md5, md5OfMessageAttributes } from "../common/md5.ts";
+import { DEFAULT_ACCOUNT_ID } from "../common/types.ts";
 import type {
   SqsMessage,
   InflightEntry,
@@ -524,7 +525,7 @@ export class SqsStore {
   private queues = new Map<string, SqsQueue>();
   private queuesByName = new Map<string, SqsQueue>();
   private queuesByArn = new Map<string, SqsQueue>();
-  host?: string;
+  host: string = "localhost";
   region?: string;
 
   createQueue(
@@ -549,6 +550,11 @@ export class SqsStore {
     this.queuesByName.delete(queue.name);
     this.queuesByArn.delete(queue.arn);
     return true;
+  }
+
+  buildQueueUrl(queueName: string, port: string, requestHost: string, region: string): string {
+    const host = this.host ? `sqs.${region}.${this.host}${port ? `:${port}` : ""}` : requestHost;
+    return `http://${host}/${DEFAULT_ACCOUNT_ID}/${queueName}`;
   }
 
   getQueue(url: string): SqsQueue | undefined {

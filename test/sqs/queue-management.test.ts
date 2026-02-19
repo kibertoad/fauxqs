@@ -7,9 +7,12 @@ import {
   GetQueueAttributesCommand,
   SetQueueAttributesCommand,
   PurgeQueueCommand,
+  SendMessageCommand,
+  ReceiveMessageCommand,
 } from "@aws-sdk/client-sqs";
 import { createSqsClient } from "../helpers/clients.js";
 import { startFauxqsTestServer, startFauxqsTestServerWithHost, type FauxqsServer } from "../helpers/setup.js";
+import { SqsStore } from "../../src/sqs/sqsStore.js";
 
 describe("SQS Queue Management", () => {
   let server: FauxqsServer;
@@ -293,6 +296,109 @@ describe("SQS region auto-detection from SDK", () => {
     );
     expect(attrs.Attributes?.QueueArn).toBe(
       "arn:aws:sqs:eu-west-1:000000000000:region-auto-queue",
+    );
+  });
+});
+
+describe("SqsStore.buildQueueUrl", () => {
+  it("uses configured host regardless of request Host header", () => {
+    const store = new SqsStore();
+    store.host = "localhost";
+
+    const fromLocalhost = store.buildQueueUrl("my-queue", "4566", "127.0.0.1:4566", "us-east-1");
+    const fromDocker = store.buildQueueUrl("my-queue", "4566", "fauxqs:4566", "us-east-1");
+    const fromOther = store.buildQueueUrl("my-queue", "4566", "some-host:4566", "us-east-1");
+
+    expect(fromLocalhost).toBe("http://sqs.us-east-1.localhost:4566/000000000000/my-queue");
+    expect(fromDocker).toBe(fromLocalhost);
+    expect(fromOther).toBe(fromLocalhost);
+  });
+
+  it("defaults host to localhost when not explicitly configured", () => {
+    const store = new SqsStore();
+
+    const url = store.buildQueueUrl("my-queue", "4566", "127.0.0.1:4566", "us-east-1");
+
+    expect(url).toBe("http://sqs.us-east-1.localhost:4566/000000000000/my-queue");
+  });
+});
+
+describe("SQS Queue URL consistency across creation paths", () => {
+  let server: FauxqsServer;
+  let sqs: ReturnType<typeof createSqsClient>;
+
+  beforeAll(async () => {
+    server = await startFauxqsTestServerWithHost("localhost");
+    sqs = createSqsClient(server.port);
+  });
+
+  afterAll(async () => {
+    sqs.destroy();
+    await server.stop();
+  });
+
+  it("queue created via init config has same URL format as queue created via SDK", async () => {
+    // Simulate Docker FAUXQS_INIT: queue pre-created at startup
+    server.setup({
+      queues: [{ name: "init-config-queue" }],
+    });
+
+    // SDK creates a different queue — SDK connects to 127.0.0.1:PORT,
+    // so its Host header differs from the configured host ("localhost")
+    const sdkResult = await sqs.send(
+      new CreateQueueCommand({ QueueName: "sdk-created-queue" }),
+    );
+
+    // Both URLs must use the configured host format
+    const expectedPrefix = `http://sqs.us-east-1.localhost:${server.port}/000000000000/`;
+
+    const initQueueUrl = (
+      await sqs.send(new GetQueueUrlCommand({ QueueName: "init-config-queue" }))
+    ).QueueUrl!;
+
+    expect(initQueueUrl).toBe(`${expectedPrefix}init-config-queue`);
+    expect(sdkResult.QueueUrl).toBe(`${expectedPrefix}sdk-created-queue`);
+  });
+
+  it("queue from init config is accessible for send/receive via SDK", async () => {
+    server.setup({
+      queues: [{ name: "init-ops-queue" }],
+    });
+
+    const queueUrl = (
+      await sqs.send(new GetQueueUrlCommand({ QueueName: "init-ops-queue" }))
+    ).QueueUrl!;
+
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: queueUrl,
+        MessageBody: "hello from docker",
+      }),
+    );
+
+    const received = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: queueUrl,
+        MaxNumberOfMessages: 1,
+      }),
+    );
+
+    expect(received.Messages).toHaveLength(1);
+    expect(received.Messages![0].Body).toBe("hello from docker");
+  });
+
+  it("SDK CreateQueue is idempotent with init-config-created queue", async () => {
+    server.setup({
+      queues: [{ name: "idempotent-init-queue" }],
+    });
+
+    // SDK calls CreateQueue with the same name — should return the same URL
+    const result = await sqs.send(
+      new CreateQueueCommand({ QueueName: "idempotent-init-queue" }),
+    );
+
+    expect(result.QueueUrl).toBe(
+      `http://sqs.us-east-1.localhost:${server.port}/000000000000/idempotent-init-queue`,
     );
   });
 });

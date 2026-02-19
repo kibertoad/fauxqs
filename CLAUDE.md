@@ -117,7 +117,7 @@ test/
 
 - Account ID: `000000000000`
 - Region: `us-east-1`
-- Queue URL format: `http://{host}:{port}/000000000000/{queueName}`
+- Queue URL format: `http://sqs.{region}.{host}:{port}/000000000000/{queueName}` (host defaults to `localhost`)
 - Queue ARN format: `arn:aws:sqs:us-east-1:000000000000:{queueName}`
 - Topic ARN format: `arn:aws:sns:us-east-1:000000000000:{topicName}`
 - Auth: All credentials accepted, never validated

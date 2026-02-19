@@ -37,7 +37,7 @@ import { S3Store } from "./s3/s3Store.ts";
 import { registerS3Routes } from "./s3/s3Router.ts";
 import { getCallerIdentity } from "./sts/getCallerIdentity.ts";
 import { sqsQueueArn, snsTopicArn } from "./common/arnHelper.ts";
-import { DEFAULT_ACCOUNT_ID, DEFAULT_REGION } from "./common/types.ts";
+import { DEFAULT_REGION } from "./common/types.ts";
 import { loadInitConfig, applyInitConfig } from "./initConfig.ts";
 export type { FauxqsInitConfig } from "./initConfig.ts";
 export { createLocalhostHandler, interceptLocalhostDns } from "./localhost.ts";
@@ -239,11 +239,9 @@ export async function startFauxqs(options?: {
   const actualPort = parseInt(url.port);
   const region = defaultRegion ?? DEFAULT_REGION;
 
+  const defaultHost = `127.0.0.1:${actualPort}`;
   function makeQueueUrl(name: string): string {
-    if (host) {
-      return `http://sqs.${region}.${host}:${actualPort}/${DEFAULT_ACCOUNT_ID}/${name}`;
-    }
-    return `http://127.0.0.1:${actualPort}/${DEFAULT_ACCOUNT_ID}/${name}`;
+    return sqsStore.buildQueueUrl(name, String(actualPort), defaultHost, region);
   }
 
   const server: FauxqsServer = {
@@ -274,7 +272,6 @@ export async function startFauxqs(options?: {
     },
     setup(config) {
       applyInitConfig(config, sqsStore, snsStore, s3Store, {
-        host,
         port: actualPort,
         region,
       });
