@@ -234,7 +234,7 @@ export async function startFauxqs(options?: {
     stores: { sqsStore, snsStore, s3Store },
   });
 
-  const listenAddress = await app.listen({ port, host: "127.0.0.1" });
+  const listenAddress = await app.listen({ port, host: "0.0.0.0" });
   const url = new URL(listenAddress);
   const actualPort = parseInt(url.port);
   const region = defaultRegion ?? DEFAULT_REGION;
