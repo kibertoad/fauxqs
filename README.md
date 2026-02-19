@@ -28,6 +28,32 @@ FAUXQS_PORT=3000 npx fauxqs
 
 A health check is available at `GET /health`.
 
+### Running in the background
+
+To keep fauxqs running while you work on your app or run tests repeatedly, start it as a background process:
+
+```bash
+npx fauxqs &
+```
+
+Or in a separate terminal:
+
+```bash
+npx fauxqs
+```
+
+All state accumulates in memory across requests, so queues, topics, and objects persist until the server is stopped.
+
+To stop the server:
+
+```bash
+# If backgrounded in the same shell
+kill %1
+
+# Cross-platform, by port
+npx cross-port-killer 4566
+```
+
 ### Configuring AWS SDK clients
 
 Point your SDK clients at the local server:
