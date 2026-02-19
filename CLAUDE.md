@@ -64,6 +64,13 @@ test/
   sqs/                       # SQS integration tests (real SDK against server)
   sns/                       # SNS integration tests
   s3/                        # S3 integration tests
+docker-acceptance/
+  docker-acceptance.ts       # Standalone Docker acceptance test (builds image, runs S3 virtual-hosted-style tests via fauxqs.dev DNS)
+.github/workflows/
+  ci.yml                     # CI pipeline
+  publish.yml                # npm publish on PR merge with version label
+  docker-publish.yml         # Docker Hub publish on v* tags (multi-platform: amd64+arm64)
+  ensure-labels.yml          # PR label enforcement
 ```
 
 ## Key Design Decisions

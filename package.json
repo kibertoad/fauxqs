@@ -9,9 +9,13 @@
     "dev": "node --watch src/server.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "test:docker": "node docker-acceptance/docker-acceptance.ts",
     "bench": "node bench/getQueueByArn.bench.ts && node bench/createMessage.bench.ts && node bench/snsPublish.bench.ts",
     "lint": "oxlint && oxfmt src && tsc --noEmit",
     "lint:fix": "oxlint --fix && oxfmt --write src",
+    "docker:build": "docker build -t kibertoad/fauxqs:latest -t kibertoad/fauxqs:$npm_package_version .",
+    "docker:push": "docker push kibertoad/fauxqs:latest && docker push kibertoad/fauxqs:$npm_package_version",
+    "docker:publish": "npm run docker:build && npm run docker:push",
     "prepublishOnly": "npm run build"
   },
   "main": "dist/app.js",

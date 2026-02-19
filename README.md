@@ -10,6 +10,7 @@ All state is in-memory. No persistence, no external storage dependencies.
 - [Usage](#usage)
   - [Running the server](#running-the-server)
   - [Running in the background](#running-in-the-background)
+  - [Running with Docker](#running-with-docker)
   - [Running in Docker Compose](#running-in-docker-compose)
   - [Configuring AWS SDK clients](#configuring-aws-sdk-clients)
   - [Programmatic usage](#programmatic-usage)
@@ -92,9 +93,26 @@ kill %1
 npx cross-port-killer 4566
 ```
 
+### Running with Docker
+
+The official Docker image is available on Docker Hub:
+
+```bash
+docker run -p 4566:4566 kibertoad/fauxqs
+```
+
+With an init config file:
+
+```bash
+docker run -p 4566:4566 \
+  -v ./init.json:/app/init.json \
+  -e FAUXQS_INIT=/app/init.json \
+  kibertoad/fauxqs
+```
+
 ### Running in Docker Compose
 
-Use the `node:24-alpine` image and mount a JSON init config to pre-create resources on startup:
+Use the `kibertoad/fauxqs` image and mount a JSON init config to pre-create resources on startup:
 
 ```json
 // scripts/fauxqs/init.json
@@ -116,9 +134,7 @@ Use the `node:24-alpine` image and mount a JSON init config to pre-create resour
 # docker-compose.yml
 services:
   fauxqs:
-    image: node:24-alpine
-    working_dir: /app
-    command: npx --yes fauxqs@1.5.0
+    image: kibertoad/fauxqs:latest
     ports:
       - "4566:4566"
     environment:
@@ -149,7 +165,6 @@ Point your SDK clients at the local server:
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { SNSClient } from "@aws-sdk/client-sns";
 import { S3Client } from "@aws-sdk/client-s3";
-import { createLocalhostHandler } from "fauxqs";
 
 const sqsClient = new SQSClient({
   endpoint: "http://localhost:4566",
@@ -163,15 +178,17 @@ const snsClient = new SNSClient({
   credentials: { accessKeyId: "test", secretAccessKey: "test" },
 });
 
+// Using fauxqs.dev wildcard DNS — no helpers or forcePathStyle needed
 const s3Client = new S3Client({
-  endpoint: "http://s3.localhost:4566",
+  endpoint: "http://s3.localhost.fauxqs.dev:4566",
   region: "us-east-1",
   credentials: { accessKeyId: "test", secretAccessKey: "test" },
-  requestHandler: createLocalhostHandler(),
 });
 ```
 
 Any credentials are accepted and never validated.
+
+> **Note:** The `fauxqs.dev` wildcard DNS (`*.localhost.fauxqs.dev` → `127.0.0.1`) replicates the approach [pioneered by LocalStack](https://docs.localstack.cloud/aws/services/s3/) with `localhost.localstack.cloud`. A public DNS entry resolves all subdomains to localhost, so virtual-hosted-style S3 requests work without `/etc/hosts` changes, custom request handlers, or `forcePathStyle`. See [S3 URL styles](#s3-url-styles) for alternative approaches.
 
 ### Programmatic usage
 
@@ -800,25 +817,35 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 
 ### S3 URL styles
 
-The AWS SDK sends S3 requests using virtual-hosted-style URLs by default (e.g., `my-bucket.s3.localhost:4566`). This requires `*.localhost` to resolve to `127.0.0.1`. fauxqs provides helpers for this, plus a simple fallback.
+The AWS SDK sends S3 requests using virtual-hosted-style URLs by default (e.g., `my-bucket.s3.localhost:4566`). This requires `*.localhost` to resolve to `127.0.0.1`. fauxqs supports several approaches.
 
-#### Option 1: `createLocalhostHandler()` (recommended)
+#### Option 1: `fauxqs.dev` wildcard DNS (recommended for Docker image)
 
-Creates an HTTP request handler that resolves all hostnames to `127.0.0.1`. Scoped to a single client instance — no side effects.
+Works out of the box when running the [official Docker image](#running-with-docker) — nothing to configure. The `fauxqs.dev` domain provides wildcard DNS — `*.localhost.fauxqs.dev` resolves to `127.0.0.1` via a public DNS entry. Just use `s3.localhost.fauxqs.dev` as your endpoint. This replicates the approach [pioneered by LocalStack](https://docs.localstack.cloud/aws/services/s3/) with `localhost.localstack.cloud`: a public DNS record maps all subdomains to localhost, so virtual-hosted-style requests work without `/etc/hosts` changes, custom request handlers, or `forcePathStyle`. Works from any language, `fetch()`, or CLI tool.
 
 ```typescript
 import { S3Client } from "@aws-sdk/client-s3";
-import { createLocalhostHandler } from "fauxqs";
 
 const s3 = new S3Client({
-  endpoint: "http://s3.localhost:4566",
+  endpoint: "http://s3.localhost.fauxqs.dev:4566",
   region: "us-east-1",
   credentials: { accessKeyId: "test", secretAccessKey: "test" },
-  requestHandler: createLocalhostHandler(),
 });
 ```
 
-#### Option 2: `interceptLocalhostDns()` (global, for test suites)
+You can also use raw HTTP requests:
+
+```bash
+# Upload
+curl -X PUT --data-binary @file.txt http://my-bucket.s3.localhost.fauxqs.dev:4566/file.txt
+
+# Download
+curl http://my-bucket.s3.localhost.fauxqs.dev:4566/file.txt
+```
+
+This is the recommended approach for Docker and docker-compose setups. If you are using fauxqs as an [embedded library](#programmatic-usage) in Node.js tests, prefer Option 2 (`interceptLocalhostDns`) instead — it patches DNS globally so all clients work without modification, and requires no external DNS.
+
+#### Option 2: `interceptLocalhostDns()` (recommended for embedded library)
 
 Patches Node.js `dns.lookup` so that any hostname ending in `.localhost` resolves to `127.0.0.1`. No client changes needed.
 
@@ -841,7 +868,23 @@ The suffix is configurable: `interceptLocalhostDns("myhost.test")` matches `*.my
 
 **Tradeoffs:** Affects all DNS lookups in the process. Best suited for test suites (`beforeAll` / `afterAll`).
 
-#### Option 3: `forcePathStyle` (simplest fallback)
+#### Option 3: `createLocalhostHandler()` (per-client)
+
+Creates an HTTP request handler that resolves all hostnames to `127.0.0.1`. Scoped to a single client instance — no side effects, no external DNS dependency.
+
+```typescript
+import { S3Client } from "@aws-sdk/client-s3";
+import { createLocalhostHandler } from "fauxqs";
+
+const s3 = new S3Client({
+  endpoint: "http://s3.localhost:4566",
+  region: "us-east-1",
+  credentials: { accessKeyId: "test", secretAccessKey: "test" },
+  requestHandler: createLocalhostHandler(),
+});
+```
+
+#### Option 4: `forcePathStyle` (simplest fallback)
 
 Forces the SDK to use path-style URLs (`http://localhost:4566/my-bucket/key`) instead of virtual-hosted-style. No DNS or handler changes needed, but affects how the SDK resolves S3 URLs at runtime.
 
