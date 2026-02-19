@@ -64,7 +64,7 @@ npx cross-port-killer 4566
 
 ### Running in Docker Compose
 
-Use the `node:24-alpine` image with `npx fauxqs` and mount a JSON init config to pre-create resources:
+Use the `node:24-alpine` image and mount a JSON init config to pre-create resources on startup:
 
 ```json
 // scripts/fauxqs/init.json
@@ -88,13 +88,11 @@ services:
   fauxqs:
     image: node:24-alpine
     working_dir: /app
-    command: npx --yes fauxqs@1.3.1
+    command: npx --yes fauxqs@1.3.3
     ports:
       - "4566:4566"
     environment:
-      - FAUXQS_PORT=4566
       - FAUXQS_INIT=/app/init.json
-      - FAUXQS_LOGGER=false
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:4566/health || exit 1"]
       interval: 2s
