@@ -1,0 +1,33 @@
+services:
+  fauxqs-docker:
+    image: kibertoad/fauxqs:latest
+    ports:
+      - "14566:4566"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:4566/_fauxqs/queues"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  fauxqs-npx:
+    image: node:24-alpine
+    command: ["npx", "fauxqs"]
+    ports:
+      - "14567:4566"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:4566/_fauxqs/queues"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  localstack:
+    image: localstack/localstack
+    ports:
+      - "14568:4566"
+    environment:
+      - SERVICES=sqs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 2s
+      timeout: 5s
+      retries: 15

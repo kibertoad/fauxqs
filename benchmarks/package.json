@@ -1,0 +1,26 @@
+{
+  "name": "fauxqs-benchmarks",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bench:in-memory": "node --import tsx src/runners/in-memory.ts",
+    "bench:docker-fauxqs": "node --import tsx src/runners/docker-fauxqs.ts",
+    "bench:npx-fauxqs": "node --import tsx src/runners/npx-fauxqs.ts",
+    "bench:localstack": "node --import tsx src/runners/localstack.ts",
+    "bench:merge": "node --import tsx src/merge-results.ts",
+    "bench:clean": "del-cli results/*",
+    "bench:all": "npm run bench:in-memory && npm run bench:docker-fauxqs && npm run bench:npx-fauxqs && npm run bench:localstack && npm run bench:merge"
+  },
+  "dependencies": {
+    "fauxqs": "file:..",
+    "@aws-sdk/client-sqs": "^3.700.0"
+  },
+  "devDependencies": {
+    "tinybench": "^3.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0",
+    "del-cli": "^6.0.0"
+  }
+}
