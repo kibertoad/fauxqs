@@ -79,6 +79,14 @@ export function buildApp(options?: BuildAppOptions) {
       if (!hostname.includes(".") || /^\d+\.\d+\.\d+\.\d+$/.test(hostname)) {
         return req.url ?? "/";
       }
+      // SNS uses x-www-form-urlencoded, SQS uses x-amz-json-1.0 — these are
+      // never S3 requests, so skip the virtual-hosted-style bucket rewrite.
+      // This avoids misrouting when the endpoint hostname itself contains dots
+      // (e.g. localhost.fauxqs.dev).
+      const ct = req.headers["content-type"] ?? "";
+      if (ct.includes("x-www-form-urlencoded") || ct.includes("x-amz-json-1.0")) {
+        return req.url ?? "/";
+      }
       const dotIndex = hostname.indexOf(".");
       const bucket = hostname.substring(0, dotIndex);
       return `/${bucket}${req.url ?? "/"}`;
