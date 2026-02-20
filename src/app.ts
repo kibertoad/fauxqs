@@ -340,8 +340,8 @@ export async function startFauxqs(options?: {
   const region = defaultRegion ?? DEFAULT_REGION;
 
   const defaultHost = `127.0.0.1:${actualPort}`;
-  function makeQueueUrl(name: string): string {
-    return sqsStore.buildQueueUrl(name, String(actualPort), defaultHost, region);
+  function makeQueueUrl(name: string, queueRegion: string): string {
+    return sqsStore.buildQueueUrl(name, String(actualPort), defaultHost, queueRegion);
   }
 
   const server: FauxqsServer = {
@@ -365,14 +365,15 @@ export async function startFauxqs(options?: {
     createQueue(name, opts) {
       const r = opts?.region ?? region;
       const arn = sqsQueueArn(name, r);
-      const queueUrl = makeQueueUrl(name);
+      const queueUrl = makeQueueUrl(name, r);
       sqsStore.createQueue(name, queueUrl, arn, opts?.attributes, opts?.tags);
     },
     inspectQueue(name) {
       return sqsStore.inspectQueue(name);
     },
     createTopic(name, opts) {
-      snsStore.createTopic(name, opts?.attributes, opts?.tags, opts?.region);
+      const r = opts?.region ?? region;
+      snsStore.createTopic(name, opts?.attributes, opts?.tags, r);
     },
     subscribe(opts) {
       const r = opts.region ?? region;

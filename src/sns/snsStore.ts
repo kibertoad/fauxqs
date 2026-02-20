@@ -12,11 +12,11 @@ export class SnsStore {
 
   createTopic(
     name: string,
-    attributes?: Record<string, string>,
-    tags?: Record<string, string>,
-    region?: string,
+    attributes: Record<string, string> | undefined,
+    tags: Record<string, string> | undefined,
+    region: string,
   ): SnsTopic {
-    const arn = snsTopicArn(name, region ?? this.region);
+    const arn = snsTopicArn(name, region);
 
     const existing = this.topics.get(arn);
     if (existing) {
@@ -124,7 +124,7 @@ export class SnsStore {
 
     const id = randomUUID();
     const topicRegion = parseArn(topicArn).region;
-    const arn = snsSubscriptionArn(topic.name, id, topicRegion || this.region);
+    const arn = snsSubscriptionArn(topic.name, id, topicRegion);
 
     const subscription: SnsSubscription = {
       arn,

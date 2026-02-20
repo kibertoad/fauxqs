@@ -1,15 +1,15 @@
-import { DEFAULT_ACCOUNT_ID, DEFAULT_REGION } from "./types.ts";
+import { DEFAULT_ACCOUNT_ID } from "./types.ts";
 
-export function sqsQueueArn(queueName: string, region?: string): string {
-  return `arn:aws:sqs:${region ?? DEFAULT_REGION}:${DEFAULT_ACCOUNT_ID}:${queueName}`;
+export function sqsQueueArn(queueName: string, region: string): string {
+  return `arn:aws:sqs:${region}:${DEFAULT_ACCOUNT_ID}:${queueName}`;
 }
 
-export function snsTopicArn(topicName: string, region?: string): string {
-  return `arn:aws:sns:${region ?? DEFAULT_REGION}:${DEFAULT_ACCOUNT_ID}:${topicName}`;
+export function snsTopicArn(topicName: string, region: string): string {
+  return `arn:aws:sns:${region}:${DEFAULT_ACCOUNT_ID}:${topicName}`;
 }
 
-export function snsSubscriptionArn(topicName: string, id: string, region?: string): string {
-  return `arn:aws:sns:${region ?? DEFAULT_REGION}:${DEFAULT_ACCOUNT_ID}:${topicName}:${id}`;
+export function snsSubscriptionArn(topicName: string, id: string, region: string): string {
+  return `arn:aws:sns:${region}:${DEFAULT_ACCOUNT_ID}:${topicName}:${id}`;
 }
 
 export function parseArn(arn: string) {
