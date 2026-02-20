@@ -1,3 +1,4 @@
+import type { GetTopicAttributesResponse } from "@aws-sdk/client-sns";
 import { DEFAULT_ACCOUNT_ID } from "../../common/types.ts";
 import { SnsError } from "../../common/errors.ts";
 import { snsSuccessResponse, escapeXml } from "../../common/xml.ts";
@@ -51,7 +52,9 @@ export function getTopicAttributes(params: Record<string, string>, snsStore: Sns
     ...topic.attributes,
   };
 
-  const entriesXml = Object.entries(allAttributes)
+  const result = { Attributes: allAttributes } satisfies GetTopicAttributesResponse;
+
+  const entriesXml = Object.entries(result.Attributes!)
     .map(
       ([key, value]) =>
         `<entry><key>${escapeXml(key)}</key><value>${escapeXml(value)}</value></entry>`,

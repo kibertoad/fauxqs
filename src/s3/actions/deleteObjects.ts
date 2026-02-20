@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import type { DeletedObject } from "@aws-sdk/client-s3";
 import { escapeXml } from "../../common/xml.ts";
 import type { S3Store } from "../s3Store.ts";
 
@@ -31,8 +32,10 @@ export function deleteObjects(
 
   const deleted = store.deleteObjects(bucket, keys);
 
-  const deletedXml = deleted
-    .map((key) => `<Deleted><Key>${escapeXml(key)}</Key></Deleted>`)
+  const deletedData = deleted.map((key) => ({ Key: key }) satisfies DeletedObject);
+
+  const deletedXml = deletedData
+    .map((d) => `<Deleted><Key>${escapeXml(d.Key!)}</Key></Deleted>`)
     .join("\n    ");
 
   const xml = [

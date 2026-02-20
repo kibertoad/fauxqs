@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import type { CreateMultipartUploadOutput } from "@aws-sdk/client-s3";
 import { escapeXml } from "../../common/xml.ts";
 import type { S3Store } from "../s3Store.ts";
 
@@ -29,12 +30,18 @@ export function createMultipartUpload(
 
   const uploadId = store.createMultipartUpload(bucket, key, contentType, metadata);
 
+  const result = {
+    Bucket: bucket,
+    Key: key,
+    UploadId: uploadId,
+  } satisfies CreateMultipartUploadOutput;
+
   const xml = [
     `<?xml version="1.0" encoding="UTF-8"?>`,
     `<InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`,
-    `  <Bucket>${escapeXml(bucket)}</Bucket>`,
-    `  <Key>${escapeXml(key)}</Key>`,
-    `  <UploadId>${escapeXml(uploadId)}</UploadId>`,
+    `  <Bucket>${escapeXml(result.Bucket!)}</Bucket>`,
+    `  <Key>${escapeXml(result.Key!)}</Key>`,
+    `  <UploadId>${escapeXml(result.UploadId!)}</UploadId>`,
     `</InitiateMultipartUploadResult>`,
   ].join("\n");
 

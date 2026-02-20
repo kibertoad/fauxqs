@@ -1,3 +1,4 @@
+import type { ListTagsForResourceResponse, Tag } from "@aws-sdk/client-sns";
 import { SnsError } from "../../common/errors.ts";
 import { snsSuccessResponse, escapeXml } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
@@ -59,10 +60,16 @@ export function listTagsForResource(params: Record<string, string>, snsStore: Sn
     throw new SnsError("NotFound", "Resource does not exist", 404);
   }
 
-  const membersXml = Array.from(topic.tags.entries())
-    .map(
-      ([key, value]) =>
-        `<member><Key>${escapeXml(key)}</Key><Value>${escapeXml(value)}</Value></member>`,
+  const result = {
+    Tags: Array.from(topic.tags.entries()).map(
+      ([key, value]) => ({ Key: key, Value: value }) satisfies Tag,
+    ),
+  } satisfies ListTagsForResourceResponse;
+
+  const membersXml = result
+    .Tags!.map(
+      (tag) =>
+        `<member><Key>${escapeXml(tag.Key!)}</Key><Value>${escapeXml(tag.Value!)}</Value></member>`,
     )
     .join("\n    ");
 

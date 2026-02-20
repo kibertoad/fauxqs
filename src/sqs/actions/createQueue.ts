@@ -1,4 +1,5 @@
 import type { FastifyRequest } from "fastify";
+import type { CreateQueueResult } from "@aws-sdk/client-sqs";
 import { SqsError } from "../../common/errors.ts";
 import { sqsQueueArn } from "../../common/arnHelper.ts";
 import { DEFAULT_REGION, regionFromAuth } from "../../common/types.ts";
@@ -9,7 +10,7 @@ export function createQueue(
   body: Record<string, unknown>,
   store: SqsStore,
   request: FastifyRequest,
-): unknown {
+): CreateQueueResult {
   const queueName = body.QueueName as string | undefined;
   if (!queueName) {
     throw new SqsError("InvalidParameterValue", "Queue name is required");
@@ -61,7 +62,7 @@ export function createQueue(
         );
       }
     }
-    return { QueueUrl: existing.url };
+    return { QueueUrl: existing.url } satisfies CreateQueueResult;
   }
 
   const region = store.region ?? regionFromAuth(request.headers.authorization) ?? DEFAULT_REGION;
@@ -71,5 +72,5 @@ export function createQueue(
   const arn = sqsQueueArn(queueName, region);
 
   const queue = store.createQueue(queueName, url, arn, attributes, tags);
-  return { QueueUrl: queue.url };
+  return { QueueUrl: queue.url } satisfies CreateQueueResult;
 }

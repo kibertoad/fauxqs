@@ -1,3 +1,4 @@
+import type { ConfirmSubscriptionResponse } from "@aws-sdk/client-sns";
 import { SnsError } from "../../common/errors.ts";
 import { snsSuccessResponse, escapeXml } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
@@ -21,14 +22,16 @@ export function confirmSubscription(params: Record<string, string>, snsStore: Sn
 
   if (sub) {
     sub.confirmed = true;
+    const result = { SubscriptionArn: sub.arn } satisfies ConfirmSubscriptionResponse;
     return snsSuccessResponse(
       "ConfirmSubscription",
-      `<SubscriptionArn>${escapeXml(sub.arn)}</SubscriptionArn>`,
+      `<SubscriptionArn>${escapeXml(result.SubscriptionArn!)}</SubscriptionArn>`,
     );
   }
 
+  const result = { SubscriptionArn: "PendingConfirmation" } satisfies ConfirmSubscriptionResponse;
   return snsSuccessResponse(
     "ConfirmSubscription",
-    `<SubscriptionArn>PendingConfirmation</SubscriptionArn>`,
+    `<SubscriptionArn>${result.SubscriptionArn}</SubscriptionArn>`,
   );
 }

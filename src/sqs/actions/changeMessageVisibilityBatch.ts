@@ -1,3 +1,8 @@
+import type {
+  ChangeMessageVisibilityBatchResult,
+  ChangeMessageVisibilityBatchResultEntry,
+  BatchResultErrorEntry,
+} from "@aws-sdk/client-sqs";
 import { SqsError } from "../../common/errors.ts";
 import type { SqsStore } from "../sqsStore.ts";
 
@@ -10,7 +15,7 @@ interface BatchEntry {
 export function changeMessageVisibilityBatch(
   body: Record<string, unknown>,
   store: SqsStore,
-): unknown {
+): ChangeMessageVisibilityBatchResult {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -32,13 +37,8 @@ export function changeMessageVisibilityBatch(
     );
   }
 
-  const successful: Array<{ Id: string }> = [];
-  const failed: Array<{
-    Id: string;
-    SenderFault: boolean;
-    Code: string;
-    Message: string;
-  }> = [];
+  const successful: ChangeMessageVisibilityBatchResultEntry[] = [];
+  const failed: BatchResultErrorEntry[] = [];
 
   for (const entry of entries) {
     if (!queue.inflightMessages.has(entry.ReceiptHandle)) {
@@ -54,5 +54,5 @@ export function changeMessageVisibilityBatch(
     }
   }
 
-  return { Successful: successful, Failed: failed };
+  return { Successful: successful, Failed: failed } satisfies ChangeMessageVisibilityBatchResult;
 }

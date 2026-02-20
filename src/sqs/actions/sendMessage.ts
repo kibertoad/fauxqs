@@ -1,3 +1,4 @@
+import type { SendMessageResult } from "@aws-sdk/client-sqs";
 import { SqsError } from "../../common/errors.ts";
 import { md5, md5OfMessageAttributes } from "../../common/md5.ts";
 import type { SqsStore } from "../sqsStore.ts";
@@ -5,7 +6,7 @@ import { SqsStore as SqsStoreClass } from "../sqsStore.ts";
 import type { MessageAttributeValue } from "../sqsTypes.ts";
 import { INVALID_MESSAGE_BODY_CHAR, calculateMessageSize } from "../sqsTypes.ts";
 
-export function sendMessage(body: Record<string, unknown>, store: SqsStore): unknown {
+export function sendMessage(body: Record<string, unknown>, store: SqsStore): SendMessageResult {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -55,16 +56,11 @@ export function sendMessage(body: Record<string, unknown>, store: SqsStore): unk
 
   queue.enqueue(msg);
 
-  const result: Record<string, unknown> = {
+  return {
     MessageId: msg.messageId,
     MD5OfMessageBody: msg.md5OfBody,
-  };
-
-  if (msg.md5OfMessageAttributes) {
-    result.MD5OfMessageAttributes = msg.md5OfMessageAttributes;
-  }
-
-  return result;
+    ...(msg.md5OfMessageAttributes ? { MD5OfMessageAttributes: msg.md5OfMessageAttributes } : {}),
+  } satisfies SendMessageResult;
 }
 
 function sendFifoMessage(
@@ -72,7 +68,7 @@ function sendFifoMessage(
   queue: import("../sqsStore.ts").SqsQueue,
   messageBody: string,
   messageAttributes: Record<string, MessageAttributeValue>,
-): unknown {
+): SendMessageResult {
   const messageGroupId = body.MessageGroupId as string | undefined;
   if (!messageGroupId) {
     throw new SqsError(
@@ -107,16 +103,13 @@ function sendFifoMessage(
   const dedupResult = queue.checkDeduplication(messageDeduplicationId);
   if (dedupResult.isDuplicate) {
     // Return the original message ID and sequence number without re-enqueue
-    const result: Record<string, unknown> = {
+    const attrsDigest = md5OfMessageAttributes(messageAttributes);
+    return {
       MessageId: dedupResult.originalMessageId,
       MD5OfMessageBody: md5(messageBody),
-    };
-    const attrsDigest = md5OfMessageAttributes(messageAttributes);
-    if (attrsDigest) {
-      result.MD5OfMessageAttributes = attrsDigest;
-    }
-    result.SequenceNumber = dedupResult.originalSequenceNumber;
-    return result;
+      ...(attrsDigest ? { MD5OfMessageAttributes: attrsDigest } : {}),
+      SequenceNumber: dedupResult.originalSequenceNumber,
+    } satisfies SendMessageResult;
   }
 
   // Queue-level delay applies to FIFO queues
@@ -133,15 +126,10 @@ function sendFifoMessage(
   queue.recordDeduplication(messageDeduplicationId, msg.messageId, msg.sequenceNumber);
   queue.enqueue(msg);
 
-  const result: Record<string, unknown> = {
+  return {
     MessageId: msg.messageId,
     MD5OfMessageBody: msg.md5OfBody,
+    ...(msg.md5OfMessageAttributes ? { MD5OfMessageAttributes: msg.md5OfMessageAttributes } : {}),
     SequenceNumber: msg.sequenceNumber,
-  };
-
-  if (msg.md5OfMessageAttributes) {
-    result.MD5OfMessageAttributes = msg.md5OfMessageAttributes;
-  }
-
-  return result;
+  } satisfies SendMessageResult;
 }

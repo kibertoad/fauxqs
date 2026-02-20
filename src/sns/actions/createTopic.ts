@@ -1,3 +1,4 @@
+import type { CreateTopicResponse } from "@aws-sdk/client-sns";
 import { SnsError } from "../../common/errors.ts";
 import { snsSuccessResponse } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
@@ -83,5 +84,6 @@ export function createTopic(params: Record<string, string>, snsStore: SnsStore):
     Object.keys(resolvedTags).length > 0 ? resolvedTags : undefined,
   );
 
-  return snsSuccessResponse("CreateTopic", `<TopicArn>${topic.arn}</TopicArn>`);
+  const result = { TopicArn: topic.arn } satisfies CreateTopicResponse;
+  return snsSuccessResponse("CreateTopic", `<TopicArn>${result.TopicArn}</TopicArn>`);
 }

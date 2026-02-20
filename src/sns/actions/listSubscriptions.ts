@@ -1,3 +1,4 @@
+import type { Subscription } from "@aws-sdk/client-sns";
 import { snsSuccessResponse, escapeXml } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
 
@@ -25,16 +26,22 @@ function formatSubscriptionList(
   }>,
 ): string {
   const membersXml = subscriptions
-    .map(
-      (s) =>
-        `<member>
-        <SubscriptionArn>${escapeXml(s.arn)}</SubscriptionArn>
-        <TopicArn>${escapeXml(s.topicArn)}</TopicArn>
-        <Protocol>${escapeXml(s.protocol)}</Protocol>
-        <Endpoint>${escapeXml(s.endpoint)}</Endpoint>
-        <Owner>000000000000</Owner>
-      </member>`,
-    )
+    .map((s) => {
+      const sub = {
+        SubscriptionArn: s.arn,
+        TopicArn: s.topicArn,
+        Protocol: s.protocol,
+        Endpoint: s.endpoint,
+        Owner: "000000000000",
+      } satisfies Subscription;
+      return `<member>
+        <SubscriptionArn>${escapeXml(sub.SubscriptionArn!)}</SubscriptionArn>
+        <TopicArn>${escapeXml(sub.TopicArn!)}</TopicArn>
+        <Protocol>${escapeXml(sub.Protocol!)}</Protocol>
+        <Endpoint>${escapeXml(sub.Endpoint!)}</Endpoint>
+        <Owner>${sub.Owner}</Owner>
+      </member>`;
+    })
     .join("\n    ");
 
   return snsSuccessResponse(action, `<Subscriptions>${membersXml}</Subscriptions>`);

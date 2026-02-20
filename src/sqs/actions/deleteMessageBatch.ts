@@ -1,3 +1,8 @@
+import type {
+  DeleteMessageBatchResult,
+  DeleteMessageBatchResultEntry,
+  BatchResultErrorEntry,
+} from "@aws-sdk/client-sqs";
 import { SqsError } from "../../common/errors.ts";
 import type { SqsStore } from "../sqsStore.ts";
 
@@ -6,7 +11,10 @@ interface BatchEntry {
   ReceiptHandle: string;
 }
 
-export function deleteMessageBatch(body: Record<string, unknown>, store: SqsStore): unknown {
+export function deleteMessageBatch(
+  body: Record<string, unknown>,
+  store: SqsStore,
+): DeleteMessageBatchResult {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -28,13 +36,8 @@ export function deleteMessageBatch(body: Record<string, unknown>, store: SqsStor
     );
   }
 
-  const successful: Array<{ Id: string }> = [];
-  const failed: Array<{
-    Id: string;
-    SenderFault: boolean;
-    Code: string;
-    Message: string;
-  }> = [];
+  const successful: DeleteMessageBatchResultEntry[] = [];
+  const failed: BatchResultErrorEntry[] = [];
 
   for (const entry of entries) {
     const deleted = queue.deleteMessage(entry.ReceiptHandle);
@@ -46,5 +49,5 @@ export function deleteMessageBatch(body: Record<string, unknown>, store: SqsStor
     }
   }
 
-  return { Successful: successful, Failed: failed };
+  return { Successful: successful, Failed: failed } satisfies DeleteMessageBatchResult;
 }

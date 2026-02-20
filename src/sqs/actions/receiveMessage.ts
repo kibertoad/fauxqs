@@ -1,4 +1,8 @@
-import type { MessageSystemAttributeName } from "@aws-sdk/client-sqs";
+import type {
+  MessageSystemAttributeName,
+  ReceiveMessageResult,
+  Message,
+} from "@aws-sdk/client-sqs";
 import { SqsError } from "../../common/errors.ts";
 import type { SqsStore } from "../sqsStore.ts";
 import type { SqsMessage, ReceivedMessage } from "../sqsTypes.ts";
@@ -6,7 +10,7 @@ import type { SqsMessage, ReceivedMessage } from "../sqsTypes.ts";
 export async function receiveMessage(
   body: Record<string, unknown>,
   store: SqsStore,
-): Promise<unknown> {
+): Promise<ReceiveMessageResult> {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -64,7 +68,9 @@ export async function receiveMessage(
     addSystemAttributes(messages, queue, systemAttributeNames);
   }
 
-  return { Messages: messages.length > 0 ? messages : undefined };
+  return {
+    Messages: messages.length > 0 ? (messages as Message[]) : undefined,
+  } satisfies ReceiveMessageResult;
 }
 
 function wants(

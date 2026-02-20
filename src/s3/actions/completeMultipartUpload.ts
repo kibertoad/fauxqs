@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import type { CompleteMultipartUploadOutput } from "@aws-sdk/client-s3";
 import { escapeXml } from "../../common/xml.ts";
 import type { S3Store } from "../s3Store.ts";
 
@@ -54,13 +55,20 @@ export function completeMultipartUpload(
   const host = request.headers.host ?? "localhost";
   const location = `http://${host}/${bucket}/${key}`;
 
+  const result = {
+    Location: location,
+    Bucket: bucket,
+    Key: key,
+    ETag: obj.etag,
+  } satisfies CompleteMultipartUploadOutput;
+
   const xml = [
     `<?xml version="1.0" encoding="UTF-8"?>`,
     `<CompleteMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`,
-    `  <Location>${escapeXml(location)}</Location>`,
-    `  <Bucket>${escapeXml(bucket)}</Bucket>`,
-    `  <Key>${escapeXml(key)}</Key>`,
-    `  <ETag>${escapeXml(obj.etag)}</ETag>`,
+    `  <Location>${escapeXml(result.Location!)}</Location>`,
+    `  <Bucket>${escapeXml(result.Bucket!)}</Bucket>`,
+    `  <Key>${escapeXml(result.Key!)}</Key>`,
+    `  <ETag>${escapeXml(result.ETag!)}</ETag>`,
     `</CompleteMultipartUploadResult>`,
   ].join("\n");
 

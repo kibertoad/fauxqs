@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import type { CopyObjectOutput } from "@aws-sdk/client-s3";
 import type { S3Store } from "../s3Store.ts";
 
 /**
@@ -86,11 +87,18 @@ export function putObject(
       });
     }
 
+    const result = {
+      CopyObjectResult: {
+        ETag: obj.etag,
+        LastModified: obj.lastModified,
+      },
+    } satisfies CopyObjectOutput;
+
     const xml = [
       `<?xml version="1.0" encoding="UTF-8"?>`,
       `<CopyObjectResult>`,
-      `  <ETag>${obj.etag}</ETag>`,
-      `  <LastModified>${obj.lastModified.toISOString()}</LastModified>`,
+      `  <ETag>${result.CopyObjectResult!.ETag}</ETag>`,
+      `  <LastModified>${result.CopyObjectResult!.LastModified!.toISOString()}</LastModified>`,
       `</CopyObjectResult>`,
     ].join("\n");
 

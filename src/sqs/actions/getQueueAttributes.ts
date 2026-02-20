@@ -1,7 +1,11 @@
+import type { GetQueueAttributesResult } from "@aws-sdk/client-sqs";
 import { SqsError } from "../../common/errors.ts";
 import type { SqsStore } from "../sqsStore.ts";
 
-export function getQueueAttributes(body: Record<string, unknown>, store: SqsStore): unknown {
+export function getQueueAttributes(
+  body: Record<string, unknown>,
+  store: SqsStore,
+): GetQueueAttributesResult {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -15,5 +19,5 @@ export function getQueueAttributes(body: Record<string, unknown>, store: SqsStor
   const attributeNames = (body.AttributeNames as string[]) ?? ["All"];
   const attributes = queue.getAllAttributes(attributeNames);
 
-  return { Attributes: attributes };
+  return { Attributes: attributes } satisfies GetQueueAttributesResult;
 }

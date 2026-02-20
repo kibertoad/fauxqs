@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { PublishResponse } from "@aws-sdk/client-sns";
 import { SnsError } from "../../common/errors.ts";
 import { snsSuccessResponse } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
@@ -159,7 +160,8 @@ export function publish(
     queue.enqueue(sqsMsg);
   }
 
-  return snsSuccessResponse("Publish", `<MessageId>${messageId}</MessageId>`);
+  const result = { MessageId: messageId } satisfies PublishResponse;
+  return snsSuccessResponse("Publish", `<MessageId>${result.MessageId}</MessageId>`);
 }
 
 export function publishBatch(

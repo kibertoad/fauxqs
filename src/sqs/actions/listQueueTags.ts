@@ -1,7 +1,8 @@
+import type { ListQueueTagsResult } from "@aws-sdk/client-sqs";
 import { SqsError } from "../../common/errors.ts";
 import type { SqsStore } from "../sqsStore.ts";
 
-export function listQueueTags(body: Record<string, unknown>, store: SqsStore): unknown {
+export function listQueueTags(body: Record<string, unknown>, store: SqsStore): ListQueueTagsResult {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -12,5 +13,5 @@ export function listQueueTags(body: Record<string, unknown>, store: SqsStore): u
     throw new SqsError("NonExistentQueue", "The specified queue does not exist.");
   }
 
-  return { Tags: Object.fromEntries(queue.tags) };
+  return { Tags: Object.fromEntries(queue.tags) } satisfies ListQueueTagsResult;
 }

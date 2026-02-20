@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import type { _Object, CommonPrefix } from "@aws-sdk/client-s3";
 import { escapeXml } from "../../common/xml.ts";
 import type { S3Store } from "../s3Store.ts";
 
@@ -40,21 +41,34 @@ function listObjectsV1(
     marker,
   });
 
-  const contentsXml = objects
+  const contentsData = objects.map(
+    (obj) =>
+      ({
+        Key: obj.key,
+        Size: obj.contentLength,
+        ETag: obj.etag,
+        LastModified: obj.lastModified,
+        StorageClass: "STANDARD",
+      }) satisfies _Object,
+  );
+
+  const commonPrefixesData = commonPrefixes.map((p) => ({ Prefix: p }) satisfies CommonPrefix);
+
+  const contentsXml = contentsData
     .map(
       (obj) =>
         `<Contents>` +
-        `<Key>${escapeXml(obj.key)}</Key>` +
-        `<Size>${obj.contentLength}</Size>` +
-        `<ETag>${escapeXml(obj.etag)}</ETag>` +
-        `<LastModified>${obj.lastModified.toISOString()}</LastModified>` +
-        `<StorageClass>STANDARD</StorageClass>` +
+        `<Key>${escapeXml(obj.Key!)}</Key>` +
+        `<Size>${obj.Size}</Size>` +
+        `<ETag>${escapeXml(obj.ETag!)}</ETag>` +
+        `<LastModified>${obj.LastModified!.toISOString()}</LastModified>` +
+        `<StorageClass>${obj.StorageClass}</StorageClass>` +
         `</Contents>`,
     )
     .join("\n    ");
 
-  const commonPrefixesXml = commonPrefixes
-    .map((p) => `<CommonPrefixes><Prefix>${escapeXml(p)}</Prefix></CommonPrefixes>`)
+  const commonPrefixesXml = commonPrefixesData
+    .map((p) => `<CommonPrefixes><Prefix>${escapeXml(p.Prefix!)}</Prefix></CommonPrefixes>`)
     .join("\n    ");
 
   const nextMarker = isTruncated && objects.length > 0 ? objects[objects.length - 1].key : "";
@@ -107,21 +121,34 @@ function listObjectsV2(
 
   const keyCount = objects.length + commonPrefixes.length;
 
-  const contentsXml = objects
+  const contentsData = objects.map(
+    (obj) =>
+      ({
+        Key: obj.key,
+        Size: obj.contentLength,
+        ETag: obj.etag,
+        LastModified: obj.lastModified,
+        StorageClass: "STANDARD",
+      }) satisfies _Object,
+  );
+
+  const commonPrefixesData = commonPrefixes.map((p) => ({ Prefix: p }) satisfies CommonPrefix);
+
+  const contentsXml = contentsData
     .map(
       (obj) =>
         `<Contents>` +
-        `<Key>${escapeXml(obj.key)}</Key>` +
-        `<Size>${obj.contentLength}</Size>` +
-        `<ETag>${escapeXml(obj.etag)}</ETag>` +
-        `<LastModified>${obj.lastModified.toISOString()}</LastModified>` +
-        `<StorageClass>STANDARD</StorageClass>` +
+        `<Key>${escapeXml(obj.Key!)}</Key>` +
+        `<Size>${obj.Size}</Size>` +
+        `<ETag>${escapeXml(obj.ETag!)}</ETag>` +
+        `<LastModified>${obj.LastModified!.toISOString()}</LastModified>` +
+        `<StorageClass>${obj.StorageClass}</StorageClass>` +
         `</Contents>`,
     )
     .join("\n    ");
 
-  const commonPrefixesXml = commonPrefixes
-    .map((p) => `<CommonPrefixes><Prefix>${escapeXml(p)}</Prefix></CommonPrefixes>`)
+  const commonPrefixesXml = commonPrefixesData
+    .map((p) => `<CommonPrefixes><Prefix>${escapeXml(p.Prefix!)}</Prefix></CommonPrefixes>`)
     .join("\n    ");
 
   const parts = [

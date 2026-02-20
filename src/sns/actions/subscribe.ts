@@ -1,3 +1,4 @@
+import type { SubscribeResponse } from "@aws-sdk/client-sns";
 import { SnsError } from "../../common/errors.ts";
 import { snsSuccessResponse, escapeXml } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
@@ -55,8 +56,9 @@ export function subscribe(params: Record<string, string>, snsStore: SnsStore): s
     throw new SnsError("NotFound", "Topic does not exist", 404);
   }
 
+  const result = { SubscriptionArn: subscription.arn } satisfies SubscribeResponse;
   return snsSuccessResponse(
     "Subscribe",
-    `<SubscriptionArn>${escapeXml(subscription.arn)}</SubscriptionArn>`,
+    `<SubscriptionArn>${escapeXml(result.SubscriptionArn!)}</SubscriptionArn>`,
   );
 }

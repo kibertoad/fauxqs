@@ -1,3 +1,8 @@
+import type {
+  SendMessageBatchResult,
+  SendMessageBatchResultEntry,
+  BatchResultErrorEntry,
+} from "@aws-sdk/client-sqs";
 import { SqsError } from "../../common/errors.ts";
 import { md5, md5OfMessageAttributes } from "../../common/md5.ts";
 import type { SqsStore } from "../sqsStore.ts";
@@ -20,7 +25,10 @@ interface BatchEntry {
   MessageDeduplicationId?: string;
 }
 
-export function sendMessageBatch(body: Record<string, unknown>, store: SqsStore): unknown {
+export function sendMessageBatch(
+  body: Record<string, unknown>,
+  store: SqsStore,
+): SendMessageBatchResult {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -75,19 +83,8 @@ export function sendMessageBatch(body: Record<string, unknown>, store: SqsStore)
   const isFifo = queue.isFifo();
   const contentBasedDedup = queue.attributes.ContentBasedDeduplication === "true";
 
-  const successful: Array<{
-    Id: string;
-    MessageId: string;
-    MD5OfMessageBody: string;
-    MD5OfMessageAttributes?: string;
-    SequenceNumber?: string;
-  }> = [];
-  const failed: Array<{
-    Id: string;
-    SenderFault: boolean;
-    Code: string;
-    Message: string;
-  }> = [];
+  const successful: SendMessageBatchResultEntry[] = [];
+  const failed: BatchResultErrorEntry[] = [];
 
   for (const entry of entries) {
     if (INVALID_MESSAGE_BODY_CHAR.test(entry.MessageBody)) {
@@ -219,5 +216,5 @@ export function sendMessageBatch(body: Record<string, unknown>, store: SqsStore)
     }
   }
 
-  return { Successful: successful, Failed: failed };
+  return { Successful: successful, Failed: failed } satisfies SendMessageBatchResult;
 }

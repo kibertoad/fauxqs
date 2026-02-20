@@ -1,3 +1,4 @@
+import type { GetSubscriptionAttributesResponse } from "@aws-sdk/client-sns";
 import { SnsError } from "../../common/errors.ts";
 import { snsSuccessResponse, escapeXml } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
@@ -29,7 +30,9 @@ export function getSubscriptionAttributes(
     ...subscription.attributes,
   };
 
-  const entriesXml = Object.entries(allAttributes)
+  const result = { Attributes: allAttributes } satisfies GetSubscriptionAttributesResponse;
+
+  const entriesXml = Object.entries(result.Attributes!)
     .map(
       ([key, value]) =>
         `<entry><key>${escapeXml(key)}</key><value>${escapeXml(value)}</value></entry>`,
