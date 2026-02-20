@@ -28,6 +28,7 @@ const SubscriptionSchema = v.object({
 });
 
 const InitConfigSchema = v.object({
+  region: v.optional(v.string()),
   queues: v.optional(v.array(QueueSchema)),
   topics: v.optional(v.array(TopicSchema)),
   subscriptions: v.optional(v.array(SubscriptionSchema)),
@@ -52,7 +53,15 @@ export function applyInitConfig(
   s3Store: S3Store,
   context: { port: number; region: string },
 ): void {
-  const { port, region } = context;
+  const { port } = context;
+  // init.json region takes priority, then context (from FAUXQS_DEFAULT_REGION or DEFAULT_REGION)
+  const region = config.region ?? context.region;
+
+  // Lock in the region so all resources (init-created and API-created) use the same region.
+  // This also prevents the SQS/SNS routers from overriding it from the first request's
+  // Authorization header, keeping ARNs consistent.
+  sqsStore.region = region;
+  snsStore.region = region;
 
   // Create queues first (subscriptions depend on queue ARNs)
   if (config.queues) {
