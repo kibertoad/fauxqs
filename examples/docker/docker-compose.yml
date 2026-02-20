@@ -1,0 +1,23 @@
+services:
+  fauxqs:
+    image: kibertoad/fauxqs:latest
+    ports:
+      - "4566:4566"
+    environment:
+      - FAUXQS_INIT=/app/init.json
+      - FAUXQS_HOST=fauxqs
+    volumes:
+      - ../config/init.json:/app/init.json
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:4566/health"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      fauxqs:
+        condition: service_healthy
+    environment:
+      - FAUXQS_ENDPOINT=http://fauxqs:4566

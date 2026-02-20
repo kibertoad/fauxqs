@@ -34,6 +34,7 @@ All state is in-memory. No persistence, no external storage dependencies.
   - [Using with AWS CLI](#using-with-aws-cli)
 - [Conventions](#conventions)
 - [Limitations](#limitations)
+- [Examples](#examples)
 - [License](#license)
 
 ## Installation
@@ -1044,6 +1045,21 @@ fauxqs is designed for development and testing. It does not support:
 - Persistence across restarts
 - Authentication or authorization
 - Cross-account operations
+
+## Examples
+
+The [`examples/`](examples/) directory contains runnable TypeScript examples covering fauxqs-specific features beyond standard AWS SDK usage:
+
+| Example | Description |
+|---------|-------------|
+| [`programmatic/programmatic-api.ts`](examples/programmatic/programmatic-api.ts) | Server lifecycle, resource creation, SDK usage, `inspectQueue()`, `purgeAll()`, `setup()` |
+| [`programmatic/message-spy.ts`](examples/programmatic/message-spy.ts) | `MessageSpyReader` — all spy methods, partial/predicate filters, discriminated union narrowing, DLQ tracking |
+| [`programmatic/init-config.ts`](examples/programmatic/init-config.ts) | File-based and inline init config, DLQ chains, `setup()` idempotency, purge + re-apply pattern |
+| [`programmatic/queue-inspection.ts`](examples/programmatic/queue-inspection.ts) | Programmatic `inspectQueue()` and HTTP `/_fauxqs/queues` endpoints |
+| [`docker/standalone-container.ts`](examples/docker/standalone-container.ts) | Connecting to a fauxqs Docker container from the host |
+| [`docker/container-to-container.ts`](examples/docker/container-to-container.ts) | Container-to-container communication via docker-compose |
+
+All examples are type-checked in CI to prevent staleness.
 
 ## License
 
