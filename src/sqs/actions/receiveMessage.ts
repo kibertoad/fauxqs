@@ -134,12 +134,23 @@ function filterMessageAttributes(messages: ReceivedMessage[], requestedNames: st
   const wantsAll = requestedNames.includes("All") || requestedNames.includes(".*");
   if (wantsAll) return;
 
+  // Separate exact names from prefix patterns (e.g. "payloadOffloading.*")
+  const exactNames: string[] = [];
+  const prefixes: string[] = [];
+  for (const name of requestedNames) {
+    if (name.endsWith(".*")) {
+      prefixes.push(name.slice(0, -1)); // "foo.*" → "foo."
+    } else {
+      exactNames.push(name);
+    }
+  }
+
   for (const msg of messages) {
     if (!msg.MessageAttributes) continue;
     const filtered: Record<string, MessageAttributeValue> = {};
-    for (const name of requestedNames) {
-      if (name in msg.MessageAttributes) {
-        filtered[name] = msg.MessageAttributes[name];
+    for (const attrName of Object.keys(msg.MessageAttributes)) {
+      if (exactNames.includes(attrName) || prefixes.some((p) => attrName.startsWith(p))) {
+        filtered[attrName] = msg.MessageAttributes[attrName];
       }
     }
     if (Object.keys(filtered).length > 0) {

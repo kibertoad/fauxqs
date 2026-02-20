@@ -120,3 +120,82 @@ describe("SQS ReceiveMessage MessageAttributeNames filtering", () => {
     expect(attrs.shape).toBeDefined();
   });
 });
+
+describe("SQS ReceiveMessage MessageAttributeNames prefix pattern", () => {
+  let server: FauxqsServer;
+  let sqs: ReturnType<typeof createSqsClient>;
+  let queueUrl: string;
+
+  beforeAll(async () => {
+    server = await startFauxqsTestServer();
+    sqs = createSqsClient(server.port);
+    const result = await sqs.send(
+      new CreateQueueCommand({
+        QueueName: "msg-attr-prefix-queue",
+        Attributes: { VisibilityTimeout: "0" },
+      }),
+    );
+    queueUrl = result.QueueUrl!;
+
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: queueUrl,
+        MessageBody: "test",
+        MessageAttributes: {
+          "payloadOffloading.size": { DataType: "Number", StringValue: "1024" },
+          "payloadOffloading.store": { DataType: "String", StringValue: "s3" },
+          "other.attr": { DataType: "String", StringValue: "val" },
+          plain: { DataType: "String", StringValue: "hello" },
+        },
+      }),
+    );
+  });
+
+  afterAll(async () => {
+    sqs.destroy();
+    await server.stop();
+  });
+
+  it("returns attributes matching prefix pattern (prefix.*)", async () => {
+    const result = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: queueUrl,
+        MessageAttributeNames: ["payloadOffloading.*"],
+      }),
+    );
+
+    const attrs = result.Messages![0].MessageAttributes!;
+    expect(attrs["payloadOffloading.size"]).toBeDefined();
+    expect(attrs["payloadOffloading.size"].StringValue).toBe("1024");
+    expect(attrs["payloadOffloading.store"]).toBeDefined();
+    expect(attrs["payloadOffloading.store"].StringValue).toBe("s3");
+    expect(attrs["other.attr"]).toBeUndefined();
+    expect(attrs["plain"]).toBeUndefined();
+  });
+
+  it("combines prefix patterns with exact names", async () => {
+    const result = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: queueUrl,
+        MessageAttributeNames: ["payloadOffloading.*", "plain"],
+      }),
+    );
+
+    const attrs = result.Messages![0].MessageAttributes!;
+    expect(attrs["payloadOffloading.size"]).toBeDefined();
+    expect(attrs["payloadOffloading.store"]).toBeDefined();
+    expect(attrs["plain"]).toBeDefined();
+    expect(attrs["other.attr"]).toBeUndefined();
+  });
+
+  it("prefix pattern does not match unrelated attributes", async () => {
+    const result = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: queueUrl,
+        MessageAttributeNames: ["nonexistent.*"],
+      }),
+    );
+
+    expect(result.Messages![0].MessageAttributes).toBeUndefined();
+  });
+});
