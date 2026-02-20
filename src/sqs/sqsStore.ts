@@ -38,7 +38,7 @@ export class SqsQueue {
   fifoMessages: Map<string, SqsMessage[]> = new Map();
   fifoDelayed: Map<string, SqsMessage[]> = new Map();
   fifoLockedGroups: Map<string, number> = new Map();
-  deduplicationCache = new FifoMap<string, { messageId: string; sequenceNumber?: string }>(
+  deduplicationCache = new FifoMap<{ messageId: string; sequenceNumber?: string }>(
     DEDUP_CACHE_MAX_SIZE,
     DEDUP_WINDOW_MS,
   );
