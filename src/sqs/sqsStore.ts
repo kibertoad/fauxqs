@@ -365,6 +365,10 @@ export class SqsQueue {
         const count = (this.fifoLockedGroups.get(groupId) ?? 1) - 1;
         if (count <= 0) {
           this.fifoLockedGroups.delete(groupId);
+          // Notify waiters: the group is now unlocked, so queued messages become available
+          if (this.fifoMessages.has(groupId)) {
+            this.notifyWaiters();
+          }
         } else {
           this.fifoLockedGroups.set(groupId, count);
         }
@@ -443,7 +447,7 @@ export class SqsQueue {
         }
       }
 
-      if (this.hasFifoMessages()) {
+      if (this.hasAvailableFifoMessages()) {
         this.notifyWaiters();
       }
       return;
@@ -586,9 +590,9 @@ export class SqsQueue {
     return String(this.sequenceCounter).padStart(20, "0");
   }
 
-  private hasFifoMessages(): boolean {
-    for (const msgs of this.fifoMessages.values()) {
-      if (msgs.length > 0) return true;
+  private hasAvailableFifoMessages(): boolean {
+    for (const [groupId, msgs] of this.fifoMessages) {
+      if (msgs.length > 0 && !this.fifoLockedGroups.has(groupId)) return true;
     }
     return false;
   }
