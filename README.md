@@ -282,11 +282,17 @@ server.createTopic("my-topic");
 server.subscribe({ topic: "my-topic", queue: "my-queue" });
 server.createBucket("my-bucket");
 
+// Create resources in a specific region
+server.createQueue("eu-queue", { region: "eu-west-1" });
+server.createTopic("eu-topic", { region: "eu-west-1" });
+server.subscribe({ topic: "eu-topic", queue: "eu-queue", region: "eu-west-1" });
+
 // Or create everything at once
 server.setup({
   queues: [
     { name: "orders" },
     { name: "notifications", attributes: { DelaySeconds: "5" } },
+    { name: "eu-orders", region: "eu-west-1" },
   ],
   topics: [{ name: "events" }],
   subscriptions: [
@@ -346,6 +352,7 @@ Array of queue objects.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | `string` | Yes | Queue name. Use `.fifo` suffix for FIFO queues. |
+| `region` | `string` | No | Override the default region for this queue. The queue's ARN and URL will use this region. |
 | `attributes` | `Record<string, string>` | No | Queue attributes (see table below). |
 | `tags` | `Record<string, string>` | No | Key-value tags for the queue. |
 
@@ -390,6 +397,10 @@ Example:
       "attributes": {
         "RedrivePolicy": "{\"deadLetterTargetArn\":\"arn:aws:sqs:us-east-1:000000000000:orders-dlq\",\"maxReceiveCount\":\"3\"}"
       }
+    },
+    {
+      "name": "eu-orders",
+      "region": "eu-west-1"
     }
   ]
 }
@@ -402,6 +413,7 @@ Array of topic objects.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | `string` | Yes | Topic name. Use `.fifo` suffix for FIFO topics. |
+| `region` | `string` | No | Override the default region for this topic. The topic's ARN will use this region. |
 | `attributes` | `Record<string, string>` | No | Topic attributes (e.g., `DisplayName`). |
 | `tags` | `Record<string, string>` | No | Key-value tags for the topic. |
 
@@ -431,6 +443,7 @@ Array of subscription objects. Referenced topics and queues must be defined in t
 |-------|------|----------|-------------|
 | `topic` | `string` | Yes | Topic name (not ARN) to subscribe to. |
 | `queue` | `string` | Yes | Queue name (not ARN) to deliver messages to. |
+| `region` | `string` | No | Override the default region. The topic and queue ARNs will be resolved in this region. |
 | `attributes` | `Record<string, string>` | No | Subscription attributes (see table below). |
 
 Supported subscription attributes:
@@ -727,12 +740,34 @@ The configured host ensures queue URLs are consistent across all creation paths 
 
 ### Region
 
-The region used in ARNs and queue URLs is automatically detected from the SDK client's `Authorization` header. If your SDK client is configured with `region: "eu-west-1"`, fauxqs will use that region in all generated ARNs and URLs.
+Region is part of an entity's identity — a queue named `my-queue` in `us-east-1` is a completely different entity from `my-queue` in `eu-west-1`, just like in real AWS.
+
+The region used in ARNs and queue URLs is automatically detected from the SDK client's `Authorization` header (AWS SigV4 credential scope). If your SDK client is configured with `region: "eu-west-1"`, all entities created or looked up through that client will use `eu-west-1` in their ARNs and URLs.
+
+```typescript
+const sqsEU = new SQSClient({ region: "eu-west-1", endpoint: "http://localhost:4566", ... });
+const sqsUS = new SQSClient({ region: "us-east-1", endpoint: "http://localhost:4566", ... });
+
+// These are two independent queues with different ARNs
+await sqsEU.send(new CreateQueueCommand({ QueueName: "orders" }));
+await sqsUS.send(new CreateQueueCommand({ QueueName: "orders" }));
+```
 
 If the region cannot be resolved from request headers (e.g., requests without AWS SigV4 signing), the `defaultRegion` option is used as a fallback (defaults to `"us-east-1"`):
 
 ```typescript
 const server = await startFauxqs({ defaultRegion: "eu-west-1" });
+```
+
+Resources created via init config or programmatic API use the `defaultRegion` unless overridden with an explicit `region` field:
+
+```json
+{
+  "queues": [
+    { "name": "us-queue" },
+    { "name": "eu-queue", "region": "eu-west-1" }
+  ]
+}
 ```
 
 ## Supported API Actions
@@ -996,7 +1031,7 @@ aws configure set default.s3.addressing_style path
 ## Conventions
 
 - Account ID: `000000000000`
-- Region: auto-detected from SDK `Authorization` header (defaults to `us-east-1`)
+- Region: auto-detected from SDK `Authorization` header; falls back to `defaultRegion` (defaults to `us-east-1`). Region is part of entity identity — same-name entities in different regions are independent.
 - Queue URL format: `http://sqs.{region}.{host}:{port}/000000000000/{queueName}` (host defaults to `localhost`)
 - Queue ARN format: `arn:aws:sqs:{region}:000000000000:{queueName}`
 - Topic ARN format: `arn:aws:sns:{region}:000000000000:{topicName}`
@@ -1008,7 +1043,7 @@ fauxqs is designed for development and testing. It does not support:
 - Non-SQS SNS delivery protocols (HTTP/S, Lambda, email, SMS)
 - Persistence across restarts
 - Authentication or authorization
-- Cross-region or cross-account operations
+- Cross-account operations
 
 ## License
 
