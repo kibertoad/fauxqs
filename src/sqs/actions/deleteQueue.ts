@@ -1,4 +1,4 @@
-import { SqsError } from "../../common/errors.ts";
+import { SqsError, QueueDoesNotExistError } from "../../common/errors.ts";
 import type { SqsStore } from "../sqsStore.ts";
 
 export function deleteQueue(body: Record<string, unknown>, store: SqsStore): unknown {
@@ -9,7 +9,7 @@ export function deleteQueue(body: Record<string, unknown>, store: SqsStore): unk
 
   const deleted = store.deleteQueue(queueUrl);
   if (!deleted) {
-    throw new SqsError("NonExistentQueue", "The specified queue does not exist.", 400);
+    throw new QueueDoesNotExistError();
   }
 
   return {};

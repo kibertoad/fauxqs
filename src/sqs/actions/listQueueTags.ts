@@ -1,5 +1,5 @@
 import type { ListQueueTagsResult } from "@aws-sdk/client-sqs";
-import { SqsError } from "../../common/errors.ts";
+import { SqsError, QueueDoesNotExistError } from "../../common/errors.ts";
 import type { SqsStore } from "../sqsStore.ts";
 
 export function listQueueTags(body: Record<string, unknown>, store: SqsStore): ListQueueTagsResult {
@@ -10,7 +10,7 @@ export function listQueueTags(body: Record<string, unknown>, store: SqsStore): L
 
   const queue = store.getQueue(queueUrl);
   if (!queue) {
-    throw new SqsError("NonExistentQueue", "The specified queue does not exist.");
+    throw new QueueDoesNotExistError();
   }
 
   return { Tags: Object.fromEntries(queue.tags) } satisfies ListQueueTagsResult;

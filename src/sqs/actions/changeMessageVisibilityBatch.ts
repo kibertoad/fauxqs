@@ -3,7 +3,7 @@ import type {
   ChangeMessageVisibilityBatchResultEntry,
   BatchResultErrorEntry,
 } from "@aws-sdk/client-sqs";
-import { SqsError } from "../../common/errors.ts";
+import { SqsError, QueueDoesNotExistError } from "../../common/errors.ts";
 import type { SqsStore } from "../sqsStore.ts";
 import { VALID_BATCH_ENTRY_ID } from "../sqsTypes.ts";
 
@@ -24,7 +24,7 @@ export function changeMessageVisibilityBatch(
 
   const queue = store.getQueue(queueUrl);
   if (!queue) {
-    throw new SqsError("NonExistentQueue", "The specified queue does not exist.");
+    throw new QueueDoesNotExistError();
   }
 
   const entries = (body.Entries as BatchEntry[]) ?? [];

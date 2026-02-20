@@ -1,5 +1,5 @@
 import type { GetQueueAttributesResult } from "@aws-sdk/client-sqs";
-import { SqsError } from "../../common/errors.ts";
+import { SqsError, QueueDoesNotExistError } from "../../common/errors.ts";
 import type { SqsStore } from "../sqsStore.ts";
 
 export function getQueueAttributes(
@@ -13,7 +13,7 @@ export function getQueueAttributes(
 
   const queue = store.getQueue(queueUrl);
   if (!queue) {
-    throw new SqsError("NonExistentQueue", "The specified queue does not exist.", 400);
+    throw new QueueDoesNotExistError();
   }
 
   const attributeNames = (body.AttributeNames as string[]) ?? ["All"];

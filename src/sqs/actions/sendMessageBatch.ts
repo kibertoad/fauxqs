@@ -3,7 +3,7 @@ import type {
   SendMessageBatchResultEntry,
   BatchResultErrorEntry,
 } from "@aws-sdk/client-sqs";
-import { SqsError } from "../../common/errors.ts";
+import { SqsError, QueueDoesNotExistError } from "../../common/errors.ts";
 import { md5, md5OfMessageAttributes } from "../../common/md5.ts";
 import type { SqsStore } from "../sqsStore.ts";
 import { SqsStore as SqsStoreClass } from "../sqsStore.ts";
@@ -35,7 +35,7 @@ export function sendMessageBatch(
 
   const queue = store.getQueue(queueUrl);
   if (!queue) {
-    throw new SqsError("NonExistentQueue", "The specified queue does not exist.");
+    throw new QueueDoesNotExistError();
   }
 
   const entries = (body.Entries as BatchEntry[]) ?? [];
