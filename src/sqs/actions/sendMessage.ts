@@ -81,7 +81,7 @@ function sendFifoMessage(
   if (body.DelaySeconds !== undefined && body.DelaySeconds !== 0) {
     throw new SqsError(
       "InvalidParameterValue",
-      "Value 0 for parameter DelaySeconds is invalid. Reason: The request include parameter that is not valid for this queue type.",
+      `Value ${body.DelaySeconds} for parameter DelaySeconds is invalid. Reason: The request include parameter that is not valid for this queue type.`,
     );
   }
 

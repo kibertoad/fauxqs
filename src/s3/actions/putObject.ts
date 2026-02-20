@@ -64,18 +64,14 @@ export function putObject(
     const srcKey = decoded.substring(slashIdx + 1);
 
     const srcObj = store.getObject(srcBucket, srcKey);
-    const metadata = extractMetadata(
-      request.headers as Record<string, string | string[] | undefined>,
-    );
-    const hasMetadata = Object.keys(metadata).length > 0;
+    const metadataDirective =
+      (request.headers["x-amz-metadata-directive"] as string | undefined) ?? "COPY";
+    const metadata =
+      metadataDirective === "REPLACE"
+        ? extractMetadata(request.headers as Record<string, string | string[] | undefined>)
+        : srcObj.metadata;
 
-    const obj = store.putObject(
-      bucket,
-      key,
-      srcObj.body,
-      srcObj.contentType,
-      hasMetadata ? metadata : srcObj.metadata,
-    );
+    const obj = store.putObject(bucket, key, srcObj.body, srcObj.contentType, metadata);
 
     if (store.spy) {
       store.spy.addMessage({

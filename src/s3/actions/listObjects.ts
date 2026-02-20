@@ -71,7 +71,13 @@ function listObjectsV1(
     .map((p) => `<CommonPrefixes><Prefix>${escapeXml(p.Prefix!)}</Prefix></CommonPrefixes>`)
     .join("\n    ");
 
-  const nextMarker = isTruncated && objects.length > 0 ? objects[objects.length - 1].key : "";
+  const nextMarker = isTruncated
+    ? objects.length > 0
+      ? objects[objects.length - 1].key
+      : commonPrefixesData.length > 0
+        ? (commonPrefixesData[commonPrefixesData.length - 1].Prefix ?? "")
+        : ""
+    : "";
 
   const parts = [
     `<?xml version="1.0" encoding="UTF-8"?>`,
@@ -166,10 +172,17 @@ function listObjectsV2(
   if (continuationToken) {
     parts.push(`  <ContinuationToken>${escapeXml(continuationToken)}</ContinuationToken>`);
   }
-  if (isTruncated && objects.length > 0) {
-    const lastKey = objects[objects.length - 1].key;
-    const nextToken = Buffer.from(lastKey, "utf-8").toString("base64");
-    parts.push(`  <NextContinuationToken>${escapeXml(nextToken)}</NextContinuationToken>`);
+  if (isTruncated) {
+    const lastKey =
+      objects.length > 0
+        ? objects[objects.length - 1].key
+        : commonPrefixesData.length > 0
+          ? (commonPrefixesData[commonPrefixesData.length - 1].Prefix ?? "")
+          : "";
+    if (lastKey) {
+      const nextToken = Buffer.from(lastKey, "utf-8").toString("base64");
+      parts.push(`  <NextContinuationToken>${escapeXml(nextToken)}</NextContinuationToken>`);
+    }
   }
   if (delimiter) {
     parts.push(`  <Delimiter>${escapeXml(delimiter)}</Delimiter>`);

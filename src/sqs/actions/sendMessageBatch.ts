@@ -11,10 +11,9 @@ import type { MessageAttributeValue } from "../sqsTypes.ts";
 import {
   INVALID_MESSAGE_BODY_CHAR,
   SQS_MAX_MESSAGE_SIZE_BYTES,
+  VALID_BATCH_ENTRY_ID,
   calculateMessageSize,
 } from "../sqsTypes.ts";
-
-const VALID_BATCH_ENTRY_ID = /^[a-zA-Z0-9_-]+$/;
 
 interface BatchEntry {
   Id: string;
@@ -56,13 +55,13 @@ export function sendMessageBatch(
     if (!VALID_BATCH_ENTRY_ID.test(entry.Id)) {
       throw new SqsError(
         "InvalidBatchEntryId",
-        `A batch entry id can only contain alphanumeric characters, hyphens and underscores. It can be at most 80 chars long.`,
+        `A batch entry id can only contain alphanumeric characters, hyphens and underscores. It can be at most 80 letters long.`,
       );
     }
     if (ids.has(entry.Id)) {
       throw new SqsError(
         "BatchEntryIdsNotDistinct",
-        "Two or more batch entries in this request have the same Id.",
+        "Two or more batch entries in the request have the same Id.",
       );
     }
     ids.add(entry.Id);

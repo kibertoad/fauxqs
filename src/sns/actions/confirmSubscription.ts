@@ -16,11 +16,13 @@ export function confirmSubscription(params: Record<string, string>, snsStore: Sn
     throw new SnsError("NotFound", "Topic does not exist", 404);
   }
 
-  // Find the subscription for this topic (simplified: return first)
-  const subs = snsStore.listSubscriptionsByTopic(topicArn);
-  const sub = subs[0];
+  // Use the Token parameter (which is the subscription ARN in this emulator) to look up the specific subscription
+  const token = params.Token;
+  const sub = token ? snsStore.getSubscription(token) : undefined;
+  // Only confirm if the subscription belongs to this topic
+  const matchesTopic = sub && sub.topicArn === topicArn;
 
-  if (sub) {
+  if (matchesTopic) {
     sub.confirmed = true;
     const result = { SubscriptionArn: sub.arn } satisfies ConfirmSubscriptionResponse;
     return snsSuccessResponse(

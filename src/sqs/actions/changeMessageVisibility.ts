@@ -25,6 +25,13 @@ export function changeMessageVisibility(body: Record<string, unknown>, store: Sq
     );
   }
 
+  if (visibilityTimeout < 0 || visibilityTimeout > 43200) {
+    throw new SqsError(
+      "InvalidParameterValue",
+      `Value ${visibilityTimeout} for parameter VisibilityTimeout is invalid. Reason: Must be between 0 and 43200.`,
+    );
+  }
+
   if (!queue.inflightMessages.has(receiptHandle)) {
     throw new SqsError(
       "MessageNotInflight",

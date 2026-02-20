@@ -1,6 +1,6 @@
 {
   "name": "fauxqs",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "description": "SNS/SQS/S3 emulator",
   "type": "module",
   "scripts": {
@@ -38,6 +38,7 @@
     "@aws-sdk/client-sqs": "^3.992.0",
     "@smithy/node-http-handler": "^4.4.10",
     "fastify": "^5.7.4",
+    "toad-cache": "^3.7.0",
     "valibot": "^1.2.0"
   },
   "devDependencies": {

@@ -20,10 +20,12 @@ export class SnsStore {
 
     const existing = this.topics.get(arn);
     if (existing) {
-      // Check for attribute conflicts
+      // Check for attribute conflicts (bidirectional when attributes are provided)
       if (attributes) {
-        for (const [key, value] of Object.entries(attributes)) {
-          if (existing.attributes[key] !== value) {
+        const existingAttrs = existing.attributes;
+        const allAttrKeys = new Set([...Object.keys(attributes), ...Object.keys(existingAttrs)]);
+        for (const key of allAttrKeys) {
+          if (attributes[key] !== existingAttrs[key]) {
             throw new SnsError(
               "InvalidParameter",
               "Invalid parameter: Attributes Reason: Topic already exists with different attributes",

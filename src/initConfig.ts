@@ -70,6 +70,7 @@ export function applyInitConfig(
   if (config.queues) {
     const defaultHost = `127.0.0.1:${port}`;
     for (const q of config.queues) {
+      if (sqsStore.getQueueByName(q.name)) continue; // already exists, skip
       const region = q.region ?? defaultRegion;
       const arn = sqsQueueArn(q.name, region);
       const url = sqsStore.buildQueueUrl(q.name, String(port), defaultHost, region);

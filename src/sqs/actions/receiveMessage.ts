@@ -5,7 +5,7 @@ import type {
 } from "@aws-sdk/client-sqs";
 import { SqsError } from "../../common/errors.ts";
 import type { SqsStore } from "../sqsStore.ts";
-import type { SqsMessage, ReceivedMessage } from "../sqsTypes.ts";
+import type { SqsMessage, ReceivedMessage, MessageAttributeValue } from "../sqsTypes.ts";
 
 export async function receiveMessage(
   body: Record<string, unknown>,
@@ -29,8 +29,20 @@ export async function receiveMessage(
     );
   }
   const visibilityTimeout = body.VisibilityTimeout as number | undefined;
+  if (visibilityTimeout !== undefined && (visibilityTimeout < 0 || visibilityTimeout > 43200)) {
+    throw new SqsError(
+      "InvalidParameterValue",
+      `Value ${visibilityTimeout} for parameter VisibilityTimeout is invalid. Reason: Must be between 0 and 43200.`,
+    );
+  }
   const waitTimeSeconds =
     (body.WaitTimeSeconds as number) ?? parseInt(queue.attributes.ReceiveMessageWaitTimeSeconds);
+  if (waitTimeSeconds < 0 || waitTimeSeconds > 20) {
+    throw new SqsError(
+      "InvalidParameterValue",
+      `Value ${waitTimeSeconds} for parameter WaitTimeSeconds is invalid. Reason: Must be >= 0 and <= 20, if provided.`,
+    );
+  }
 
   const dlqResolver = (arn: string) => store.getQueueByArn(arn);
 
@@ -38,25 +50,8 @@ export async function receiveMessage(
 
   // Long polling: if no messages and WaitTimeSeconds > 0, wait
   if (messages.length === 0 && waitTimeSeconds > 0) {
-    const waitedMsgs = await queue.waitForMessages(maxNumberOfMessages, waitTimeSeconds);
-
-    if (waitedMsgs.length > 0) {
-      // Process the waited messages through the normal dequeue path
-      // Put them back temporarily and dequeue properly
-      if (queue.isFifo()) {
-        for (const msg of waitedMsgs) {
-          const groupId = msg.messageGroupId ?? "__default";
-          const group = queue.fifoMessages.get(groupId) ?? [];
-          group.unshift(msg);
-          queue.fifoMessages.set(groupId, group);
-        }
-      } else {
-        for (const msg of waitedMsgs) {
-          queue.messages.unshift(msg);
-        }
-      }
-      messages = queue.dequeue(maxNumberOfMessages, visibilityTimeout, dlqResolver);
-    }
+    await queue.waitForMessages(waitTimeSeconds);
+    messages = queue.dequeue(maxNumberOfMessages, visibilityTimeout, dlqResolver);
   }
 
   // Add system attributes if requested (merge both legacy and modern parameter names)
@@ -66,6 +61,12 @@ export async function receiveMessage(
 
   if (systemAttributeNames.length > 0) {
     addSystemAttributes(messages, queue, systemAttributeNames);
+  }
+
+  // Filter message attributes if MessageAttributeNames is specified
+  const messageAttributeNames = (body.MessageAttributeNames as string[] | undefined) ?? [];
+  if (messageAttributeNames.length > 0) {
+    filterMessageAttributes(messages, messageAttributeNames);
   }
 
   return {
@@ -125,6 +126,27 @@ function addSystemAttributes(
 
     if (Object.keys(attrs).length > 0) {
       msg.Attributes = attrs as Record<string, string>;
+    }
+  }
+}
+
+function filterMessageAttributes(messages: ReceivedMessage[], requestedNames: string[]): void {
+  const wantsAll = requestedNames.includes("All") || requestedNames.includes(".*");
+  if (wantsAll) return;
+
+  for (const msg of messages) {
+    if (!msg.MessageAttributes) continue;
+    const filtered: Record<string, MessageAttributeValue> = {};
+    for (const name of requestedNames) {
+      if (name in msg.MessageAttributes) {
+        filtered[name] = msg.MessageAttributes[name];
+      }
+    }
+    if (Object.keys(filtered).length > 0) {
+      msg.MessageAttributes = filtered;
+    } else {
+      delete msg.MessageAttributes;
+      delete msg.MD5OfMessageAttributes;
     }
   }
 }

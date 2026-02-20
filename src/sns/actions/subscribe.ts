@@ -14,6 +14,21 @@ export function subscribe(params: Record<string, string>, snsStore: SnsStore): s
     throw new SnsError("InvalidParameter", "Protocol is required");
   }
 
+  const VALID_PROTOCOLS = new Set([
+    "http",
+    "https",
+    "email",
+    "email-json",
+    "sms",
+    "sqs",
+    "application",
+    "lambda",
+    "firehose",
+  ]);
+  if (!VALID_PROTOCOLS.has(protocol)) {
+    throw new SnsError("InvalidParameter", `Invalid parameter: Invalid protocol type: ${protocol}`);
+  }
+
   const endpoint = params.Endpoint;
   if (!endpoint) {
     throw new SnsError("InvalidParameter", "Endpoint is required");

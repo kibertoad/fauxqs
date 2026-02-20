@@ -17,6 +17,19 @@ export function setTopicAttributes(params: Record<string, string>, snsStore: Sns
   const attributeValue = params.AttributeValue ?? "";
 
   if (attributeName) {
+    const VALID_TOPIC_ATTRIBUTES = new Set([
+      "DisplayName",
+      "Policy",
+      "DeliveryPolicy",
+      "KmsMasterKeyId",
+      "KmsDataKeyReusePeriodSeconds",
+      "TracingConfig",
+      "SignatureVersion",
+      "ContentBasedDeduplication",
+    ]);
+    if (!VALID_TOPIC_ATTRIBUTES.has(attributeName)) {
+      throw new SnsError("InvalidParameter", `Invalid parameter: AttributeName`);
+    }
     topic.attributes[attributeName] = attributeValue;
   }
 

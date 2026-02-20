@@ -176,6 +176,8 @@ export class S3Store {
         const delimIdx = rest.indexOf(delimiter);
         if (delimIdx >= 0) {
           const commonPrefix = prefix + rest.slice(0, delimIdx + delimiter.length);
+          // Skip common prefixes at or before the marker
+          if (startAfter && commonPrefix <= startAfter) continue;
           if (!commonPrefixSet.has(commonPrefix)) {
             if (count >= maxKeys) {
               isTruncated = true;

@@ -59,6 +59,8 @@ export const SETTABLE_ATTRIBUTES: ReadonlySet<string> = new Set([
   "ContentBasedDeduplication",
 ] satisfies QueueAttributeName[]);
 
+export const VALID_BATCH_ENTRY_ID = /^[a-zA-Z0-9_-]+$/;
+
 // AWS SQS allowed unicode characters: #x9 | #xA | #xD | #x20 to #xD7FF | #xE000 to #xFFFD
 // eslint-disable-next-line no-control-regex
 export const INVALID_MESSAGE_BODY_CHAR = /[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD]/;

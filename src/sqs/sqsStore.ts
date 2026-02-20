@@ -1,5 +1,6 @@
 import { randomUUID, createHash } from "node:crypto";
 import type { QueueAttributeName } from "@aws-sdk/client-sqs";
+import { FifoMap } from "toad-cache";
 import { md5, md5OfMessageAttributes } from "../common/md5.ts";
 import { DEFAULT_ACCOUNT_ID } from "../common/types.ts";
 import type { MessageSpy } from "../spy.ts";
@@ -12,6 +13,7 @@ import type {
 import { DEFAULT_QUEUE_ATTRIBUTES, ALL_ATTRIBUTE_NAMES } from "./sqsTypes.ts";
 
 const DEDUP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const DEDUP_CACHE_MAX_SIZE = 10_000;
 
 export class SqsQueue {
   readonly name: string;
@@ -25,20 +27,21 @@ export class SqsQueue {
   inflightMessages: Map<string, InflightEntry> = new Map();
   delayedMessages: SqsMessage[] = [];
   pollWaiters: Array<{
-    resolve: (msgs: SqsMessage[]) => void;
-    maxMessages: number;
+    resolve: () => void;
     timer: ReturnType<typeof setTimeout>;
   }> = [];
+  private pollTimer?: ReturnType<typeof setInterval>;
 
   spy?: MessageSpy;
 
   // FIFO-specific fields
   fifoMessages: Map<string, SqsMessage[]> = new Map();
   fifoDelayed: Map<string, SqsMessage[]> = new Map();
-  deduplicationCache: Map<
-    string,
-    { messageId: string; timestamp: number; sequenceNumber?: string }
-  > = new Map();
+  fifoLockedGroups: Map<string, number> = new Map();
+  deduplicationCache = new FifoMap<string, { messageId: string; sequenceNumber?: string }>(
+    DEDUP_CACHE_MAX_SIZE,
+    DEDUP_WINDOW_MS,
+  );
   sequenceCounter = 0;
 
   constructor(
@@ -265,20 +268,12 @@ export class SqsQueue {
       }
     }
 
-    // Collect set of groups that have inflight messages
-    const lockedGroups = new Set<string>();
-    for (const entry of this.inflightMessages.values()) {
-      if (entry.message.messageGroupId) {
-        lockedGroups.add(entry.message.messageGroupId);
-      }
-    }
-
     const result: ReceivedMessage[] = [];
     const count = Math.min(maxCount, 10);
 
     for (const [groupId, groupMsgs] of this.fifoMessages) {
       if (result.length >= count) break;
-      if (lockedGroups.has(groupId)) continue;
+      if (this.fifoLockedGroups.has(groupId)) continue;
       if (groupMsgs.length === 0) continue;
 
       // Take messages from this group in order (up to remaining count)
@@ -337,7 +332,7 @@ export class SqsQueue {
         result.push(received);
 
         // Once a message from this group is inflight, the group is locked
-        lockedGroups.add(groupId);
+        this.fifoLockedGroups.set(groupId, (this.fifoLockedGroups.get(groupId) ?? 0) + 1);
         break;
       }
 
@@ -351,9 +346,9 @@ export class SqsQueue {
   }
 
   deleteMessage(receiptHandle: string): boolean {
-    if (this.spy) {
-      const entry = this.inflightMessages.get(receiptHandle);
-      if (entry) {
+    const entry = this.inflightMessages.get(receiptHandle);
+    if (entry) {
+      if (this.spy) {
         this.spy.addMessage({
           service: "sqs",
           queueName: this.name,
@@ -363,6 +358,16 @@ export class SqsQueue {
           status: "consumed",
           timestamp: Date.now(),
         });
+      }
+      // Decrement FIFO locked group count
+      if (entry.message.messageGroupId) {
+        const groupId = entry.message.messageGroupId;
+        const count = (this.fifoLockedGroups.get(groupId) ?? 1) - 1;
+        if (count <= 0) {
+          this.fifoLockedGroups.delete(groupId);
+        } else {
+          this.fifoLockedGroups.set(groupId, count);
+        }
       }
     }
     return this.inflightMessages.delete(receiptHandle);
@@ -378,6 +383,13 @@ export class SqsQueue {
       this.inflightMessages.delete(receiptHandle);
       if (this.isFifo() && entry.message.messageGroupId) {
         const groupId = entry.message.messageGroupId;
+        // Decrement locked group count
+        const lockCount = (this.fifoLockedGroups.get(groupId) ?? 1) - 1;
+        if (lockCount <= 0) {
+          this.fifoLockedGroups.delete(groupId);
+        } else {
+          this.fifoLockedGroups.set(groupId, lockCount);
+        }
         const group = this.fifoMessages.get(groupId) ?? [];
         group.unshift(entry.message);
         this.fifoMessages.set(groupId, group);
@@ -399,6 +411,13 @@ export class SqsQueue {
         if (entry.visibilityDeadline <= now) {
           this.inflightMessages.delete(handle);
           const groupId = entry.message.messageGroupId ?? "__default";
+          // Decrement locked group count
+          const lockCount = (this.fifoLockedGroups.get(groupId) ?? 1) - 1;
+          if (lockCount <= 0) {
+            this.fifoLockedGroups.delete(groupId);
+          } else {
+            this.fifoLockedGroups.set(groupId, lockCount);
+          }
           const group = this.fifoMessages.get(groupId) ?? [];
           group.unshift(entry.message);
           this.fifoMessages.set(groupId, group);
@@ -454,16 +473,11 @@ export class SqsQueue {
     }
   }
 
-  waitForMessages(maxMessages: number, waitTimeSeconds: number): Promise<SqsMessage[]> {
+  waitForMessages(waitTimeSeconds: number): Promise<void> {
     return new Promise((resolve) => {
-      // Periodically check for delayed/inflight messages that have become available
-      const tickTimer = setInterval(() => {
-        this.processTimers();
-      }, 20);
-
-      const wrappedResolve = (msgs: SqsMessage[]) => {
-        clearInterval(tickTimer);
-        resolve(msgs);
+      const wrappedResolve = () => {
+        resolve();
+        this.stopPollTimerIfEmpty();
       };
 
       const timer = setTimeout(() => {
@@ -471,11 +485,26 @@ export class SqsQueue {
         if (idx !== -1) {
           this.pollWaiters.splice(idx, 1);
         }
-        wrappedResolve([]);
+        wrappedResolve();
       }, waitTimeSeconds * 1000);
 
-      this.pollWaiters.push({ resolve: wrappedResolve, maxMessages, timer });
+      this.pollWaiters.push({ resolve: wrappedResolve, timer });
+      this.startPollTimerIfNeeded();
     });
+  }
+
+  private startPollTimerIfNeeded(): void {
+    if (this.pollTimer) return;
+    this.pollTimer = setInterval(() => {
+      this.processTimers();
+    }, 20);
+  }
+
+  private stopPollTimerIfEmpty(): void {
+    if (this.pollWaiters.length === 0 && this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = undefined;
+    }
   }
 
   purge(): void {
@@ -484,6 +513,7 @@ export class SqsQueue {
     this.inflightMessages.clear();
     this.fifoMessages.clear();
     this.fifoDelayed.clear();
+    this.fifoLockedGroups.clear();
   }
 
   /** Return a non-destructive snapshot of all messages in the queue, grouped by state. */
@@ -521,9 +551,13 @@ export class SqsQueue {
   cancelWaiters(): void {
     for (const waiter of this.pollWaiters) {
       clearTimeout(waiter.timer);
-      waiter.resolve([]);
+      waiter.resolve();
     }
     this.pollWaiters = [];
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = undefined;
+    }
   }
 
   checkDeduplication(dedupId: string): {
@@ -531,16 +565,8 @@ export class SqsQueue {
     originalMessageId?: string;
     originalSequenceNumber?: string;
   } {
-    const now = Date.now();
-    // Lazy cleanup of expired entries
-    for (const [key, entry] of this.deduplicationCache) {
-      if (now - entry.timestamp > DEDUP_WINDOW_MS) {
-        this.deduplicationCache.delete(key);
-      }
-    }
-
     const existing = this.deduplicationCache.get(dedupId);
-    if (existing && now - existing.timestamp <= DEDUP_WINDOW_MS) {
+    if (existing) {
       return {
         isDuplicate: true,
         originalMessageId: existing.messageId,
@@ -552,7 +578,7 @@ export class SqsQueue {
   }
 
   recordDeduplication(dedupId: string, messageId: string, sequenceNumber?: string): void {
-    this.deduplicationCache.set(dedupId, { messageId, timestamp: Date.now(), sequenceNumber });
+    this.deduplicationCache.set(dedupId, { messageId, sequenceNumber });
   }
 
   nextSequenceNumber(): string {
@@ -568,39 +594,12 @@ export class SqsQueue {
   }
 
   private notifyWaiters(): void {
-    if (this.isFifo()) {
-      while (this.pollWaiters.length > 0 && this.hasFifoMessages()) {
-        const waiter = this.pollWaiters.shift()!;
-        clearTimeout(waiter.timer);
-        // For FIFO long polling, we pull from the first available unlocked group
-        const msgs = this.pullFifoMessagesForWaiter(waiter.maxMessages);
-        waiter.resolve(msgs);
-      }
-      return;
-    }
-
-    while (this.pollWaiters.length > 0 && this.messages.length > 0) {
+    // Signal waiters that messages are available; they will call dequeue() themselves
+    while (this.pollWaiters.length > 0) {
       const waiter = this.pollWaiters.shift()!;
       clearTimeout(waiter.timer);
-      const count = Math.min(waiter.maxMessages, this.messages.length);
-      const msgs = this.messages.splice(0, count);
-      waiter.resolve(msgs);
+      waiter.resolve();
     }
-  }
-
-  private pullFifoMessagesForWaiter(maxMessages: number): SqsMessage[] {
-    const result: SqsMessage[] = [];
-    for (const [groupId, groupMsgs] of this.fifoMessages) {
-      if (result.length >= maxMessages) break;
-      if (groupMsgs.length === 0) continue;
-      const msg = groupMsgs.shift()!;
-      result.push(msg);
-      if (groupMsgs.length === 0) {
-        this.fifoMessages.delete(groupId);
-      }
-      break; // one group at a time for FIFO
-    }
-    return result;
   }
 }
 
