@@ -1,9 +1,17 @@
+import type { FastifyRequest } from "fastify";
 import type { CreateTopicResponse } from "@aws-sdk/client-sns";
 import { SnsError } from "../../common/errors.ts";
+import { DEFAULT_REGION, regionFromAuth } from "../../common/types.ts";
 import { snsSuccessResponse } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
+import type { SqsStore } from "../../sqs/sqsStore.ts";
 
-export function createTopic(params: Record<string, string>, snsStore: SnsStore): string {
+export function createTopic(
+  params: Record<string, string>,
+  snsStore: SnsStore,
+  _sqsStore: SqsStore,
+  request: FastifyRequest,
+): string {
   const name = params.Name;
   if (!name) {
     throw new SnsError("InvalidParameter", "Topic name is required");
@@ -78,10 +86,12 @@ export function createTopic(params: Record<string, string>, snsStore: SnsStore):
     }
   }
 
+  const region = regionFromAuth(request.headers.authorization) ?? snsStore.region ?? DEFAULT_REGION;
   const topic = snsStore.createTopic(
     name,
     Object.keys(resolvedAttributes).length > 0 ? resolvedAttributes : undefined,
     Object.keys(resolvedTags).length > 0 ? resolvedTags : undefined,
+    region,
   );
 
   const result = { TopicArn: topic.arn } satisfies CreateTopicResponse;

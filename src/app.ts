@@ -252,7 +252,11 @@ export interface FauxqsServer {
 
   createQueue(
     name: string,
-    options?: { attributes?: Record<string, string>; tags?: Record<string, string> },
+    options?: {
+      region?: string;
+      attributes?: Record<string, string>;
+      tags?: Record<string, string>;
+    },
   ): void;
   /** Non-destructive inspection of all messages in a queue. Returns undefined if queue doesn't exist. */
   inspectQueue(name: string):
@@ -274,9 +278,18 @@ export interface FauxqsServer {
     | undefined;
   createTopic(
     name: string,
-    options?: { attributes?: Record<string, string>; tags?: Record<string, string> },
+    options?: {
+      region?: string;
+      attributes?: Record<string, string>;
+      tags?: Record<string, string>;
+    },
   ): void;
-  subscribe(options: { topic: string; queue: string; attributes?: Record<string, string> }): void;
+  subscribe(options: {
+    topic: string;
+    queue: string;
+    region?: string;
+    attributes?: Record<string, string>;
+  }): void;
   createBucket(name: string): void;
   setup(config: import("./initConfig.ts").FauxqsInitConfig): void;
   purgeAll(): void;
@@ -350,7 +363,8 @@ export async function startFauxqs(options?: {
       return app.close();
     },
     createQueue(name, opts) {
-      const arn = sqsQueueArn(name, region);
+      const r = opts?.region ?? region;
+      const arn = sqsQueueArn(name, r);
       const queueUrl = makeQueueUrl(name);
       sqsStore.createQueue(name, queueUrl, arn, opts?.attributes, opts?.tags);
     },
@@ -358,11 +372,12 @@ export async function startFauxqs(options?: {
       return sqsStore.inspectQueue(name);
     },
     createTopic(name, opts) {
-      snsStore.createTopic(name, opts?.attributes, opts?.tags);
+      snsStore.createTopic(name, opts?.attributes, opts?.tags, opts?.region);
     },
     subscribe(opts) {
-      const topicArn = snsTopicArn(opts.topic, region);
-      const queueArn = sqsQueueArn(opts.queue, region);
+      const r = opts.region ?? region;
+      const topicArn = snsTopicArn(opts.topic, r);
+      const queueArn = sqsQueueArn(opts.queue, r);
       snsStore.subscribe(topicArn, "sqs", queueArn, opts.attributes);
     },
     createBucket(name) {

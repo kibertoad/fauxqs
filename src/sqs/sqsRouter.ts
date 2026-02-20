@@ -1,6 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { SqsError } from "../common/errors.ts";
-import { regionFromAuth } from "../common/types.ts";
 import type { SqsStore } from "./sqsStore.ts";
 
 export type SqsActionHandler = (
@@ -43,9 +42,6 @@ export class SqsRouter {
     }
 
     try {
-      if (!this.store.region) {
-        this.store.region = regionFromAuth(request.headers.authorization);
-      }
       const result = await handler(request.body as Record<string, unknown>, this.store, request);
       reply.header("content-type", "application/x-amz-json-1.0");
       return result;

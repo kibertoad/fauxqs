@@ -11,12 +11,14 @@ const StringRecordSchema = v.record(v.string(), v.string());
 
 const QueueSchema = v.object({
   name: v.string(),
+  region: v.optional(v.string()),
   attributes: v.optional(StringRecordSchema),
   tags: v.optional(StringRecordSchema),
 });
 
 const TopicSchema = v.object({
   name: v.string(),
+  region: v.optional(v.string()),
   attributes: v.optional(StringRecordSchema),
   tags: v.optional(StringRecordSchema),
 });
@@ -24,6 +26,7 @@ const TopicSchema = v.object({
 const SubscriptionSchema = v.object({
   topic: v.string(),
   queue: v.string(),
+  region: v.optional(v.string()),
   attributes: v.optional(StringRecordSchema),
 });
 
@@ -54,19 +57,20 @@ export function applyInitConfig(
   context: { port: number; region: string },
 ): void {
   const { port } = context;
-  // init.json region takes priority, then context (from FAUXQS_DEFAULT_REGION or DEFAULT_REGION)
-  const region = config.region ?? context.region;
+  // Top-level init.json region overrides the context default, but individual
+  // resources can further override with their own region field.
+  const defaultRegion = config.region ?? context.region;
 
-  // Lock in the region so all resources (init-created and API-created) use the same region.
-  // This also prevents the SQS/SNS routers from overriding it from the first request's
-  // Authorization header, keeping ARNs consistent.
-  sqsStore.region = region;
-  snsStore.region = region;
+  // Set store default regions. Used as fallback when the request's
+  // Authorization header does not contain a region (e.g. unsigned requests).
+  sqsStore.region = defaultRegion;
+  snsStore.region = defaultRegion;
 
   // Create queues first (subscriptions depend on queue ARNs)
   if (config.queues) {
     const defaultHost = `127.0.0.1:${port}`;
     for (const q of config.queues) {
+      const region = q.region ?? defaultRegion;
       const arn = sqsQueueArn(q.name, region);
       const url = sqsStore.buildQueueUrl(q.name, String(port), defaultHost, region);
       sqsStore.createQueue(q.name, url, arn, q.attributes, q.tags);
@@ -76,13 +80,15 @@ export function applyInitConfig(
   // Create topics next
   if (config.topics) {
     for (const t of config.topics) {
-      snsStore.createTopic(t.name, t.attributes, t.tags);
+      const region = t.region ?? defaultRegion;
+      snsStore.createTopic(t.name, t.attributes, t.tags, region);
     }
   }
 
   // Create subscriptions last (depends on both topic ARN and queue ARN)
   if (config.subscriptions) {
     for (const s of config.subscriptions) {
+      const region = s.region ?? defaultRegion;
       const topicArn = snsTopicArn(s.topic, region);
       const queueArn = sqsQueueArn(s.queue, region);
       snsStore.subscribe(topicArn, "sqs", queueArn, s.attributes);

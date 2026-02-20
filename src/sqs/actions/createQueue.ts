@@ -49,8 +49,11 @@ export function createQueue(
   // Validate attribute ranges
   validateQueueAttributes(attributes, SqsError);
 
-  // Check for existing queue with same name
-  const existing = store.getQueueByName(queueName);
+  const region = regionFromAuth(request.headers.authorization) ?? store.region ?? DEFAULT_REGION;
+
+  // Check for existing queue with same name in the same region (idempotency)
+  const arn = sqsQueueArn(queueName, region);
+  const existing = store.getQueueByArn(arn);
   if (existing) {
     // Idempotent: same name + same attributes = return existing
     // Different attributes = error
@@ -65,11 +68,9 @@ export function createQueue(
     return { QueueUrl: existing.url } satisfies CreateQueueResult;
   }
 
-  const region = store.region ?? regionFromAuth(request.headers.authorization) ?? DEFAULT_REGION;
   const requestHost = request.headers.host ?? "localhost";
   const port = requestHost.includes(":") ? requestHost.split(":")[1] : "";
   const url = store.buildQueueUrl(queueName, port, requestHost, region);
-  const arn = sqsQueueArn(queueName, region);
 
   const queue = store.createQueue(queueName, url, arn, attributes, tags);
   return { QueueUrl: queue.url } satisfies CreateQueueResult;

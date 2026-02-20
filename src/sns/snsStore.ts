@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { snsTopicArn, snsSubscriptionArn } from "../common/arnHelper.ts";
+import { snsTopicArn, snsSubscriptionArn, parseArn } from "../common/arnHelper.ts";
 import { SnsError } from "../common/errors.ts";
 import type { MessageSpy } from "../spy.ts";
 import type { SnsTopic, SnsSubscription } from "./snsTypes.ts";
@@ -14,8 +14,9 @@ export class SnsStore {
     name: string,
     attributes?: Record<string, string>,
     tags?: Record<string, string>,
+    region?: string,
   ): SnsTopic {
-    const arn = snsTopicArn(name, this.region);
+    const arn = snsTopicArn(name, region ?? this.region);
 
     const existing = this.topics.get(arn);
     if (existing) {
@@ -118,7 +119,8 @@ export class SnsStore {
     }
 
     const id = randomUUID();
-    const arn = snsSubscriptionArn(topic.name, id, this.region);
+    const topicRegion = parseArn(topicArn).region;
+    const arn = snsSubscriptionArn(topic.name, id, topicRegion || this.region);
 
     const subscription: SnsSubscription = {
       arn,
