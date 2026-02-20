@@ -1,0 +1,35 @@
+---
+name: acceptance
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          always-auth: false
+          node-version: 24.x
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run Docker acceptance test
+        run: npm run test:docker
+
+      - name: Run Docker Compose acceptance test
+        run: npm run test:docker:compose
