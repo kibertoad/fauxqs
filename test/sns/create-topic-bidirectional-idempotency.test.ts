@@ -3,7 +3,7 @@ import { CreateTopicCommand } from "@aws-sdk/client-sns";
 import { createSnsClient } from "../helpers/clients.js";
 import { startFauxqsTestServer, type FauxqsServer } from "../helpers/setup.js";
 
-describe("SNS CreateTopic bidirectional idempotency", () => {
+describe("SNS CreateTopic attribute idempotency", () => {
   let server: FauxqsServer;
   let sns: ReturnType<typeof createSnsClient>;
 
@@ -17,7 +17,7 @@ describe("SNS CreateTopic bidirectional idempotency", () => {
     await server.stop();
   });
 
-  it("throws when existing topic has extra attributes not in the new request", async () => {
+  it("succeeds when second call provides a subset of existing attributes", async () => {
     await sns.send(
       new CreateTopicCommand({
         Name: "bidir-extra-attrs",
@@ -25,15 +25,15 @@ describe("SNS CreateTopic bidirectional idempotency", () => {
       }),
     );
 
-    // Second call provides only DisplayName — existing has KmsMasterKeyId too
-    await expect(
-      sns.send(
-        new CreateTopicCommand({
-          Name: "bidir-extra-attrs",
-          Attributes: { DisplayName: "Original" },
-        }),
-      ),
-    ).rejects.toThrow("Topic already exists with different attributes");
+    // Second call provides only DisplayName — existing has KmsMasterKeyId too, but that's fine.
+    // AWS only checks attributes present in the request, not the other direction.
+    const result = await sns.send(
+      new CreateTopicCommand({
+        Name: "bidir-extra-attrs",
+        Attributes: { DisplayName: "Original" },
+      }),
+    );
+    expect(result.TopicArn).toContain("bidir-extra-attrs");
   });
 
   it("succeeds when both calls have identical attributes", async () => {
@@ -54,11 +54,12 @@ describe("SNS CreateTopic bidirectional idempotency", () => {
     expect(result.TopicArn).toContain("bidir-same-attrs");
   });
 
-  it("throws when new request has attributes but existing topic has none", async () => {
+  it("throws when new request has attributes that conflict with existing values", async () => {
     await sns.send(
       new CreateTopicCommand({ Name: "bidir-no-attrs" }),
     );
 
+    // Existing topic has no DisplayName, so providing one conflicts
     await expect(
       sns.send(
         new CreateTopicCommand({

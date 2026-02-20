@@ -20,12 +20,14 @@ export class SnsStore {
 
     const existing = this.topics.get(arn);
     if (existing) {
-      // Check for attribute conflicts (bidirectional when attributes are provided)
+      // One-directional attribute check: only validate attributes provided in the request.
+      // AWS does not reject a CreateTopic call that omits attributes present on the existing topic —
+      // it only rejects when a provided attribute value conflicts with the existing value.
+      // This matches real AWS behaviour and allows different callers (e.g. consumer vs publisher in
+      // @message-queue-toolkit) to assertTopic with different attribute subsets without conflict.
       if (attributes) {
-        const existingAttrs = existing.attributes;
-        const allAttrKeys = new Set([...Object.keys(attributes), ...Object.keys(existingAttrs)]);
-        for (const key of allAttrKeys) {
-          if (attributes[key] !== existingAttrs[key]) {
+        for (const [key, value] of Object.entries(attributes)) {
+          if (existing.attributes[key] !== value) {
             throw new SnsError(
               "InvalidParameter",
               "Invalid parameter: Attributes Reason: Topic already exists with different attributes",
