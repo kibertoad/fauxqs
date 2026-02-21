@@ -294,7 +294,8 @@ export class MessageSpy implements MessageSpyReader {
 
     // Await remaining messages one at a time via waitForMessage.
     // Each call excludes already-collected messages so the same buffer
-    // entry is never counted twice.
+    // entry is never counted twice. Use a Set for O(1) lookup.
+    const collectedSet = new Set<SpyMessage>(collected);
     const deadline = timeout !== undefined ? Date.now() + timeout : undefined;
 
     while (collected.length < count) {
@@ -307,11 +308,12 @@ export class MessageSpy implements MessageSpyReader {
 
       try {
         const msg = await this.waitForMessage(
-          (m) => matcher(m) && !collected.includes(m),
+          (m) => matcher(m) && !collectedSet.has(m),
           undefined,
           remaining,
         );
         collected.push(msg);
+        collectedSet.add(msg);
       } catch {
         throw new Error(
           `waitForMessages timed out after ${timeout}ms (collected ${collected.length}/${count})`,

@@ -31,9 +31,5 @@ export function confirmSubscription(params: Record<string, string>, snsStore: Sn
     );
   }
 
-  const result = { SubscriptionArn: "PendingConfirmation" } satisfies ConfirmSubscriptionResponse;
-  return snsSuccessResponse(
-    "ConfirmSubscription",
-    `<SubscriptionArn>${result.SubscriptionArn}</SubscriptionArn>`,
-  );
+  throw new SnsError("InvalidParameter", "Invalid parameter: Token");
 }

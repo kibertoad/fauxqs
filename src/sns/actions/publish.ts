@@ -6,7 +6,7 @@ import type { SnsStore } from "../snsStore.ts";
 import type { SqsStore } from "../../sqs/sqsStore.ts";
 import { SqsStore as SqsStoreClass } from "../../sqs/sqsStore.ts";
 import type { MessageAttributeValue } from "../../sqs/sqsTypes.ts";
-import { SNS_MAX_MESSAGE_SIZE_BYTES } from "../../sqs/sqsTypes.ts";
+import { SNS_MAX_MESSAGE_SIZE_BYTES } from "../../common/types.ts";
 import { matchesFilterPolicy, matchesFilterPolicyOnBody } from "../filter.ts";
 
 export function publish(
@@ -118,7 +118,8 @@ export function publish(
           if (!matchesFilterPolicy(filterPolicy, messageAttributes)) continue;
         }
       } catch {
-        // Invalid filter policy, skip filtering
+        // Invalid filter policy JSON — fail-open: deliver the message rather than silently dropping it.
+        // Validation should happen at SetSubscriptionAttributes time; if somehow invalid at publish time, delivering is the safer default.
       }
     }
 
@@ -252,7 +253,7 @@ export function publishBatch(
             if (!matchesFilterPolicy(filterPolicy, entry.messageAttributes)) continue;
           }
         } catch {
-          // Invalid filter policy, skip filtering
+          // Invalid filter policy JSON — fail-open: deliver the message (see single publish handler for rationale)
         }
       }
 

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { escapeXml } from "./xml.ts";
 
 export class SqsError extends Error {
@@ -80,6 +81,7 @@ export class S3Error extends Error {
   }
 
   toXml(): string {
+    const requestId = randomUUID().replaceAll("-", "").toUpperCase().slice(0, 16);
     const parts = [
       `<?xml version="1.0" encoding="UTF-8"?>`,
       `<Error>`,
@@ -89,6 +91,8 @@ export class S3Error extends Error {
     if (this.resource) {
       parts.push(`  <Resource>${escapeXml(this.resource)}</Resource>`);
     }
+    parts.push(`  <RequestId>${requestId}</RequestId>`);
+    parts.push(`  <HostId>fauxqs</HostId>`);
     parts.push(`</Error>`);
     return parts.join("\n");
   }

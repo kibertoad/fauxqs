@@ -1,33 +1,8 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import type { CopyObjectOutput } from "@aws-sdk/client-s3";
+import { S3Error } from "../../common/errors.ts";
 import type { S3Store } from "../s3Store.ts";
-
-/**
- * Decode AWS chunked transfer encoding.
- * Format: <hex-size>\r\n<data>\r\n ... 0\r\n<trailers>\r\n\r\n
- */
-function decodeAwsChunked(buf: Buffer): Buffer {
-  const chunks: Buffer[] = [];
-  let offset = 0;
-
-  while (offset < buf.length) {
-    // Find the end of the chunk size line
-    const crlfIndex = buf.indexOf("\r\n", offset);
-    if (crlfIndex === -1) break;
-
-    // The chunk size line may contain ";chunk-signature=..." — ignore everything after ";"
-    const sizeLine = buf.subarray(offset, crlfIndex).toString("ascii");
-    const chunkSize = parseInt(sizeLine.split(";")[0], 16);
-
-    if (chunkSize === 0) break; // Final chunk
-
-    const dataStart = crlfIndex + 2;
-    chunks.push(buf.subarray(dataStart, dataStart + chunkSize));
-    offset = dataStart + chunkSize + 2; // skip data + \r\n
-  }
-
-  return Buffer.concat(chunks);
-}
+import { decodeAwsChunked } from "../chunkedEncoding.ts";
 
 function extractMetadata(
   headers: Record<string, string | string[] | undefined>,
@@ -54,11 +29,11 @@ export function putObject(
 
   if (copySource) {
     // CopyObject: copy from source bucket/key
-    const decoded = decodeURIComponent(copySource).replace(/^\//, "");
+    const raw = decodeURIComponent(copySource);
+    const decoded = raw.startsWith("/") ? raw.slice(1) : raw;
     const slashIdx = decoded.indexOf("/");
     if (slashIdx === -1) {
-      reply.status(400).send();
-      return;
+      throw new S3Error("InvalidArgument", "Invalid copy source bucket name", 400);
     }
     const srcBucket = decoded.substring(0, slashIdx);
     const srcKey = decoded.substring(slashIdx + 1);

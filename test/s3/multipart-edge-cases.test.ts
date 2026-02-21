@@ -120,4 +120,139 @@ describe("S3 Multipart Upload Edge Cases", () => {
       }),
     );
   });
+
+  it("rejects completion when non-last part is smaller than 5 MiB", async () => {
+    const init = await s3.send(
+      new CreateMultipartUploadCommand({
+        Bucket: "edge-case-bucket",
+        Key: "small-part.txt",
+      }),
+    );
+
+    const smallBody = "x".repeat(1000); // Way less than 5 MiB
+    const part1 = await s3.send(
+      new UploadPartCommand({
+        Bucket: "edge-case-bucket",
+        Key: "small-part.txt",
+        UploadId: init.UploadId,
+        PartNumber: 1,
+        Body: smallBody,
+      }),
+    );
+
+    const part2 = await s3.send(
+      new UploadPartCommand({
+        Bucket: "edge-case-bucket",
+        Key: "small-part.txt",
+        UploadId: init.UploadId,
+        PartNumber: 2,
+        Body: "last part",
+      }),
+    );
+
+    await expect(
+      s3.send(
+        new CompleteMultipartUploadCommand({
+          Bucket: "edge-case-bucket",
+          Key: "small-part.txt",
+          UploadId: init.UploadId,
+          MultipartUpload: {
+            Parts: [
+              { PartNumber: 1, ETag: part1.ETag },
+              { PartNumber: 2, ETag: part2.ETag },
+            ],
+          },
+        }),
+      ),
+    ).rejects.toThrow();
+
+    // Clean up
+    await s3.send(
+      new AbortMultipartUploadCommand({
+        Bucket: "edge-case-bucket",
+        Key: "small-part.txt",
+        UploadId: init.UploadId,
+      }),
+    );
+  });
+
+  it("allows last part to be smaller than 5 MiB", async () => {
+    const init = await s3.send(
+      new CreateMultipartUploadCommand({
+        Bucket: "edge-case-bucket",
+        Key: "small-last-part.txt",
+      }),
+    );
+
+    // First part >= 5 MiB
+    const bigBody = Buffer.alloc(5 * 1024 * 1024, "a");
+    const part1 = await s3.send(
+      new UploadPartCommand({
+        Bucket: "edge-case-bucket",
+        Key: "small-last-part.txt",
+        UploadId: init.UploadId,
+        PartNumber: 1,
+        Body: bigBody,
+      }),
+    );
+
+    // Last part < 5 MiB — should be allowed
+    const part2 = await s3.send(
+      new UploadPartCommand({
+        Bucket: "edge-case-bucket",
+        Key: "small-last-part.txt",
+        UploadId: init.UploadId,
+        PartNumber: 2,
+        Body: "small last part",
+      }),
+    );
+
+    const result = await s3.send(
+      new CompleteMultipartUploadCommand({
+        Bucket: "edge-case-bucket",
+        Key: "small-last-part.txt",
+        UploadId: init.UploadId,
+        MultipartUpload: {
+          Parts: [
+            { PartNumber: 1, ETag: part1.ETag },
+            { PartNumber: 2, ETag: part2.ETag },
+          ],
+        },
+      }),
+    );
+
+    expect(result.ETag).toBeDefined();
+  });
+
+  it("allows single part smaller than 5 MiB (it is the last part)", async () => {
+    const init = await s3.send(
+      new CreateMultipartUploadCommand({
+        Bucket: "edge-case-bucket",
+        Key: "single-small-part.txt",
+      }),
+    );
+
+    const part1 = await s3.send(
+      new UploadPartCommand({
+        Bucket: "edge-case-bucket",
+        Key: "single-small-part.txt",
+        UploadId: init.UploadId,
+        PartNumber: 1,
+        Body: "single small part",
+      }),
+    );
+
+    const result = await s3.send(
+      new CompleteMultipartUploadCommand({
+        Bucket: "edge-case-bucket",
+        Key: "single-small-part.txt",
+        UploadId: init.UploadId,
+        MultipartUpload: {
+          Parts: [{ PartNumber: 1, ETag: part1.ETag }],
+        },
+      }),
+    );
+
+    expect(result.ETag).toBeDefined();
+  });
 });

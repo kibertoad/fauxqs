@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import { SqsStore } from "./sqs/sqsStore.ts";
 import { SqsRouter } from "./sqs/sqsRouter.ts";
@@ -68,7 +69,7 @@ export interface BuildAppOptions {
 export function buildApp(options?: BuildAppOptions) {
   const app = Fastify({
     logger: options?.logger ?? true,
-    bodyLimit: 2 * 1_048_576, // 2 MiB — allow our handlers to validate message size
+    bodyLimit: 11 * 1_048_576, // 11 MiB — large enough for S3 multipart parts (≥5 MiB); SQS/SNS validate message sizes in their own handlers
     forceCloseConnections: true,
     // Support S3 virtual-hosted-style requests: bucket name in Host header (e.g. bucket.localhost:port)
     // Rewrites to path-style (e.g. /bucket/key) before routing.
@@ -188,6 +189,15 @@ export function buildApp(options?: BuildAppOptions) {
 
   const s3Store = options?.stores?.s3Store ?? new S3Store();
   registerS3Routes(app, s3Store);
+
+  // Add x-amz-request-id and x-amz-id-2 headers to S3 responses
+  app.addHook("onSend", (_request, reply, payload, done) => {
+    if (!reply.hasHeader("x-amz-request-id")) {
+      reply.header("x-amz-request-id", randomUUID().replaceAll("-", "").toUpperCase().slice(0, 16));
+      reply.header("x-amz-id-2", "fauxqs");
+    }
+    done();
+  });
 
   app.addHook("preClose", () => {
     sqsStore.shutdown();

@@ -7,6 +7,7 @@ export class S3Store {
   private buckets = new Map<string, Map<string, S3Object>>();
   private bucketCreationDates = new Map<string, Date>();
   private multipartUploads = new Map<string, MultipartUpload>();
+  private multipartUploadsByBucket = new Map<string, Set<string>>();
   spy?: MessageSpy;
 
   createBucket(name: string): void {
@@ -21,15 +22,14 @@ export class S3Store {
     if (!objects) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${name}`, 404);
     }
-    // Check for in-progress multipart uploads in this bucket
-    for (const upload of this.multipartUploads.values()) {
-      if (upload.bucket === name) {
-        throw new S3Error(
-          "BucketNotEmpty",
-          "The bucket you tried to delete is not empty. You must delete all versions in the bucket.",
-          409,
-        );
-      }
+    // Check for in-progress multipart uploads in this bucket (O(1) via index)
+    const bucketUploads = this.multipartUploadsByBucket.get(name);
+    if (bucketUploads && bucketUploads.size > 0) {
+      throw new S3Error(
+        "BucketNotEmpty",
+        "The bucket you tried to delete is not empty. You must delete all versions in the bucket.",
+        409,
+      );
     }
     if (objects.size > 0) {
       throw new S3Error("BucketNotEmpty", "The bucket you tried to delete is not empty.", 409);
@@ -237,6 +237,13 @@ export class S3Store {
       initiated: new Date(),
     });
 
+    let bucketUploads = this.multipartUploadsByBucket.get(bucket);
+    if (!bucketUploads) {
+      bucketUploads = new Set();
+      this.multipartUploadsByBucket.set(bucket, bucketUploads);
+    }
+    bucketUploads.add(uploadId);
+
     return uploadId;
   }
 
@@ -307,8 +314,8 @@ export class S3Store {
         );
       }
       // Compare ETags (strip quotes for comparison)
-      const specEtag = spec.etag.replace(/"/g, "");
-      const partEtag = part.etag.replace(/"/g, "");
+      const specEtag = spec.etag.replaceAll('"', "");
+      const partEtag = part.etag.replaceAll('"', "");
       if (specEtag !== partEtag) {
         throw new S3Error(
           "InvalidPart",
@@ -318,6 +325,19 @@ export class S3Store {
       }
       orderedParts.push(part.body);
       partDigests.push(createHash("md5").update(part.body).digest());
+    }
+
+    // Validate non-last parts are >= 5 MiB (AWS enforces at CompleteMultipartUpload time)
+    const MIN_PART_SIZE = 5 * 1024 * 1024;
+    for (let i = 0; i < partSpecs.length - 1; i++) {
+      const part = upload.parts.get(partSpecs[i].partNumber)!;
+      if (part.body.length < MIN_PART_SIZE) {
+        throw new S3Error(
+          "EntityTooSmall",
+          "Your proposed upload is smaller than the minimum allowed size",
+          400,
+        );
+      }
     }
 
     // Concatenate all parts
@@ -339,6 +359,7 @@ export class S3Store {
 
     objects.set(upload.key, obj);
     this.multipartUploads.delete(uploadId);
+    this.multipartUploadsByBucket.get(upload.bucket)?.delete(uploadId);
 
     if (this.spy) {
       this.spy.addMessage({
@@ -364,11 +385,13 @@ export class S3Store {
     }
 
     this.multipartUploads.delete(uploadId);
+    this.multipartUploadsByBucket.get(upload.bucket)?.delete(uploadId);
   }
 
   purgeAll(): void {
     this.buckets.clear();
     this.bucketCreationDates.clear();
     this.multipartUploads.clear();
+    this.multipartUploadsByBucket.clear();
   }
 }

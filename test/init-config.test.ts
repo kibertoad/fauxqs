@@ -445,6 +445,19 @@ describe("init config", () => {
     expect(names).toEqual(["bucket-a", "bucket-b", "bucket-c"]);
   });
 
+  it("throws when subscription references non-existent topic", async () => {
+    await expect(
+      startFauxqs({
+        port: 0,
+        logger: false,
+        init: {
+          queues: [{ name: "orphan-queue" }],
+          subscriptions: [{ topic: "nonexistent-topic", queue: "orphan-queue" }],
+        },
+      }),
+    ).rejects.toThrow('topic "nonexistent-topic" does not exist');
+  });
+
   it("creates full config from JSON file with all fields", async () => {
     const configPath = writeTempConfig({
       queues: [

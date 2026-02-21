@@ -101,6 +101,18 @@ describe("S3 CopyObject", () => {
     expect(head.Metadata?.version).toBe("1");
   });
 
+  it("returns InvalidArgument error for malformed copy source (no slash)", async () => {
+    await expect(
+      s3.send(
+        new CopyObjectCommand({
+          Bucket: "copy-dst",
+          Key: "bad-copy.txt",
+          CopySource: "no-slash-here",
+        }),
+      ),
+    ).rejects.toThrow();
+  });
+
   it("returns error when source object does not exist", async () => {
     await expect(
       s3.send(

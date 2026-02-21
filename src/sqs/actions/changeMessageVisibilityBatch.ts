@@ -60,7 +60,14 @@ export function changeMessageVisibilityBatch(
   const failed: BatchResultErrorEntry[] = [];
 
   for (const entry of entries) {
-    if (!queue.inflightMessages.has(entry.ReceiptHandle)) {
+    if (entry.VisibilityTimeout < 0 || entry.VisibilityTimeout > 43200) {
+      failed.push({
+        Id: entry.Id,
+        SenderFault: true,
+        Code: "InvalidParameterValue",
+        Message: `Value ${entry.VisibilityTimeout} for parameter VisibilityTimeout is invalid. Reason: Must be between 0 and 43200.`,
+      });
+    } else if (!queue.inflightMessages.has(entry.ReceiptHandle)) {
       failed.push({
         Id: entry.Id,
         SenderFault: true,

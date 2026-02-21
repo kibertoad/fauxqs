@@ -104,9 +104,11 @@ function addSystemAttributes(
       attrs.ApproximateReceiveCount = String(entry.message.approximateReceiveCount);
     }
     if (wants(systemAttributeNames, wantsAll, "ApproximateFirstReceiveTimestamp")) {
-      attrs.ApproximateFirstReceiveTimestamp = String(
-        entry.message.approximateFirstReceiveTimestamp ?? "",
-      );
+      if (entry.message.approximateFirstReceiveTimestamp) {
+        attrs.ApproximateFirstReceiveTimestamp = String(
+          entry.message.approximateFirstReceiveTimestamp,
+        );
+      }
     }
     if (wants(systemAttributeNames, wantsAll, "MessageGroupId")) {
       if (entry.message.messageGroupId) {

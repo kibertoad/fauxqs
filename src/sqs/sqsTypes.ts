@@ -68,8 +68,8 @@ export const INVALID_MESSAGE_BODY_CHAR = /[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD
 // Max message size: 1 MiB (1,048,576 bytes) for SQS
 export const SQS_MAX_MESSAGE_SIZE_BYTES = 1_048_576;
 
-// Max message size: 256 KB (262,144 bytes) for SNS
-export const SNS_MAX_MESSAGE_SIZE_BYTES = 262_144;
+// Re-export from shared location for backwards compatibility
+export { SNS_MAX_MESSAGE_SIZE_BYTES } from "../common/types.ts";
 
 /**
  * Calculate total message size including body and all message attributes.

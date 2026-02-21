@@ -126,7 +126,7 @@ export function sendMessageBatch(
           Id: entry.Id,
           SenderFault: true,
           Code: "InvalidParameterValue",
-          Message: "DelaySeconds is not supported on FIFO queues.",
+          Message: `Value ${entry.DelaySeconds} for parameter DelaySeconds is invalid. Reason: The request include parameter that is not valid for this queue type.`,
         });
         continue;
       }

@@ -206,13 +206,15 @@ describe("S3 Multipart Upload", () => {
         }),
       );
 
+      // Non-last parts must be >= 5 MiB (AWS requirement)
+      const fiveMiB = Buffer.alloc(5 * 1024 * 1024, "a");
       const part1 = await s3.send(
         new UploadPartCommand({
           Bucket: "multipart-bucket",
           Key: "assembled.txt",
           UploadId: init.UploadId,
           PartNumber: 1,
-          Body: "Hello, ",
+          Body: fiveMiB,
         }),
       );
 
@@ -253,8 +255,8 @@ describe("S3 Multipart Upload", () => {
           Key: "assembled.txt",
         }),
       );
-      const body = await obj.Body!.transformToString();
-      expect(body).toBe("Hello, World!");
+      const body = await obj.Body!.transformToByteArray();
+      expect(body.length).toBe(fiveMiB.length + 6); // "World!" is 6 bytes
     });
 
     it("returns correct content length for assembled object", async () => {
@@ -265,7 +267,8 @@ describe("S3 Multipart Upload", () => {
         }),
       );
 
-      const data1 = Buffer.alloc(1024, "a");
+      // Non-last parts must be >= 5 MiB
+      const data1 = Buffer.alloc(5 * 1024 * 1024, "a");
       const data2 = Buffer.alloc(2048, "b");
 
       const part1 = await s3.send(
@@ -308,7 +311,7 @@ describe("S3 Multipart Upload", () => {
           Key: "length-check.bin",
         }),
       );
-      expect(head.ContentLength).toBe(3072);
+      expect(head.ContentLength).toBe(5 * 1024 * 1024 + 2048);
     });
 
     it("rejects completion with invalid UploadId", async () => {
@@ -378,13 +381,15 @@ describe("S3 Multipart Upload", () => {
         }),
       );
 
+      // Non-last parts must be >= 5 MiB
+      const fiveMiB = Buffer.alloc(5 * 1024 * 1024, "x");
       const part1 = await s3.send(
         new UploadPartCommand({
           Bucket: "multipart-bucket",
           Key: "subset-parts.txt",
           UploadId: init.UploadId,
           PartNumber: 1,
-          Body: "part-1",
+          Body: fiveMiB,
         }),
       );
 
@@ -429,8 +434,8 @@ describe("S3 Multipart Upload", () => {
           Key: "subset-parts.txt",
         }),
       );
-      const body = await obj.Body!.transformToString();
-      expect(body).toBe("part-1part-3");
+      const body = await obj.Body!.transformToByteArray();
+      expect(body.length).toBe(fiveMiB.length + 6); // "part-3" is 6 bytes
     });
 
     it("makes completed object visible in listings", async () => {

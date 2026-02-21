@@ -47,16 +47,40 @@ describe("SNS ConfirmSubscription", () => {
     expect(result.SubscriptionArn).toBe(sub.SubscriptionArn);
   });
 
-  it("returns PendingConfirmation when topic has no subscriptions", async () => {
+  it("throws InvalidParameter for invalid/garbage token", async () => {
     const topic = await sns.send(new CreateTopicCommand({ Name: "no-sub-confirm-topic" }));
 
-    const result = await sns.send(
-      new ConfirmSubscriptionCommand({
-        TopicArn: topic.TopicArn!,
-        Token: "dummy-token",
+    await expect(
+      sns.send(
+        new ConfirmSubscriptionCommand({
+          TopicArn: topic.TopicArn!,
+          Token: "garbage-token-value",
+        }),
+      ),
+    ).rejects.toThrow("Invalid parameter: Token");
+  });
+
+  it("throws InvalidParameter when token does not match the topic", async () => {
+    const topic1 = await sns.send(new CreateTopicCommand({ Name: "confirm-topic-1" }));
+    const topic2 = await sns.send(new CreateTopicCommand({ Name: "confirm-topic-2" }));
+    await sqs.send(new CreateQueueCommand({ QueueName: "confirm-queue-2" }));
+
+    const sub = await sns.send(
+      new SubscribeCommand({
+        TopicArn: topic2.TopicArn!,
+        Protocol: "sqs",
+        Endpoint: "arn:aws:sqs:us-east-1:000000000000:confirm-queue-2",
       }),
     );
 
-    expect(result.SubscriptionArn).toBe("PendingConfirmation");
+    // Use sub ARN from topic2 but confirm on topic1
+    await expect(
+      sns.send(
+        new ConfirmSubscriptionCommand({
+          TopicArn: topic1.TopicArn!,
+          Token: sub.SubscriptionArn!,
+        }),
+      ),
+    ).rejects.toThrow("Invalid parameter: Token");
   });
 });

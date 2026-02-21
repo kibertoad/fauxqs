@@ -9,7 +9,7 @@ export function headBucket(
 ): void {
   const bucket = request.params.bucket;
   if (!store.hasBucket(bucket)) {
-    throw new S3Error("NotFound", "The specified bucket does not exist", 404);
+    throw new S3Error("NoSuchBucket", "The specified bucket does not exist", 404);
   }
   reply.status(200).send();
 }

@@ -92,7 +92,12 @@ export function applyInitConfig(
       const region = s.region ?? defaultRegion;
       const topicArn = snsTopicArn(s.topic, region);
       const queueArn = sqsQueueArn(s.queue, region);
-      snsStore.subscribe(topicArn, "sqs", queueArn, s.attributes);
+      const sub = snsStore.subscribe(topicArn, "sqs", queueArn, s.attributes);
+      if (!sub) {
+        throw new Error(
+          `Init config: cannot create subscription — topic "${s.topic}" does not exist`,
+        );
+      }
     }
   }
 

@@ -1,5 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import type { S3Store } from "../s3Store.ts";
+import { decodeAwsChunked } from "../chunkedEncoding.ts";
 
 export function uploadPart(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
@@ -22,25 +23,4 @@ export function uploadPart(
 
   reply.header("etag", etag);
   reply.status(200).send();
-}
-
-function decodeAwsChunked(buf: Buffer): Buffer {
-  const chunks: Buffer[] = [];
-  let offset = 0;
-
-  while (offset < buf.length) {
-    const crlfIndex = buf.indexOf("\r\n", offset);
-    if (crlfIndex === -1) break;
-
-    const sizeLine = buf.subarray(offset, crlfIndex).toString("ascii");
-    const chunkSize = parseInt(sizeLine.split(";")[0], 16);
-
-    if (chunkSize === 0) break;
-
-    const dataStart = crlfIndex + 2;
-    chunks.push(buf.subarray(dataStart, dataStart + chunkSize));
-    offset = dataStart + chunkSize + 2;
-  }
-
-  return Buffer.concat(chunks);
 }
