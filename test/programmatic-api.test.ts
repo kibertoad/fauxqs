@@ -20,44 +20,55 @@ describe("programmatic API", () => {
     if (server) await server.stop();
   });
 
-  it("createQueue makes queue visible via SDK", async () => {
+  it("createQueue makes queue visible via SDK and returns metadata", async () => {
     server = await startFauxqs({ port: 0, logger: false });
-    server.createQueue("prog-queue");
+    const { queueUrl, queueArn, queueName } = server.createQueue("prog-queue");
+
+    expect(queueUrl).toContain("prog-queue");
+    expect(queueArn).toMatch(/^arn:aws:sqs:.+:000000000000:prog-queue$/);
+    expect(queueName).toBe("prog-queue");
 
     const sqs = createSqsClient(server.port);
     const result = await sqs.send(new ListQueuesCommand({}));
     expect(result.QueueUrls).toHaveLength(1);
-    expect(result.QueueUrls![0]).toContain("prog-queue");
+    expect(result.QueueUrls![0]).toBe(queueUrl);
   });
 
-  it("createQueue with attributes and tags", async () => {
+  it("createQueue with attributes and tags returns metadata", async () => {
     server = await startFauxqs({ port: 0, logger: false });
-    server.createQueue("prog-queue-attrs", {
+    const { queueUrl, queueArn } = server.createQueue("prog-queue-attrs", {
       attributes: { VisibilityTimeout: "120" },
       tags: { team: "platform" },
     });
 
+    expect(queueUrl).toContain("prog-queue-attrs");
+    expect(queueArn).toContain("prog-queue-attrs");
+
     const sqs = createSqsClient(server.port);
     const result = await sqs.send(new ListQueuesCommand({}));
     expect(result.QueueUrls).toHaveLength(1);
   });
 
-  it("createTopic makes topic visible via SDK", async () => {
+  it("createTopic makes topic visible via SDK and returns topicArn", async () => {
     server = await startFauxqs({ port: 0, logger: false });
-    server.createTopic("prog-topic");
+    const { topicArn } = server.createTopic("prog-topic");
+
+    expect(topicArn).toMatch(/^arn:aws:sns:.+:000000000000:prog-topic$/);
 
     const sns = createSnsClient(server.port);
     const result = await sns.send(new ListTopicsCommand({}));
     expect(result.Topics).toHaveLength(1);
-    expect(result.Topics![0].TopicArn).toContain("prog-topic");
+    expect(result.Topics![0].TopicArn).toBe(topicArn);
   });
 
-  it("createTopic with attributes and tags", async () => {
+  it("createTopic with attributes and tags returns topicArn", async () => {
     server = await startFauxqs({ port: 0, logger: false });
-    server.createTopic("prog-topic-attrs", {
+    const { topicArn } = server.createTopic("prog-topic-attrs", {
       attributes: { DisplayName: "My Topic" },
       tags: { team: "platform" },
     });
+
+    expect(topicArn).toContain("prog-topic-attrs");
 
     const sns = createSnsClient(server.port);
     const result = await sns.send(new ListTopicsCommand({}));
@@ -96,9 +107,11 @@ describe("programmatic API", () => {
     expect(msgs.Messages![0].Body).toContain("programmatic test");
   });
 
-  it("createBucket makes bucket visible via SDK", async () => {
+  it("createBucket makes bucket visible via SDK and returns metadata", async () => {
     server = await startFauxqs({ port: 0, logger: false });
-    server.createBucket("prog-bucket");
+    const { bucketName } = server.createBucket("prog-bucket");
+
+    expect(bucketName).toBe("prog-bucket");
 
     const s3 = createS3Client(server.port);
     const result = await s3.send(new ListBucketsCommand({}));

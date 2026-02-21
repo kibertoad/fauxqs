@@ -284,15 +284,15 @@ The server object exposes methods for pre-creating resources without going throu
 ```typescript
 const server = await startFauxqs({ port: 0, logger: false });
 
-// Create individual resources
-server.createQueue("my-queue");
-server.createQueue("my-dlq", {
+// Create individual resources — each returns metadata about the created resource
+const { queueUrl, queueArn, queueName } = server.createQueue("my-queue");
+const { queueUrl: dlqUrl } = server.createQueue("my-dlq", {
   attributes: { VisibilityTimeout: "60" },
   tags: { env: "test" },
 });
-server.createTopic("my-topic");
+const { topicArn } = server.createTopic("my-topic");
 server.subscribe({ topic: "my-topic", queue: "my-queue" });
-server.createBucket("my-bucket");
+const { bucketName } = server.createBucket("my-bucket");
 
 // Create resources in a specific region
 server.createQueue("eu-queue", { region: "eu-west-1" });

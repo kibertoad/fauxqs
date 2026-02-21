@@ -267,7 +267,7 @@ export interface FauxqsServer {
       attributes?: Record<string, string>;
       tags?: Record<string, string>;
     },
-  ): void;
+  ): { queueUrl: string; queueArn: string; queueName: string };
   /** Non-destructive inspection of all messages in a queue. Returns undefined if queue doesn't exist. */
   inspectQueue(name: string):
     | {
@@ -293,14 +293,14 @@ export interface FauxqsServer {
       attributes?: Record<string, string>;
       tags?: Record<string, string>;
     },
-  ): void;
+  ): { topicArn: string };
   subscribe(options: {
     topic: string;
     queue: string;
     region?: string;
     attributes?: Record<string, string>;
   }): void;
-  createBucket(name: string): void;
+  createBucket(name: string): { bucketName: string };
   /** Delete a queue by name. No-op if the queue does not exist. */
   deleteQueue(name: string, options?: { region?: string }): void;
   /** Delete a topic by name, including its subscriptions. No-op if the topic does not exist. */
@@ -385,6 +385,7 @@ export async function startFauxqs(options?: {
       const arn = sqsQueueArn(name, r);
       const queueUrl = makeQueueUrl(name, r);
       sqsStore.createQueue(name, queueUrl, arn, opts?.attributes, opts?.tags);
+      return { queueUrl, queueArn: arn, queueName: name };
     },
     inspectQueue(name) {
       return sqsStore.inspectQueue(name);
@@ -392,6 +393,7 @@ export async function startFauxqs(options?: {
     createTopic(name, opts) {
       const r = opts?.region ?? region;
       snsStore.createTopic(name, opts?.attributes, opts?.tags, r);
+      return { topicArn: snsTopicArn(name, r) };
     },
     subscribe(opts) {
       const r = opts.region ?? region;
@@ -401,6 +403,7 @@ export async function startFauxqs(options?: {
     },
     createBucket(name) {
       s3Store.createBucket(name);
+      return { bucketName: name };
     },
     deleteQueue(name, opts) {
       const r = opts?.region ?? region;
