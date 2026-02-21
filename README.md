@@ -314,10 +314,12 @@ server.setup({
   buckets: ["uploads", "exports"],
 });
 
-// Delete individual resources
-server.deleteQueue("my-queue");          // no-op if queue doesn't exist
-server.deleteTopic("my-topic");          // also removes associated subscriptions
-server.emptyBucket("my-bucket");         // removes all objects, keeps the bucket
+// Delete individual resources (uses defaultRegion; pass { region } to override)
+server.deleteQueue("my-queue");                          // no-op if queue doesn't exist
+server.deleteQueue("eu-queue", { region: "eu-west-1" }); // delete in specific region
+server.deleteTopic("my-topic");                          // also removes associated subscriptions
+server.deleteTopic("eu-topic", { region: "eu-west-1" });
+server.emptyBucket("my-bucket");                         // removes all objects, keeps the bucket
 
 // Clear all messages and S3 objects between tests (keeps queues, topics, subscriptions, buckets)
 server.reset();

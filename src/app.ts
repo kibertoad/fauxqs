@@ -302,9 +302,9 @@ export interface FauxqsServer {
   }): void;
   createBucket(name: string): void;
   /** Delete a queue by name. No-op if the queue does not exist. */
-  deleteQueue(name: string): void;
+  deleteQueue(name: string, options?: { region?: string }): void;
   /** Delete a topic by name, including its subscriptions. No-op if the topic does not exist. */
-  deleteTopic(name: string): void;
+  deleteTopic(name: string, options?: { region?: string }): void;
   /** Remove all objects from a bucket but keep the bucket itself. No-op if the bucket does not exist. */
   emptyBucket(name: string): void;
   setup(config: import("./initConfig.ts").FauxqsInitConfig): void;
@@ -402,14 +402,16 @@ export async function startFauxqs(options?: {
     createBucket(name) {
       s3Store.createBucket(name);
     },
-    deleteQueue(name) {
-      const queue = sqsStore.getQueueByName(name);
+    deleteQueue(name, opts) {
+      const r = opts?.region ?? region;
+      const arn = sqsQueueArn(name, r);
+      const queue = sqsStore.getQueueByArn(arn);
       if (queue) {
         sqsStore.deleteQueue(queue.url);
       }
     },
-    deleteTopic(name) {
-      const r = region;
+    deleteTopic(name, opts) {
+      const r = opts?.region ?? region;
       const arn = snsTopicArn(name, r);
       snsStore.deleteTopic(arn);
     },

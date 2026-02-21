@@ -6,7 +6,7 @@ import {
   ReceiveMessageCommand,
   SendMessageCommand,
 } from "@aws-sdk/client-sqs";
-import { ListTopicsCommand, ListSubscriptionsCommand, PublishCommand } from "@aws-sdk/client-sns";
+import { CreateTopicCommand, ListTopicsCommand, ListSubscriptionsCommand, PublishCommand } from "@aws-sdk/client-sns";
 import {
   ListBucketsCommand,
   PutObjectCommand,
@@ -229,6 +229,33 @@ describe("programmatic API", () => {
     it("is a no-op for non-existent topic", async () => {
       server = await startFauxqs({ port: 0, logger: false });
       expect(() => server.deleteTopic("no-such-topic")).not.toThrow();
+    });
+
+    it("deletes topic created via SDK in a non-default region", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const sns = createSnsClient(server.port, "eu-west-1");
+      await sns.send(new CreateTopicCommand({ Name: "eu-topic" }));
+
+      const before = await sns.send(new ListTopicsCommand({}));
+      expect(before.Topics).toHaveLength(1);
+
+      server.deleteTopic("eu-topic", { region: "eu-west-1" });
+
+      const after = await sns.send(new ListTopicsCommand({}));
+      expect(after.Topics ?? []).toHaveLength(0);
+    });
+
+    it("does not delete topic in different region", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createTopic("region-t", { region: "eu-west-1" });
+      server.createTopic("region-t", { region: "us-east-1" });
+
+      server.deleteTopic("region-t", { region: "eu-west-1" });
+
+      const sns = createSnsClient(server.port);
+      const after = await sns.send(new ListTopicsCommand({}));
+      expect(after.Topics).toHaveLength(1);
+      expect(after.Topics![0].TopicArn).toContain("us-east-1");
     });
   });
 
