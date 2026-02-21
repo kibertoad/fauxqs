@@ -7,7 +7,7 @@ services:
       - FAUXQS_INIT=/app/init.json
       - FAUXQS_HOST=fauxqs
     volumes:
-      - ../config/init.json:/app/init.json
+      - ./init.json:/app/init.json
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:4566/health"]
       interval: 2s

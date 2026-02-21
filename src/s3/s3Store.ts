@@ -388,6 +388,15 @@ export class S3Store {
     this.multipartUploadsByBucket.get(upload.bucket)?.delete(uploadId);
   }
 
+  /** Clear all objects from all buckets and abort all multipart uploads, but keep the buckets. */
+  clearObjects(): void {
+    for (const objects of this.buckets.values()) {
+      objects.clear();
+    }
+    this.multipartUploads.clear();
+    this.multipartUploadsByBucket.clear();
+  }
+
   purgeAll(): void {
     this.buckets.clear();
     this.bucketCreationDates.clear();

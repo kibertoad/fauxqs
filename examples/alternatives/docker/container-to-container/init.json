@@ -1,0 +1,34 @@
+{
+  "region": "us-east-1",
+  "queues": [
+    { "name": "orders" },
+    { "name": "orders-dlq" },
+    {
+      "name": "notifications",
+      "attributes": {
+        "VisibilityTimeout": "60",
+        "RedrivePolicy": "{\"deadLetterTargetArn\":\"arn:aws:sqs:us-east-1:000000000000:orders-dlq\",\"maxReceiveCount\":\"3\"}"
+      }
+    }
+  ],
+  "topics": [
+    { "name": "order-events" }
+  ],
+  "subscriptions": [
+    {
+      "topic": "order-events",
+      "queue": "orders",
+      "attributes": {
+        "FilterPolicy": "{\"eventType\":[\"order.created\",\"order.updated\"]}"
+      }
+    },
+    {
+      "topic": "order-events",
+      "queue": "notifications",
+      "attributes": {
+        "RawMessageDelivery": "true"
+      }
+    }
+  ],
+  "buckets": ["uploads", "reports"]
+}

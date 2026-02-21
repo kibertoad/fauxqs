@@ -9,5 +9,5 @@
     "forceConsistentCasingInFileNames": true,
     "noEmit": true
   },
-  "include": ["programmatic/*.ts", "docker/*.ts"]
+  "include": ["programmatic/*.ts", "docker/**/*.ts"]
 }

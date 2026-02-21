@@ -4,14 +4,14 @@
  * See docker-compose.yml in this directory for the compose file.
  *
  * Start the stack:
- *   docker compose -f examples/docker/docker-compose.yml up
+ *   docker compose -f examples/alternatives/docker/container-to-container/docker-compose.yml up
  *
  * The compose setup provides:
  * - fauxqs service with health check and init config volume mount
  * - Application service that depends on fauxqs being healthy
  * - Container-to-container networking (app connects via service name)
  *
- * The init config (../config/init.json) is mounted into the fauxqs container,
+ * The init config (init.json) is mounted into the fauxqs container,
  * so queues, topics, subscriptions, and buckets are created on startup.
  *
  * Key differences from standalone Docker:

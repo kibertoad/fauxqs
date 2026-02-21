@@ -302,6 +302,8 @@ export interface FauxqsServer {
   }): void;
   createBucket(name: string): void;
   setup(config: import("./initConfig.ts").FauxqsInitConfig): void;
+  /** Clear all messages from queues and all objects from buckets, but keep queues, topics, subscriptions, and buckets intact. Also clears the spy buffer. */
+  reset(): void;
   purgeAll(): void;
 }
 
@@ -399,6 +401,13 @@ export async function startFauxqs(options?: {
         port: actualPort,
         region,
       });
+    },
+    reset() {
+      sqsStore.clearMessages();
+      s3Store.clearObjects();
+      if (messageSpy) {
+        messageSpy.clear();
+      }
     },
     purgeAll() {
       sqsStore.purgeAll();

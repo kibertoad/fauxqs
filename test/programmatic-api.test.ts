@@ -4,10 +4,13 @@ import { createSqsClient, createSnsClient, createS3Client } from "./helpers/clie
 import {
   ListQueuesCommand,
   ReceiveMessageCommand,
+  SendMessageCommand,
 } from "@aws-sdk/client-sqs";
 import { ListTopicsCommand, ListSubscriptionsCommand, PublishCommand } from "@aws-sdk/client-sns";
 import {
   ListBucketsCommand,
+  PutObjectCommand,
+  ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
 
 describe("programmatic API", () => {
@@ -161,5 +164,118 @@ describe("programmatic API", () => {
     const queues = await sqs.send(new ListQueuesCommand({}));
     expect(queues.QueueUrls).toHaveLength(1);
     expect(queues.QueueUrls![0]).toContain("second-q");
+  });
+
+  describe("reset", () => {
+    it("clears messages but keeps queues", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createQueue("reset-q");
+
+      const sqs = createSqsClient(server.port);
+      const queues = await sqs.send(new ListQueuesCommand({}));
+      await sqs.send(new SendMessageCommand({
+        QueueUrl: queues.QueueUrls![0],
+        MessageBody: "hello",
+      }));
+
+      server.reset();
+
+      // Queue still exists
+      const afterQueues = await sqs.send(new ListQueuesCommand({}));
+      expect(afterQueues.QueueUrls).toHaveLength(1);
+      expect(afterQueues.QueueUrls![0]).toContain("reset-q");
+
+      // But messages are gone
+      const msgs = await sqs.send(new ReceiveMessageCommand({
+        QueueUrl: afterQueues.QueueUrls![0],
+        WaitTimeSeconds: 0,
+      }));
+      expect(msgs.Messages ?? []).toHaveLength(0);
+    });
+
+    it("clears S3 objects but keeps buckets", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createBucket("reset-bucket");
+
+      const s3 = createS3Client(server.port);
+      await s3.send(new PutObjectCommand({
+        Bucket: "reset-bucket",
+        Key: "test.txt",
+        Body: "hello",
+      }));
+
+      server.reset();
+
+      // Bucket still exists
+      const buckets = await s3.send(new ListBucketsCommand({}));
+      expect(buckets.Buckets).toHaveLength(1);
+      expect(buckets.Buckets![0].Name).toBe("reset-bucket");
+
+      // But objects are gone
+      const objects = await s3.send(new ListObjectsV2Command({ Bucket: "reset-bucket" }));
+      expect(objects.Contents ?? []).toHaveLength(0);
+    });
+
+    it("keeps topics and subscriptions intact", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createQueue("reset-sub-q");
+      server.createTopic("reset-topic");
+      server.subscribe({ topic: "reset-topic", queue: "reset-sub-q" });
+
+      server.reset();
+
+      const sns = createSnsClient(server.port);
+      const topics = await sns.send(new ListTopicsCommand({}));
+      expect(topics.Topics).toHaveLength(1);
+
+      const subs = await sns.send(new ListSubscriptionsCommand({}));
+      expect(subs.Subscriptions).toHaveLength(1);
+    });
+
+    it("clears spy buffer", async () => {
+      server = await startFauxqs({ port: 0, logger: false, messageSpies: true });
+      server.createQueue("spy-reset-q");
+
+      const sqs = createSqsClient(server.port);
+      const queues = await sqs.send(new ListQueuesCommand({}));
+      await sqs.send(new SendMessageCommand({
+        QueueUrl: queues.QueueUrls![0],
+        MessageBody: "tracked",
+      }));
+
+      // Spy has the message
+      expect(server.spy.getAllMessages()).toHaveLength(1);
+
+      server.reset();
+
+      // Spy buffer is cleared
+      expect(server.spy.getAllMessages()).toHaveLength(0);
+    });
+
+    it("allows sending new messages after reset", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createQueue("reset-reuse-q");
+
+      const sqs = createSqsClient(server.port);
+      const queues = await sqs.send(new ListQueuesCommand({}));
+      await sqs.send(new SendMessageCommand({
+        QueueUrl: queues.QueueUrls![0],
+        MessageBody: "before",
+      }));
+
+      server.reset();
+
+      await sqs.send(new SendMessageCommand({
+        QueueUrl: queues.QueueUrls![0],
+        MessageBody: "after",
+      }));
+
+      const msgs = await sqs.send(new ReceiveMessageCommand({
+        QueueUrl: queues.QueueUrls![0],
+        WaitTimeSeconds: 1,
+      }));
+      expect(msgs.Messages).toHaveLength(1);
+      expect(msgs.Messages![0].Body).toBe("after");
+    });
   });
 });

@@ -32,6 +32,10 @@ All state is in-memory. No persistence, no external storage dependencies.
 - [S3 Features](#s3-features)
   - [S3 URL styles](#s3-url-styles)
   - [Using with AWS CLI](#using-with-aws-cli)
+- [Testing Strategies](#testing-strategies)
+  - [Library mode for tests](#library-mode-for-tests)
+  - [Docker mode for local development](#docker-mode-for-local-development)
+  - [Recommended combination](#recommended-combination)
 - [Conventions](#conventions)
 - [Limitations](#limitations)
 - [Examples](#examples)
@@ -304,7 +308,10 @@ server.setup({
   buckets: ["uploads", "exports"],
 });
 
-// Reset all state between tests
+// Clear all messages and S3 objects between tests (keeps queues, topics, subscriptions, buckets)
+server.reset();
+
+// Or nuke everything — removes queues, topics, subscriptions, and buckets too
 server.purgeAll();
 ```
 
@@ -1030,6 +1037,90 @@ If the AWS CLI uses virtual-hosted-style S3 URLs by default, configure path-styl
 aws configure set default.s3.addressing_style path
 ```
 
+## Testing Strategies
+
+fauxqs supports two deployment modes that complement each other for a complete testing workflow:
+
+| Mode | Best for | Startup | Assertions |
+|------|----------|---------|------------|
+| **Library** (embedded) | Unit tests, integration tests, CI | Milliseconds, in-process | Full programmatic API: `spy`, `inspectQueue`, `reset`, `purgeAll` |
+| **Docker** (standalone) | Local development, acceptance tests, dev environments | Seconds, real HTTP | Init config, HTTP inspection endpoints |
+
+### Library mode for tests
+
+Embed fauxqs directly in your test suite. Each test file gets its own server instance on a random port — no Docker dependency, no shared state, no port conflicts:
+
+```typescript
+// test/setup.ts
+import { startFauxqs, type FauxqsServer } from "fauxqs";
+
+export async function createTestServer(): Promise<FauxqsServer> {
+  const server = await startFauxqs({ port: 0, logger: false, messageSpies: true });
+
+  // Pre-create resources via the programmatic API (no SDK roundtrips)
+  server.createQueue("my-queue");
+  server.createBucket("my-bucket");
+
+  return server;
+}
+```
+
+```typescript
+// test/app.test.ts
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+
+let server: FauxqsServer;
+
+beforeAll(async () => { server = await createTestServer(); });
+afterAll(async () => { await server.stop(); });
+beforeEach(() => { server.spy.clear(); });
+
+it("tracks uploads via the spy", async () => {
+  // ... trigger your app logic that uploads to S3 ...
+
+  const event = await server.spy.waitForMessage(
+    { service: "s3", bucket: "my-bucket", key: "file.txt", status: "uploaded" },
+    undefined,
+    2000, // timeout — prevents tests from hanging
+  );
+  expect(event.status).toBe("uploaded");
+});
+```
+
+Library mode gives you deterministic assertions via the [message spy](#message-spy), non-destructive state inspection via [`inspectQueue()`](#queue-inspection), and instant state reset with `reset()` / `purgeAll()` — none of which are available from outside the process.
+
+### Docker mode for local development
+
+Use `docker-compose.yml` with an init config to give your team a consistent local environment:
+
+```yaml
+# docker-compose.yml
+services:
+  fauxqs:
+    image: kibertoad/fauxqs:latest
+    ports: ["4566:4566"]
+    environment:
+      - FAUXQS_INIT=/app/init.json
+    volumes:
+      - ./fauxqs-init.json:/app/init.json
+
+  app:
+    build: .
+    depends_on:
+      fauxqs:
+        condition: service_healthy
+    environment:
+      - AWS_ENDPOINT=http://fauxqs:4566
+```
+
+Docker mode validates your real deployment topology — networking, DNS, container-to-container communication — and is language-agnostic (any AWS SDK can connect).
+
+### Recommended combination
+
+Use both modes together. Library mode runs in CI on every commit (fast, no Docker required). Docker mode runs locally via `docker compose up` and optionally in a separate CI stage for acceptance testing.
+
+See the [`examples/recommended/`](examples/recommended/) directory for a complete working example with a Fastify app, library-mode vitest tests, and Docker compose configuration.
+
 ## Conventions
 
 - Account ID: `000000000000`
@@ -1053,12 +1144,13 @@ The [`examples/`](examples/) directory contains runnable TypeScript examples cov
 
 | Example | Description |
 |---------|-------------|
-| [`programmatic/programmatic-api.ts`](examples/programmatic/programmatic-api.ts) | Server lifecycle, resource creation, SDK usage, `inspectQueue()`, `purgeAll()`, `setup()` |
-| [`programmatic/message-spy.ts`](examples/programmatic/message-spy.ts) | `MessageSpyReader` — all spy methods, partial/predicate filters, discriminated union narrowing, DLQ tracking |
-| [`programmatic/init-config.ts`](examples/programmatic/init-config.ts) | File-based and inline init config, DLQ chains, `setup()` idempotency, purge + re-apply pattern |
-| [`programmatic/queue-inspection.ts`](examples/programmatic/queue-inspection.ts) | Programmatic `inspectQueue()` and HTTP `/_fauxqs/queues` endpoints |
-| [`docker/standalone-container.ts`](examples/docker/standalone-container.ts) | Connecting to a fauxqs Docker container from the host |
-| [`docker/container-to-container.ts`](examples/docker/container-to-container.ts) | Container-to-container communication via docker-compose |
+| [`alternatives/programmatic/programmatic-api.ts`](examples/alternatives/programmatic/programmatic-api.ts) | Server lifecycle, resource creation, SDK usage, `inspectQueue()`, `reset()`, `purgeAll()`, `setup()` |
+| [`alternatives/programmatic/message-spy.ts`](examples/alternatives/programmatic/message-spy.ts) | `MessageSpyReader` — all spy methods, partial/predicate filters, discriminated union narrowing, DLQ tracking |
+| [`alternatives/programmatic/init-config.ts`](examples/alternatives/programmatic/init-config.ts) | File-based and inline init config, DLQ chains, `setup()` idempotency, purge + re-apply pattern |
+| [`alternatives/programmatic/queue-inspection.ts`](examples/alternatives/programmatic/queue-inspection.ts) | Programmatic `inspectQueue()` and HTTP `/_fauxqs/queues` endpoints |
+| [`alternatives/docker/standalone/`](examples/alternatives/docker/standalone/standalone-container.ts) | Connecting to a fauxqs Docker container from the host |
+| [`alternatives/docker/container-to-container/`](examples/alternatives/docker/container-to-container/) | Container-to-container communication via docker-compose |
+| [`recommended/`](examples/recommended/) | Dual-mode testing: library mode (vitest + spy) for CI, Docker for local dev |
 
 All examples are type-checked in CI to prevent staleness.
 
