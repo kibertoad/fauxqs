@@ -1,0 +1,28 @@
+{
+  "queues": [
+    { "name": "file-notifications" },
+    { "name": "audit-dlq" },
+    {
+      "name": "audit-events",
+      "attributes": {
+        "VisibilityTimeout": "0",
+        "RedrivePolicy": "{\"deadLetterTargetArn\":\"arn:aws:sqs:us-east-1:000000000000:audit-dlq\",\"maxReceiveCount\":\"1\"}"
+      }
+    },
+    { "name": "analytics-events" }
+  ],
+  "topics": [
+    { "name": "file-events" }
+  ],
+  "subscriptions": [
+    { "topic": "file-events", "queue": "audit-events" },
+    {
+      "topic": "file-events",
+      "queue": "analytics-events",
+      "attributes": {
+        "FilterPolicy": "{\"fileExtension\":[\"json\"]}"
+      }
+    }
+  ],
+  "buckets": ["app-files"]
+}

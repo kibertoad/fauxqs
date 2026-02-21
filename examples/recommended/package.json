@@ -1,0 +1,23 @@
+{
+  "name": "@fauxqs-examples/recommended",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "dev": "node --env-file=.env.dev src/server.ts",
+    "docker:start": "docker compose up -d",
+    "docker:stop": "docker compose down"
+  },
+  "dependencies": {
+    "fauxqs": "^1.8.0",
+    "fastify": "^5.7.4",
+    "@aws-sdk/client-s3": "^3.993.0",
+    "@aws-sdk/client-sns": "^3.993.0",
+    "@aws-sdk/client-sqs": "^3.993.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^25.2.3",
+    "vitest": "^4.0.18"
+  }
+}

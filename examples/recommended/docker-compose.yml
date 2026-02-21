@@ -1,0 +1,36 @@
+# Docker mode — for local development and acceptance testing.
+#
+# Start:  docker compose up
+# Stop:   docker compose down
+#
+# fauxqs pre-creates queues, topics, subscriptions, and buckets from
+# fauxqs-init.json before the healthcheck passes, so the app starts
+# only after all resources are ready.
+#
+# The init config mirrors exactly what setup() creates in test/setup.ts,
+# so your app runs against the same resource topology in both modes.
+
+services:
+  fauxqs:
+    image: kibertoad/fauxqs:latest
+    ports:
+      - "4566:4566"
+    environment:
+      - FAUXQS_INIT=/app/init.json
+    volumes:
+      - ./fauxqs-init.json:/app/init.json
+
+  # Your application would go here:
+  #
+  # app:
+  #   build: .
+  #   depends_on:
+  #     fauxqs:
+  #       condition: service_healthy
+  #   dns: 10.0.0.2  # point to fauxqs built-in dnsmasq for *.s3.fauxqs resolution
+  #   environment:
+  #     - AWS_ENDPOINT=http://fauxqs:4566
+  #     - S3_ENDPOINT=http://s3.fauxqs:4566       # virtual-hosted-style via built-in dnsmasq
+  #     - S3_BUCKET=app-files
+  #     - SQS_QUEUE_URL=http://sqs.us-east-1.fauxqs:4566/000000000000/file-notifications
+  #     - SNS_TOPIC_ARN=arn:aws:sns:us-east-1:000000000000:file-events
