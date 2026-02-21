@@ -388,6 +388,20 @@ export class S3Store {
     this.multipartUploadsByBucket.get(upload.bucket)?.delete(uploadId);
   }
 
+  /** Remove all objects from a single bucket and abort its multipart uploads. No-op if the bucket does not exist. */
+  emptyBucket(name: string): void {
+    const objects = this.buckets.get(name);
+    if (!objects) return;
+    objects.clear();
+    const bucketUploads = this.multipartUploadsByBucket.get(name);
+    if (bucketUploads) {
+      for (const uploadId of bucketUploads) {
+        this.multipartUploads.delete(uploadId);
+      }
+      bucketUploads.clear();
+    }
+  }
+
   /** Clear all objects from all buckets and abort all multipart uploads, but keep the buckets. */
   clearObjects(): void {
     for (const objects of this.buckets.values()) {

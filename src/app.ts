@@ -301,6 +301,12 @@ export interface FauxqsServer {
     attributes?: Record<string, string>;
   }): void;
   createBucket(name: string): void;
+  /** Delete a queue by name. No-op if the queue does not exist. */
+  deleteQueue(name: string): void;
+  /** Delete a topic by name, including its subscriptions. No-op if the topic does not exist. */
+  deleteTopic(name: string): void;
+  /** Remove all objects from a bucket but keep the bucket itself. No-op if the bucket does not exist. */
+  emptyBucket(name: string): void;
   setup(config: import("./initConfig.ts").FauxqsInitConfig): void;
   /** Clear all messages from queues and all objects from buckets, but keep queues, topics, subscriptions, and buckets intact. Also clears the spy buffer. */
   reset(): void;
@@ -395,6 +401,20 @@ export async function startFauxqs(options?: {
     },
     createBucket(name) {
       s3Store.createBucket(name);
+    },
+    deleteQueue(name) {
+      const queue = sqsStore.getQueueByName(name);
+      if (queue) {
+        sqsStore.deleteQueue(queue.url);
+      }
+    },
+    deleteTopic(name) {
+      const r = region;
+      const arn = snsTopicArn(name, r);
+      snsStore.deleteTopic(arn);
+    },
+    emptyBucket(name) {
+      s3Store.emptyBucket(name);
     },
     setup(config) {
       applyInitConfig(config, sqsStore, snsStore, s3Store, {

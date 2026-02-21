@@ -166,6 +166,99 @@ describe("programmatic API", () => {
     expect(queues.QueueUrls![0]).toContain("second-q");
   });
 
+  describe("deleteQueue", () => {
+    it("removes queue so it is no longer visible via SDK", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createQueue("del-q");
+
+      const sqs = createSqsClient(server.port);
+      const before = await sqs.send(new ListQueuesCommand({}));
+      expect(before.QueueUrls).toHaveLength(1);
+
+      server.deleteQueue("del-q");
+
+      const after = await sqs.send(new ListQueuesCommand({}));
+      expect(after.QueueUrls ?? []).toHaveLength(0);
+    });
+
+    it("is a no-op for non-existent queue", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      expect(() => server.deleteQueue("no-such-queue")).not.toThrow();
+    });
+
+    it("allows recreating deleted queue with different attributes", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createQueue("reconfig-q", { attributes: { VisibilityTimeout: "30" } });
+      server.deleteQueue("reconfig-q");
+      server.createQueue("reconfig-q", { attributes: { VisibilityTimeout: "120" } });
+
+      const sqs = createSqsClient(server.port);
+      const queues = await sqs.send(new ListQueuesCommand({}));
+      expect(queues.QueueUrls).toHaveLength(1);
+    });
+  });
+
+  describe("deleteTopic", () => {
+    it("removes topic so it is no longer visible via SDK", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createTopic("del-t");
+
+      const sns = createSnsClient(server.port);
+      const before = await sns.send(new ListTopicsCommand({}));
+      expect(before.Topics).toHaveLength(1);
+
+      server.deleteTopic("del-t");
+
+      const after = await sns.send(new ListTopicsCommand({}));
+      expect(after.Topics ?? []).toHaveLength(0);
+    });
+
+    it("removes associated subscriptions", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createQueue("del-sub-q");
+      server.createTopic("del-sub-t");
+      server.subscribe({ topic: "del-sub-t", queue: "del-sub-q" });
+
+      server.deleteTopic("del-sub-t");
+
+      const sns = createSnsClient(server.port);
+      const subs = await sns.send(new ListSubscriptionsCommand({}));
+      expect(subs.Subscriptions ?? []).toHaveLength(0);
+    });
+
+    it("is a no-op for non-existent topic", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      expect(() => server.deleteTopic("no-such-topic")).not.toThrow();
+    });
+  });
+
+  describe("emptyBucket", () => {
+    it("removes all objects but keeps the bucket", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createBucket("empty-b");
+
+      const s3 = createS3Client(server.port);
+      await s3.send(new PutObjectCommand({ Bucket: "empty-b", Key: "a.txt", Body: "a" }));
+      await s3.send(new PutObjectCommand({ Bucket: "empty-b", Key: "b.txt", Body: "b" }));
+
+      server.emptyBucket("empty-b");
+
+      // Bucket still exists
+      const buckets = await s3.send(new ListBucketsCommand({}));
+      expect(buckets.Buckets).toHaveLength(1);
+      expect(buckets.Buckets![0].Name).toBe("empty-b");
+
+      // But objects are gone
+      const objects = await s3.send(new ListObjectsV2Command({ Bucket: "empty-b" }));
+      expect(objects.Contents ?? []).toHaveLength(0);
+    });
+
+    it("is a no-op for non-existent bucket", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      expect(() => server.emptyBucket("no-such-bucket")).not.toThrow();
+    });
+  });
+
   describe("reset", () => {
     it("clears messages but keeps queues", async () => {
       server = await startFauxqs({ port: 0, logger: false });

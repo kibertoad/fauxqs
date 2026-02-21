@@ -314,6 +314,11 @@ server.setup({
   buckets: ["uploads", "exports"],
 });
 
+// Delete individual resources
+server.deleteQueue("my-queue");          // no-op if queue doesn't exist
+server.deleteTopic("my-topic");          // also removes associated subscriptions
+server.emptyBucket("my-bucket");         // removes all objects, keeps the bucket
+
 // Clear all messages and S3 objects between tests (keeps queues, topics, subscriptions, buckets)
 server.reset();
 
