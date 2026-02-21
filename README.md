@@ -1,3 +1,5 @@
+<img src="logo-readme.jpg" alt="fauxqs" width="360" />
+
 # fauxqs
 
 Local SNS/SQS/S3 emulator for development and testing. Point your `@aws-sdk/client-sqs`, `@aws-sdk/client-sns`, and `@aws-sdk/client-s3` clients at fauxqs instead of real AWS.
