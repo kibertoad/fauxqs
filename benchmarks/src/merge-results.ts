@@ -1,8 +1,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readAllResults } from './helpers.js';
-import type { BenchmarkResult } from './types.js';
+import { readAllResults } from './helpers.ts';
+import type { BenchmarkResult } from './types.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RESULTS_DIR = join(__dirname, '..', 'results');

@@ -1,6 +1,6 @@
 import { SQSClient, CreateQueueCommand } from '@aws-sdk/client-sqs';
-import { runBenchmark } from '../benchmark.js';
-import { writeResult, printSummary, pollHealth, dockerComposeUp, dockerComposeDown } from '../helpers.js';
+import { runBenchmark } from '../benchmark.ts';
+import { writeResult, printSummary, pollHealth, dockerComposeUp, dockerComposeDown } from '../helpers.ts';
 
 const PORT = 14568;
 const endpoint = `http://127.0.0.1:${PORT}`;

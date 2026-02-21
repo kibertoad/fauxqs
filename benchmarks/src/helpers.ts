@@ -2,7 +2,7 @@ import { execSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { BenchmarkResult } from './types.js';
+import type { BenchmarkResult } from './types.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RESULTS_DIR = join(__dirname, '..', 'results');

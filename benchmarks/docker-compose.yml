@@ -1,5 +1,5 @@
 services:
-  fauxqs-docker:
+  fauxqs-docker-official:
     image: kibertoad/fauxqs:latest
     ports:
       - "14566:4566"
@@ -9,7 +9,7 @@ services:
       timeout: 5s
       retries: 10
 
-  fauxqs-npx:
+  fauxqs-docker-lite:
     image: node:24-alpine
     command: ["npx", "fauxqs"]
     ports:
@@ -21,7 +21,7 @@ services:
       retries: 40
 
   localstack:
-    image: localstack/localstack
+    image: localstack/localstack:latest
     ports:
       - "14568:4566"
     environment:

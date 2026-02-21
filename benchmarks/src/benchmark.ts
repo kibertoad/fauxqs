@@ -2,16 +2,15 @@ import { Bench } from 'tinybench';
 import {
   SQSClient,
   CreateQueueCommand,
-  SendMessageBatchCommand,
+  SendMessageCommand,
   ReceiveMessageCommand,
-  DeleteMessageBatchCommand,
+  DeleteMessageCommand,
   PurgeQueueCommand,
 } from '@aws-sdk/client-sqs';
-import type { BenchmarkResult, TaskResult } from './types.js';
-import { sleep } from './helpers.js';
+import type { BenchmarkResult, TaskResult } from './types.ts';
+import { sleep } from './helpers.ts';
 
 const MESSAGE_COUNT = 5000;
-const BATCH_SIZE = 10;
 
 function createSqsClient(endpoint: string): SQSClient {
   return new SQSClient({
@@ -21,43 +20,35 @@ function createSqsClient(endpoint: string): SQSClient {
   });
 }
 
-async function publishMessages(sqs: SQSClient, queueUrl: string, count: number): Promise<void> {
-  const batches = Math.ceil(count / BATCH_SIZE);
-  for (let i = 0; i < batches; i++) {
-    const entries = [];
-    for (let j = 0; j < BATCH_SIZE && i * BATCH_SIZE + j < count; j++) {
-      entries.push({
-        Id: String(j),
-        MessageBody: JSON.stringify({ index: i * BATCH_SIZE + j, ts: Date.now() }),
-      });
-    }
-    await sqs.send(new SendMessageBatchCommand({ QueueUrl: queueUrl, Entries: entries }));
+async function publishMessages(sqs: SQSClient, queueUrl: string, count: number, label: string): Promise<void> {
+  for (let i = 0; i < count; i++) {
+    await sqs.send(new SendMessageCommand({
+      QueueUrl: queueUrl,
+      MessageBody: JSON.stringify({ index: i, ts: Date.now() }),
+    }));
+    if ((i + 1) % 500 === 0) console.log(`  ${label} published ${i + 1}/${count}`);
   }
 }
 
-async function consumeMessages(sqs: SQSClient, queueUrl: string, count: number): Promise<void> {
+async function consumeMessages(sqs: SQSClient, queueUrl: string, count: number, label: string): Promise<void> {
   let consumed = 0;
   while (consumed < count) {
     const resp = await sqs.send(
       new ReceiveMessageCommand({
         QueueUrl: queueUrl,
-        MaxNumberOfMessages: 10,
+        MaxNumberOfMessages: 1,
         WaitTimeSeconds: 5,
       }),
     );
-    const messages = resp.Messages ?? [];
-    if (messages.length === 0) continue;
+    const message = resp.Messages?.[0];
+    if (!message) continue;
 
-    await sqs.send(
-      new DeleteMessageBatchCommand({
-        QueueUrl: queueUrl,
-        Entries: messages.map((m, i) => ({
-          Id: String(i),
-          ReceiptHandle: m.ReceiptHandle!,
-        })),
-      }),
-    );
-    consumed += messages.length;
+    await sqs.send(new DeleteMessageCommand({
+      QueueUrl: queueUrl,
+      ReceiptHandle: message.ReceiptHandle!,
+    }));
+    consumed++;
+    if (consumed % 500 === 0) console.log(`  ${label} consumed ${consumed}/${count}`);
   }
 }
 
@@ -79,10 +70,15 @@ export async function runBenchmark(
 
   console.log(`Queue URL: ${queueUrl}`);
 
-  const bench = new Bench({ iterations: 5, warmupIterations: 1 });
+  const WARMUP = 1;
+  const ITERATIONS = 5;
+  const bench = new Bench({ iterations: ITERATIONS, warmupIterations: WARMUP });
 
+  let publishRun = 0;
   bench.add(`publish ${MESSAGE_COUNT}`, async () => {
-    await publishMessages(sqs, queueUrl!, MESSAGE_COUNT);
+    publishRun++;
+    const label = publishRun <= WARMUP ? '[warmup]' : `[${publishRun - WARMUP}/${ITERATIONS}]`;
+    await publishMessages(sqs, queueUrl!, MESSAGE_COUNT, label);
   }, {
     afterEach: async () => {
       await sqs.send(new PurgeQueueCommand({ QueueUrl: queueUrl! }));
@@ -90,11 +86,14 @@ export async function runBenchmark(
     },
   });
 
+  let consumeRun = 0;
   bench.add(`consume ${MESSAGE_COUNT}`, async () => {
-    await consumeMessages(sqs, queueUrl!, MESSAGE_COUNT);
+    consumeRun++;
+    const label = consumeRun <= WARMUP ? '[warmup]' : `[${consumeRun - WARMUP}/${ITERATIONS}]`;
+    await consumeMessages(sqs, queueUrl!, MESSAGE_COUNT, label);
   }, {
     beforeEach: async () => {
-      await publishMessages(sqs, queueUrl!, MESSAGE_COUNT);
+      await publishMessages(sqs, queueUrl!, MESSAGE_COUNT, '(setup)');
     },
     afterEach: async () => {
       await sqs.send(new PurgeQueueCommand({ QueueUrl: queueUrl! }));

@@ -35,6 +35,7 @@ All state is in-memory. No persistence, no external storage dependencies.
 - [Conventions](#conventions)
 - [Limitations](#limitations)
 - [Examples](#examples)
+- [Benchmarks](#benchmarks)
 - [License](#license)
 
 ## Installation
@@ -1060,6 +1061,10 @@ The [`examples/`](examples/) directory contains runnable TypeScript examples cov
 | [`docker/container-to-container.ts`](examples/docker/container-to-container.ts) | Container-to-container communication via docker-compose |
 
 All examples are type-checked in CI to prevent staleness.
+
+## Benchmarks
+
+SQS throughput benchmarks are available in the [`benchmarks/`](benchmarks/) directory, comparing fauxqs across different deployment modes (in-process library, official Docker image, lightweight Docker container) and against LocalStack. See [`benchmarks/BENCHMARKING.md`](benchmarks/BENCHMARKING.md) for setup descriptions, instructions, and how to interpret results.
 
 ## License
 

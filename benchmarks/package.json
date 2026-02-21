@@ -4,13 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "bench:in-memory": "node --import tsx src/runners/in-memory.ts",
-    "bench:docker-fauxqs": "node --import tsx src/runners/docker-fauxqs.ts",
-    "bench:npx-fauxqs": "node --import tsx src/runners/npx-fauxqs.ts",
-    "bench:localstack": "node --import tsx src/runners/localstack.ts",
-    "bench:merge": "node --import tsx src/merge-results.ts",
+    "bench:fauxqs-library": "node src/runners/fauxqs-library.ts",
+    "bench:fauxqs-docker-official": "node src/runners/fauxqs-docker-official.ts",
+    "bench:fauxqs-docker-lite": "node src/runners/fauxqs-docker-lite.ts",
+    "bench:localstack": "node src/runners/localstack.ts",
+    "bench:merge": "node src/merge-results.ts",
     "bench:clean": "del-cli results/*",
-    "bench:all": "npm run bench:in-memory && npm run bench:docker-fauxqs && npm run bench:npx-fauxqs && npm run bench:localstack && npm run bench:merge"
+    "bench:all": "node --run bench:clean && npm run bench:fauxqs-library && npm run bench:fauxqs-docker-official && npm run bench:fauxqs-docker-lite && npm run bench:localstack && npm run bench:merge"
   },
   "dependencies": {
     "fauxqs": "file:..",
