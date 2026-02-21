@@ -39,6 +39,10 @@ All state is in-memory. No persistence, no external storage dependencies.
 - [Conventions](#conventions)
 - [Limitations](#limitations)
 - [Examples](#examples)
+- [Migrating from LocalStack](#migrating-from-localstack)
+  - [SNS/SQS only](#snssqs-only)
+  - [SNS/SQS/S3](#snssqss3)
+  - [Going hybrid (recommended)](#going-hybrid-recommended)
 - [Benchmarks](#benchmarks)
 - [License](#license)
 
@@ -1153,6 +1157,213 @@ The [`examples/`](examples/) directory contains runnable TypeScript examples cov
 | [`recommended/`](examples/recommended/) | Dual-mode testing: library mode (vitest + spy) for CI, Docker for local dev |
 
 All examples are type-checked in CI to prevent staleness.
+
+## Migrating from LocalStack
+
+If you're currently using LocalStack for local SNS, SQS, and/or S3 emulation, fauxqs is a drop-in replacement for those services. Both listen on port 4566 by default and accept the same AWS SDK calls, so the migration is straightforward.
+
+There are two approaches: a Docker swap (quickest) and a hybrid setup (recommended for the best integration test experience). Which one makes sense depends on whether you use S3.
+
+### SNS/SQS only
+
+If your LocalStack usage is limited to SNS and SQS, the migration is a one-line Docker image swap. No SDK client changes are needed — the endpoint URL, port, and credentials stay the same.
+
+**Docker swap:**
+
+```yaml
+# Before (LocalStack)
+services:
+  localstack:
+    image: localstack/localstack
+    ports: ["4566:4566"]
+    environment:
+      - SERVICES=sqs,sns
+
+# After (fauxqs)
+services:
+  fauxqs:
+    image: kibertoad/fauxqs:latest
+    ports: ["4566:4566"]
+```
+
+**Region:** Both LocalStack and fauxqs auto-detect the region from the SDK client's `Authorization` header, so in most setups no configuration is needed. If you have older LocalStack configs that used the now-removed `DEFAULT_REGION` env var (deprecated in v0.12.7, removed in v2.0), the equivalent in fauxqs is `FAUXQS_DEFAULT_REGION` — it serves as a fallback when the region can't be resolved from request headers. Both default to `us-east-1`.
+
+The main difference is how resources are pre-created. LocalStack uses init hooks (`/etc/localstack/init/ready.d/` shell scripts with `awslocal` CLI calls), while fauxqs uses a declarative JSON config. `awslocal` defaults to `us-east-1` unless you pass `--region`, and fauxqs init config uses `defaultRegion` (`us-east-1`) unless you set an explicit `region` per resource — so both create resources in the same region by default:
+
+```bash
+# LocalStack init script (ready.d/init.sh)
+# awslocal defaults to us-east-1; use --region to override
+awslocal sqs create-queue --queue-name orders
+awslocal sqs create-queue --queue-name orders-dlq
+awslocal sns create-topic --name events
+awslocal sns subscribe \
+  --topic-arn arn:aws:sns:us-east-1:000000000000:events \
+  --protocol sqs \
+  --notification-endpoint arn:aws:sqs:us-east-1:000000000000:orders
+```
+
+```json
+// fauxqs init.json — uses defaultRegion (us-east-1) unless "region" is set per resource
+{
+  "queues": [{ "name": "orders" }, { "name": "orders-dlq" }],
+  "topics": [{ "name": "events" }],
+  "subscriptions": [{ "topic": "events", "queue": "orders" }]
+}
+```
+
+```yaml
+# Before (LocalStack docker-compose.yml)
+services:
+  localstack:
+    image: localstack/localstack
+    ports: ["4566:4566"]
+    environment:
+      - SERVICES=sqs,sns
+    volumes:
+      - ./ready.d:/etc/localstack/init/ready.d
+
+# After (fauxqs docker-compose.yml)
+services:
+  fauxqs:
+    image: kibertoad/fauxqs:latest
+    ports: ["4566:4566"]
+    environment:
+      - FAUXQS_INIT=/app/init.json
+    volumes:
+      - ./init.json:/app/init.json
+```
+
+Update your docker-compose service name references (e.g., `http://localstack:4566` to `http://fauxqs:4566`) and you're done.
+
+### SNS/SQS/S3
+
+When S3 is involved, the Docker swap is still straightforward — the only additional consideration is S3 URL style. If you were using `forcePathStyle: true` with LocalStack, it works identically with fauxqs. If you were using LocalStack's `localhost.localstack.cloud` wildcard DNS for virtual-hosted-style, switch to `localhost.fauxqs.dev`:
+
+```typescript
+// Before (LocalStack)
+const s3 = new S3Client({
+  endpoint: "http://s3.localhost.localstack.cloud:4566",
+  // ...
+});
+
+// After (fauxqs)
+const s3 = new S3Client({
+  endpoint: "http://s3.localhost.fauxqs.dev:4566",
+  // ...
+});
+```
+
+For container-to-container S3 in docker-compose, fauxqs includes a built-in dnsmasq that resolves `*.s3.fauxqs` to the container IP — see [Container-to-container S3 virtual-hosted-style](#container-to-container-s3-virtual-hosted-style).
+
+The init config for S3 is the same declarative JSON, with a `buckets` array:
+
+```json
+{
+  "queues": [{ "name": "orders" }],
+  "topics": [{ "name": "events" }],
+  "subscriptions": [{ "topic": "events", "queue": "orders" }],
+  "buckets": ["uploads", "exports"]
+}
+```
+
+### Going hybrid (recommended)
+
+The Docker swap gets you running quickly, but the real win comes from going hybrid: use fauxqs as an **embedded library** in your test suite and keep Docker for local development.
+
+With LocalStack, integration tests typically look like this:
+
+1. Start LocalStack container (docker-compose or testcontainers) — takes seconds
+2. Create resources via `awslocal` or SDK calls — more seconds
+3. Run your test logic
+4. Assert by polling SQS queues, checking S3 objects, etc.
+5. Clean up resources between tests — often fragile or skipped
+
+With fauxqs in library mode:
+
+1. `startFauxqs({ port: 0 })` — starts in milliseconds, in-process
+2. `server.setup({ queues: [...], topics: [...] })` — instant, no network calls
+3. Run your test logic
+4. Assert with `server.spy.waitForMessage()` — no polling, no race conditions
+5. `server.reset()` between tests — clears messages, keeps resources
+
+**What you gain:**
+
+| Concern | LocalStack Docker | fauxqs library mode |
+|---------|-------------------|---------------------|
+| Test startup | Seconds (container boot + resource creation) | Milliseconds (in-process) |
+| CI dependency | Docker required | npm only |
+| Asserting message delivery | Poll SQS queue, hope timing is right | `spy.waitForMessage()` — resolves immediately or waits |
+| Asserting message *not* delivered | `sleep()` + check | `spy.expectNoMessage()` — deterministic negative assertion |
+| Filter policy testing | Receive from queue, check absence manually | `expectNoMessage()` on filtered-out queues |
+| DLQ verification | Receive from DLQ queue via SDK | `spy.waitForMessage({ status: "dlq" })` + `inspectQueue()` |
+| Queue state inspection | `GetQueueAttributes` (counts only) | `inspectQueue()` — see every message, grouped by state |
+| State reset between tests | Restart container or re-create resources | `server.reset()` — instant, preserves resource definitions |
+| S3 event tracking | Check bucket contents via SDK | `spy.waitForMessage({ service: "s3", status: "uploaded" })` |
+| Parallel test files | Port conflicts or shared state | Each file gets its own server on port 0 |
+
+**Migration path:**
+
+1. Install fauxqs as a dev dependency: `npm install -D fauxqs`
+2. Create a test helper:
+
+```typescript
+// test/setup.ts
+import { startFauxqs, type FauxqsServer } from "fauxqs";
+
+export async function createTestServer(): Promise<FauxqsServer> {
+  const server = await startFauxqs({ port: 0, logger: false, messageSpies: true });
+
+  server.setup({
+    queues: [{ name: "orders" }, { name: "orders-dlq" }],
+    topics: [{ name: "events" }],
+    subscriptions: [{ topic: "events", queue: "orders" }],
+    buckets: ["uploads"],
+  });
+
+  return server;
+}
+```
+
+3. Replace your LocalStack container setup with the test helper:
+
+```typescript
+// Before: LocalStack via testcontainers or docker-compose
+let endpoint: string;
+beforeAll(async () => {
+  // start container, wait for health, create resources via SDK...
+  endpoint = "http://localhost:4566";
+}, 30_000);
+
+// After: fauxqs library
+let server: FauxqsServer;
+beforeAll(async () => {
+  server = await createTestServer();
+});
+afterAll(async () => { await server.stop(); });
+beforeEach(() => { server.reset(); });
+```
+
+4. Replace polling-based assertions with spy-based ones:
+
+```typescript
+// Before: poll and hope
+await sqsClient.send(new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: "test" }));
+const result = await sqsClient.send(new ReceiveMessageCommand({ QueueUrl: queueUrl, WaitTimeSeconds: 5 }));
+expect(result.Messages?.[0]?.Body).toBe("test");
+
+// After: spy knows immediately
+await sqsClient.send(new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: "test" }));
+const msg = await server.spy.waitForMessage(
+  { service: "sqs", queueName: "orders", status: "published" },
+  undefined,
+  2000,
+);
+expect(msg.body).toBe("test");
+```
+
+5. Keep your `docker-compose.yml` with the fauxqs image for local development — `docker compose up` gives your team a running environment without Node.js installed.
+
+This hybrid setup gives you fast, deterministic tests in CI (no Docker required) and a realistic Docker environment for local development. See the [`examples/recommended/`](examples/recommended/) directory for a complete working example.
 
 ## Benchmarks
 
