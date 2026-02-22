@@ -5,10 +5,33 @@ updates:
     schedule:
       interval: daily
     open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - skip-release
+    cooldown:
+      default-days: 7
+
   - package-ecosystem: npm
     directory: '/'
     schedule:
       interval: daily
     open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - skip-release
+    cooldown:
+      default-days: 7
     ignore:
       - dependency-name: '@types/node'
+    groups:
+      vitest:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
+      typescript:
+        patterns:
+          - "@types/*"
+          - "typescript"
+      aws:
+        patterns:
+          - "@aws-sdk/*"
