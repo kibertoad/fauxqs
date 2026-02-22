@@ -5,6 +5,8 @@ import {
   ListTopicsCommand,
   GetTopicAttributesCommand,
   SetTopicAttributesCommand,
+  SubscribeCommand,
+  ListSubscriptionsCommand,
 } from "@aws-sdk/client-sns";
 import { createSnsClient } from "../helpers/clients.js";
 import { startFauxqsTestServer, type FauxqsServer } from "../helpers/setup.js";
@@ -130,5 +132,26 @@ describe("SNS Topic Management", () => {
     const list = await sns.send(new ListTopicsCommand({}));
     const arns = list.Topics?.map((t) => t.TopicArn) ?? [];
     expect(arns.includes(created.TopicArn!)).toBe(false);
+  });
+
+  it("removes subscriptions when topic is deleted", async () => {
+    const topic = await sns.send(
+      new CreateTopicCommand({ Name: "del-with-subs-topic" }),
+    );
+    await sns.send(
+      new SubscribeCommand({
+        TopicArn: topic.TopicArn!,
+        Protocol: "sqs",
+        Endpoint: "arn:aws:sqs:us-east-1:000000000000:del-sub-queue",
+      }),
+    );
+    await sns.send(
+      new DeleteTopicCommand({ TopicArn: topic.TopicArn! }),
+    );
+    const subs = await sns.send(new ListSubscriptionsCommand({}));
+    const remaining = (subs.Subscriptions ?? []).filter(
+      (s) => s.TopicArn === topic.TopicArn,
+    );
+    expect(remaining).toHaveLength(0);
   });
 });

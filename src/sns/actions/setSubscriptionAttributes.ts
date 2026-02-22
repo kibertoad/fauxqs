@@ -1,6 +1,7 @@
 import { SnsError } from "../../common/errors.ts";
 import { snsSuccessResponse } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
+import { validateFilterPolicyLimits } from "../filter.ts";
 
 const VALID_SUBSCRIPTION_ATTRIBUTES = new Set([
   "RawMessageDelivery",
@@ -34,6 +35,9 @@ export function setSubscriptionAttributes(
         "InvalidParameter",
         `Invalid parameter: AttributeName Reason: Invalid attribute name: ${attributeName}`,
       );
+    }
+    if (attributeName === "FilterPolicy" && attributeValue) {
+      validateFilterPolicyLimits(attributeValue);
     }
     subscription.attributes[attributeName] = attributeValue;
   }

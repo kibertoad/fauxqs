@@ -322,7 +322,12 @@ export interface FauxqsServer {
       messageDeduplicationId?: string;
       region?: string;
     },
-  ): { messageId: string; md5OfBody: string; md5OfMessageAttributes?: string; sequenceNumber?: string };
+  ): {
+    messageId: string;
+    md5OfBody: string;
+    md5OfMessageAttributes?: string;
+    sequenceNumber?: string;
+  };
   /** Publish a message to an SNS topic by name, with full fan-out to SQS subscriptions (filter policies, raw delivery). Spy events emitted automatically. */
   publish(
     topicName: string,
@@ -470,9 +475,7 @@ export async function startFauxqs(options?: {
       const maxMessageSize = parseInt(queue.attributes.MaximumMessageSize);
       const totalSize = calculateMessageSize(body, messageAttributes);
       if (totalSize > maxMessageSize) {
-        throw new Error(
-          `Message must be shorter than ${maxMessageSize} bytes.`,
-        );
+        throw new Error(`Message must be shorter than ${maxMessageSize} bytes.`);
       }
 
       if (queue.isFifo()) {
@@ -524,14 +527,15 @@ export async function startFauxqs(options?: {
         return {
           messageId: msg.messageId,
           md5OfBody: msg.md5OfBody,
-          ...(msg.md5OfMessageAttributes ? { md5OfMessageAttributes: msg.md5OfMessageAttributes } : {}),
+          ...(msg.md5OfMessageAttributes
+            ? { md5OfMessageAttributes: msg.md5OfMessageAttributes }
+            : {}),
           sequenceNumber: msg.sequenceNumber,
         };
       }
 
       // Per-message override or queue default
-      const delaySeconds =
-        opts?.delaySeconds ?? parseInt(queue.attributes.DelaySeconds);
+      const delaySeconds = opts?.delaySeconds ?? parseInt(queue.attributes.DelaySeconds);
       const msg = SqsStore.createMessage(
         body,
         messageAttributes,
@@ -541,7 +545,9 @@ export async function startFauxqs(options?: {
       return {
         messageId: msg.messageId,
         md5OfBody: msg.md5OfBody,
-        ...(msg.md5OfMessageAttributes ? { md5OfMessageAttributes: msg.md5OfMessageAttributes } : {}),
+        ...(msg.md5OfMessageAttributes
+          ? { md5OfMessageAttributes: msg.md5OfMessageAttributes }
+          : {}),
       };
     },
     publish(topicName, message, opts) {
@@ -552,14 +558,23 @@ export async function startFauxqs(options?: {
         throw new Error(`Topic '${topicName}' not found`);
       }
 
-      if (Buffer.byteLength(message, "utf8") > SNS_MAX_MESSAGE_SIZE_BYTES) {
+      const messageAttributes = opts?.messageAttributes ?? {};
+
+      // Calculate total size including attributes
+      let totalSize = Buffer.byteLength(message, "utf8");
+      for (const [name, attr] of Object.entries(messageAttributes)) {
+        totalSize += Buffer.byteLength(name, "utf8");
+        totalSize += Buffer.byteLength(attr.DataType, "utf8");
+        if (attr.StringValue) totalSize += Buffer.byteLength(attr.StringValue, "utf8");
+        if (attr.BinaryValue) totalSize += Buffer.byteLength(attr.BinaryValue, "utf8");
+      }
+      if (totalSize > SNS_MAX_MESSAGE_SIZE_BYTES) {
         throw new Error(
           `Message too long. Message must be shorter than ${SNS_MAX_MESSAGE_SIZE_BYTES} bytes.`,
         );
       }
 
       const messageId = randomUUID();
-      const messageAttributes = opts?.messageAttributes ?? {};
       const subject = opts?.subject;
 
       const isFifoTopic = topic.attributes.FifoTopic === "true";

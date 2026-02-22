@@ -29,7 +29,18 @@ export function publish(
     throw new SnsError("InvalidParameter", "Message is required");
   }
 
-  if (Buffer.byteLength(message, "utf8") > SNS_MAX_MESSAGE_SIZE_BYTES) {
+  // Parse message attributes before size check so we can include attribute sizes
+  const messageAttributes = parseMessageAttributes(params);
+
+  // Calculate total size including attributes
+  let totalSize = Buffer.byteLength(message, "utf8");
+  for (const [name, attr] of Object.entries(messageAttributes)) {
+    totalSize += Buffer.byteLength(name, "utf8");
+    totalSize += Buffer.byteLength(attr.DataType, "utf8");
+    if (attr.StringValue) totalSize += Buffer.byteLength(attr.StringValue, "utf8");
+    if (attr.BinaryValue) totalSize += Buffer.byteLength(attr.BinaryValue, "utf8");
+  }
+  if (totalSize > SNS_MAX_MESSAGE_SIZE_BYTES) {
     throw new SnsError(
       "InvalidParameter",
       `Invalid parameter: Message too long. Message must be shorter than ${SNS_MAX_MESSAGE_SIZE_BYTES} bytes.`,
@@ -38,9 +49,6 @@ export function publish(
 
   const messageId = randomUUID();
   const subject = params.Subject;
-
-  // Parse message attributes
-  const messageAttributes = parseMessageAttributes(params);
 
   // Emit SNS spy event
   if (snsStore.spy) {
@@ -118,13 +126,53 @@ export function publishBatch(
 
   // Parse batch entries from flattened form params
   const entries = parseBatchEntries(params);
+
+  // Validate batch constraints
+  if (entries.length === 0) {
+    throw new SnsError("EmptyBatchRequest", "The batch request doesn't contain any entries.", 400);
+  }
+  if (entries.length > 10) {
+    throw new SnsError(
+      "TooManyEntriesInBatchRequest",
+      "The batch request contains more entries than permissible.",
+      400,
+    );
+  }
+  const VALID_BATCH_ENTRY_ID = /^[A-Za-z0-9_-]{1,80}$/;
+  const seenIds = new Set<string>();
+  for (const entry of entries) {
+    if (!VALID_BATCH_ENTRY_ID.test(entry.id)) {
+      throw new SnsError(
+        "InvalidBatchEntryId",
+        `A batch entry id can only contain alphanumeric characters, hyphens and underscores. It can be at most 80 letters long.`,
+        400,
+      );
+    }
+    if (seenIds.has(entry.id)) {
+      throw new SnsError(
+        "BatchEntryIdsNotDistinct",
+        "Two or more batch entries in the request have the same Id.",
+        400,
+      );
+    }
+    seenIds.add(entry.id);
+  }
+
   const isFifoTopic = topic.attributes.FifoTopic === "true";
 
   const successfulXml: string[] = [];
   const failedXml: string[] = [];
 
   for (const entry of entries) {
-    if (Buffer.byteLength(entry.message, "utf8") > SNS_MAX_MESSAGE_SIZE_BYTES) {
+    // Calculate total size including attributes
+    let entrySize = Buffer.byteLength(entry.message, "utf8");
+    for (const [name, attr] of Object.entries(entry.messageAttributes)) {
+      entrySize += Buffer.byteLength(name, "utf8");
+      entrySize += Buffer.byteLength(attr.DataType, "utf8");
+      if (attr.StringValue) entrySize += Buffer.byteLength(attr.StringValue, "utf8");
+      if (attr.BinaryValue) entrySize += Buffer.byteLength(attr.BinaryValue, "utf8");
+    }
+    if (entrySize > SNS_MAX_MESSAGE_SIZE_BYTES) {
       failedXml.push(
         `<member><Id>${entry.id}</Id><Code>InvalidParameter</Code><Message>Message too long</Message><SenderFault>true</SenderFault></member>`,
       );

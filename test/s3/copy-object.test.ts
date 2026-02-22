@@ -124,4 +124,75 @@ describe("S3 CopyObject", () => {
       ),
     ).rejects.toThrow();
   });
+
+  it("copies object with spaces in key", async () => {
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: "copy-src",
+        Key: "source file.txt",
+        Body: "spaced",
+      }),
+    );
+    await s3.send(
+      new CopyObjectCommand({
+        Bucket: "copy-src",
+        Key: "dest file.txt",
+        CopySource: "copy-src/source file.txt",
+      }),
+    );
+    const obj = await s3.send(
+      new GetObjectCommand({ Bucket: "copy-src", Key: "dest file.txt" }),
+    );
+    expect(await obj.Body!.transformToString()).toBe("spaced");
+  });
+
+  it("preserves Content-Type with default COPY directive", async () => {
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: "copy-src",
+        Key: "typed-source",
+        Body: "json",
+        ContentType: "application/json",
+      }),
+    );
+    await s3.send(
+      new CopyObjectCommand({
+        Bucket: "copy-src",
+        Key: "typed-dest",
+        CopySource: "copy-src/typed-source",
+      }),
+    );
+    const head = await s3.send(
+      new HeadObjectCommand({ Bucket: "copy-src", Key: "typed-dest" }),
+    );
+    expect(head.ContentType).toBe("application/json");
+  });
+
+  it("in-place copy with REPLACE updates Content-Type and metadata", async () => {
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: "copy-src",
+        Key: "in-place-key",
+        Body: "data",
+        ContentType: "text/plain",
+        Metadata: { old: "value" },
+      }),
+    );
+    await s3.send(
+      new CopyObjectCommand({
+        Bucket: "copy-src",
+        Key: "in-place-key",
+        CopySource: "copy-src/in-place-key",
+        MetadataDirective: "REPLACE",
+        ContentType: "application/json",
+        Metadata: { new: "meta" },
+      }),
+    );
+    const head = await s3.send(
+      new HeadObjectCommand({ Bucket: "copy-src", Key: "in-place-key" }),
+    );
+    expect(head.ContentType).toBe("application/json");
+    expect(head.Metadata?.new).toBe("meta");
+    expect(head.Metadata?.old).toBeUndefined();
+  });
 });

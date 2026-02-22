@@ -1,4 +1,3 @@
-import type { ListTopicsResponse, Topic } from "@aws-sdk/client-sns";
 import { snsSuccessResponse, escapeXml } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
 

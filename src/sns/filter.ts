@@ -1,5 +1,38 @@
 import { isIPv4, isIPv6 } from "node:net";
 import type { MessageAttributeValue } from "../sqs/sqsTypes.ts";
+import { SnsError } from "../common/errors.ts";
+
+export function validateFilterPolicyLimits(policyJson: string): void {
+  if (Buffer.byteLength(policyJson, "utf8") > 256 * 1024) {
+    throw new SnsError(
+      "InvalidParameter",
+      "Invalid parameter: FilterPolicy: Filter policy is too long",
+    );
+  }
+  const policy = JSON.parse(policyJson);
+  // Count keys (excluding $or)
+  const keys = Object.keys(policy).filter((k) => k !== "$or");
+  if (keys.length > 5) {
+    throw new SnsError(
+      "InvalidParameter",
+      "Invalid parameter: FilterPolicy: Filter policy is too complex",
+    );
+  }
+  // Count total combinations (product of array lengths)
+  let combinations = 1;
+  for (const key of keys) {
+    const conditions = policy[key];
+    if (Array.isArray(conditions)) {
+      combinations *= conditions.length;
+    }
+  }
+  if (combinations > 150) {
+    throw new SnsError(
+      "InvalidParameter",
+      "Invalid parameter: FilterPolicy: Filter policy is too complex",
+    );
+  }
+}
 
 /**
  * Evaluates an SNS filter policy against message attributes.
@@ -130,7 +163,9 @@ function matchesSingleCondition(
     // { "equals-ignore-case": "value" }
     if ("equals-ignore-case" in op) {
       if (attr === undefined) return false;
-      return getStringValue(attr).toLowerCase() === (op["equals-ignore-case"] as string).toLowerCase();
+      return (
+        getStringValue(attr).toLowerCase() === (op["equals-ignore-case"] as string).toLowerCase()
+      );
     }
 
     // { "wildcard": "pattern*" }
@@ -363,7 +398,16 @@ function flattenFilterPolicy(
     } else if (typeof value === "object" && value !== null) {
       const obj = value as Record<string, unknown>;
       // Check if this is an operator object (leaf) rather than a nested key
-      const operatorKeys = ["prefix", "suffix", "anything-but", "numeric", "exists", "equals-ignore-case", "wildcard", "cidr"];
+      const operatorKeys = [
+        "prefix",
+        "suffix",
+        "anything-but",
+        "numeric",
+        "exists",
+        "equals-ignore-case",
+        "wildcard",
+        "cidr",
+      ];
       const isOperator = Object.keys(obj).some((k) => operatorKeys.includes(k));
       if (isOperator) {
         // Single operator condition, wrap in array

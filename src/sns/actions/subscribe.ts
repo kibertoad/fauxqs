@@ -2,6 +2,7 @@ import type { SubscribeResponse } from "@aws-sdk/client-sns";
 import { SnsError } from "../../common/errors.ts";
 import { snsSuccessResponse, escapeXml } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
+import { validateFilterPolicyLimits } from "../filter.ts";
 
 export function subscribe(params: Record<string, string>, snsStore: SnsStore): string {
   const topicArn = params.TopicArn;
@@ -58,6 +59,10 @@ export function subscribe(params: Record<string, string>, snsStore: SnsStore): s
         resolvedAttributes[value] = val;
       }
     }
+  }
+
+  if (resolvedAttributes.FilterPolicy) {
+    validateFilterPolicyLimits(resolvedAttributes.FilterPolicy);
   }
 
   const subscription = snsStore.subscribe(

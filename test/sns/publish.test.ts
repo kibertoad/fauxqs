@@ -202,4 +202,99 @@ describe("SNS Publish", () => {
     expect(body1.Message).toBe("broadcast");
     expect(body2.Message).toBe("broadcast");
   });
+
+  it("throws NotFound when publishing to non-existent topic ARN", async () => {
+    await expect(
+      sns.send(
+        new PublishCommand({
+          TopicArn: "arn:aws:sns:us-east-1:000000000000:nonexistent-topic",
+          Message: "test",
+        }),
+      ),
+    ).rejects.toThrow(/not exist|NotFound/);
+  });
+
+  it("throws NotFound when publishing to a cross-region topic ARN", async () => {
+    const topic = await sns.send(
+      new CreateTopicCommand({ Name: "region-test-topic" }),
+    );
+    const wrongRegionArn = topic.TopicArn!.replace("us-east-1", "eu-west-1");
+    await expect(
+      sns.send(
+        new PublishCommand({ TopicArn: wrongRegionArn, Message: "test" }),
+      ),
+    ).rejects.toThrow(/not exist|NotFound/);
+  });
+
+  it("rejects message when body + attributes exceed 256KB", async () => {
+    const topic = await sns.send(
+      new CreateTopicCommand({ Name: "size-limit-attrs-topic" }),
+    );
+    const body = "x".repeat(200_000);
+    const largeAttrValue = "y".repeat(62_200);
+    await expect(
+      sns.send(
+        new PublishCommand({
+          TopicArn: topic.TopicArn!,
+          Message: body,
+          MessageAttributes: {
+            LargeAttr: { DataType: "String", StringValue: largeAttrValue },
+          },
+        }),
+      ),
+    ).rejects.toThrow(/too long|Message must be shorter/i);
+  });
+
+  it("accepts message when body + attributes are within 256KB", async () => {
+    const topic = await sns.send(
+      new CreateTopicCommand({ Name: "size-ok-attrs-topic" }),
+    );
+    const body = "x".repeat(200_000);
+    const attrValue = "y".repeat(50_000);
+    const result = await sns.send(
+      new PublishCommand({
+        TopicArn: topic.TopicArn!,
+        Message: body,
+        MessageAttributes: {
+          Attr: { DataType: "String", StringValue: attrValue },
+        },
+      }),
+    );
+    expect(result.MessageId).toBeDefined();
+  });
+
+  it("does not retroactively deliver messages published before subscription", async () => {
+    const topic = await sns.send(
+      new CreateTopicCommand({ Name: "pre-sub-topic" }),
+    );
+    await sns.send(
+      new PublishCommand({
+        TopicArn: topic.TopicArn!,
+        Message: "before-subscribe",
+      }),
+    );
+    const queue = await sqs.send(
+      new CreateQueueCommand({ QueueName: "pre-sub-queue" }),
+    );
+    const queueArn = (
+      await sqs.send(
+        new GetQueueAttributesCommand({
+          QueueUrl: queue.QueueUrl!,
+          AttributeNames: ["QueueArn"],
+        }),
+      )
+    ).Attributes!.QueueArn;
+    await sns.send(
+      new SubscribeCommand({
+        TopicArn: topic.TopicArn!,
+        Protocol: "sqs",
+        Endpoint: queueArn!,
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 200));
+    const received = await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: queue.QueueUrl! }),
+    );
+    expect(received.Messages).toBeUndefined();
+  });
 });

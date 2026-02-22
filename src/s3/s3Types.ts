@@ -6,6 +6,13 @@ export interface S3Object {
   etag: string;
   lastModified: Date;
   metadata: Record<string, string>;
+  // System metadata
+  contentLanguage?: string;
+  contentDisposition?: string;
+  cacheControl?: string;
+  contentEncoding?: string;
+  // Multipart part boundaries (for partNumber retrieval)
+  parts?: Array<{ partNumber: number; offset: number; length: number }>;
 }
 
 export interface MultipartPart {
@@ -23,4 +30,9 @@ export interface MultipartUpload {
   metadata: Record<string, string>;
   parts: Map<number, MultipartPart>;
   initiated: Date;
+  // System metadata
+  contentLanguage?: string;
+  contentDisposition?: string;
+  cacheControl?: string;
+  contentEncoding?: string;
 }

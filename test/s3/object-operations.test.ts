@@ -131,4 +131,29 @@ describe("S3 Object Operations", () => {
     const body = await result.Body!.transformToString();
     expect(body).toBe("nested content");
   });
+
+  it("HeadObject returns Content-Length, Content-Type, ETag, and Last-Modified", async () => {
+    await s3.send(new PutObjectCommand({
+      Bucket: "obj-bucket", Key: "head-fields-key", Body: "hello head",
+      ContentType: "text/plain",
+    }));
+    const head = await s3.send(new HeadObjectCommand({ Bucket: "obj-bucket", Key: "head-fields-key" }));
+    expect(head.ContentLength).toBe(10);
+    expect(head.ContentType).toBe("text/plain");
+    expect(head.ETag).toBeDefined();
+    expect(head.ETag).toMatch(/^"[a-f0-9]{32}"$/);
+    expect(head.LastModified).toBeInstanceOf(Date);
+  });
+
+  it("GetObject ETag matches quoted MD5 hex of body", async () => {
+    const body = "etag-test-body";
+    await s3.send(new PutObjectCommand({ Bucket: "obj-bucket", Key: "etag-check-key", Body: body }));
+    const obj = await s3.send(new GetObjectCommand({ Bucket: "obj-bucket", Key: "etag-check-key" }));
+    expect(obj.ETag).toBeDefined();
+    expect(obj.ETag).toMatch(/^"[a-f0-9]{32}"$/);
+    // The ETag should be a quoted MD5 hex
+    const { createHash } = await import("node:crypto");
+    const expectedMd5 = createHash("md5").update(body).digest("hex");
+    expect(obj.ETag).toBe(`"${expectedMd5}"`);
+  });
 });

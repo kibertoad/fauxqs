@@ -238,4 +238,53 @@ describe("SNS PublishBatch", () => {
       Value: "order.created",
     });
   });
+
+  it("rejects empty PublishBatch", async () => {
+    const topic = await sns.send(
+      new CreateTopicCommand({ Name: "empty-batch-topic" }),
+    );
+    await expect(
+      sns.send(
+        new PublishBatchCommand({
+          TopicArn: topic.TopicArn!,
+          PublishBatchRequestEntries: [],
+        }),
+      ),
+    ).rejects.toThrow(/doesn't contain any entries|EmptyBatchRequest/i);
+  });
+
+  it("rejects PublishBatch with more than 10 entries", async () => {
+    const topic = await sns.send(
+      new CreateTopicCommand({ Name: "too-many-batch" }),
+    );
+    const entries = Array.from({ length: 11 }, (_, i) => ({
+      Id: `id-${i}`,
+      Message: `msg-${i}`,
+    }));
+    await expect(
+      sns.send(
+        new PublishBatchCommand({
+          TopicArn: topic.TopicArn!,
+          PublishBatchRequestEntries: entries,
+        }),
+      ),
+    ).rejects.toThrow(/more entries than permissible|TooManyEntries/i);
+  });
+
+  it("rejects PublishBatch with duplicate entry IDs", async () => {
+    const topic = await sns.send(
+      new CreateTopicCommand({ Name: "dup-id-batch" }),
+    );
+    await expect(
+      sns.send(
+        new PublishBatchCommand({
+          TopicArn: topic.TopicArn!,
+          PublishBatchRequestEntries: [
+            { Id: "same-id", Message: "msg1" },
+            { Id: "same-id", Message: "msg2" },
+          ],
+        }),
+      ),
+    ).rejects.toThrow(/same Id|BatchEntryIdsNotDistinct/i);
+  });
 });

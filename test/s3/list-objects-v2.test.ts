@@ -165,6 +165,16 @@ describe("S3 ListObjects V1 and V2", () => {
       );
       expect(result.KeyCount).toBe(2);
     });
+
+    it("returns empty results for empty bucket", async () => {
+      await s3.send(new CreateBucketCommand({ Bucket: "empty-list-bucket" }));
+      const list = await s3.send(
+        new ListObjectsV2Command({ Bucket: "empty-list-bucket" }),
+      );
+      expect(list.KeyCount).toBe(0);
+      expect(list.Contents).toBeUndefined();
+      expect(list.IsTruncated).toBe(false);
+    });
   });
 
   describe("ListObjectsV1", () => {

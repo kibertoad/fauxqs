@@ -50,9 +50,7 @@ function formatSubscriptionList(
     })
     .join("\n    ");
 
-  const nextTokenXml = nextToken
-    ? `<NextToken>${escapeXml(nextToken)}</NextToken>`
-    : "";
+  const nextTokenXml = nextToken ? `<NextToken>${escapeXml(nextToken)}</NextToken>` : "";
 
   return snsSuccessResponse(action, `<Subscriptions>${membersXml}</Subscriptions>${nextTokenXml}`);
 }

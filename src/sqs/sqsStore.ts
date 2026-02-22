@@ -117,6 +117,10 @@ export class SqsQueue {
 
   setAttributes(attrs: Record<string, string>): void {
     Object.assign(this.attributes, attrs);
+    // Empty RedrivePolicy clears the DLQ association
+    if (attrs.RedrivePolicy === "") {
+      delete this.attributes.RedrivePolicy;
+    }
     this.lastModifiedTimestamp = Math.floor(Date.now() / 1000);
   }
 

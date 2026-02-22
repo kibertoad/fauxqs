@@ -264,6 +264,42 @@ describe("SQS Queue Management", () => {
     );
     expect(updated.Attributes?.KmsMasterKeyId).toBe("alias/other-key");
   });
+
+  it("rejects CreateQueue with same name but different VisibilityTimeout", async () => {
+    await sqs.send(new CreateQueueCommand({
+      QueueName: "conflict-vis-queue",
+      Attributes: { VisibilityTimeout: "30" },
+    }));
+    await expect(
+      sqs.send(new CreateQueueCommand({
+        QueueName: "conflict-vis-queue",
+        Attributes: { VisibilityTimeout: "60" },
+      }))
+    ).rejects.toThrow(/queue already exists/i);
+  });
+
+  it("returns existing URL when CreateQueue called with same name and matching attributes", async () => {
+    const first = await sqs.send(new CreateQueueCommand({
+      QueueName: "match-attrs-queue",
+      Attributes: { VisibilityTimeout: "45", DelaySeconds: "5" },
+    }));
+    const second = await sqs.send(new CreateQueueCommand({
+      QueueName: "match-attrs-queue",
+      Attributes: { VisibilityTimeout: "45", DelaySeconds: "5" },
+    }));
+    expect(second.QueueUrl).toBe(first.QueueUrl);
+  });
+
+  it("succeeds when CreateQueue called with no attributes on existing queue with custom attributes", async () => {
+    await sqs.send(new CreateQueueCommand({
+      QueueName: "no-attrs-requery",
+      Attributes: { VisibilityTimeout: "90" },
+    }));
+    const result = await sqs.send(new CreateQueueCommand({
+      QueueName: "no-attrs-requery",
+    }));
+    expect(result.QueueUrl).toContain("no-attrs-requery");
+  });
 });
 
 describe("SQS Queue URL with configured host", () => {

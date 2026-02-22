@@ -18,5 +18,10 @@ export function headObject(
   for (const [metaKey, metaValue] of Object.entries(obj.metadata)) {
     reply.header(`x-amz-meta-${metaKey}`, metaValue);
   }
+  if (obj.contentLanguage) reply.header("content-language", obj.contentLanguage);
+  if (obj.contentDisposition) reply.header("content-disposition", obj.contentDisposition);
+  if (obj.cacheControl) reply.header("cache-control", obj.cacheControl);
+  if (obj.contentEncoding) reply.header("content-encoding", obj.contentEncoding);
+  if (obj.parts) reply.header("x-amz-mp-parts-count", String(obj.parts.length));
   reply.status(200).send();
 }

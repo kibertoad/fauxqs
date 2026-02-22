@@ -5,6 +5,7 @@ import {
   ReceiveMessageCommand,
   DeleteMessageCommand,
   GetQueueAttributesCommand,
+  ChangeMessageVisibilityCommand,
 } from "@aws-sdk/client-sqs";
 import { createSqsClient } from "../helpers/clients.js";
 import { startFauxqsTestServer, type FauxqsServer } from "../helpers/setup.js";
@@ -331,5 +332,131 @@ describe("SQS Send/Receive/Delete", () => {
     );
     expect(reappeared.Messages).toHaveLength(1);
     expect(reappeared.Messages![0].Body).toBe("reappear");
+  });
+
+  it("succeeds when deleting with a stale receipt handle after visibility expires", async () => {
+    const shortQueue = await sqs.send(new CreateQueueCommand({
+      QueueName: `stale-rh-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      Attributes: { VisibilityTimeout: "1" },
+    }));
+    await sqs.send(new SendMessageCommand({ QueueUrl: shortQueue.QueueUrl!, MessageBody: "stale test" }));
+    const first = await sqs.send(new ReceiveMessageCommand({ QueueUrl: shortQueue.QueueUrl! }));
+    const staleHandle = first.Messages![0].ReceiptHandle!;
+    await new Promise(r => setTimeout(r, 1200));
+    // Re-receive (gets new receipt handle)
+    await sqs.send(new ReceiveMessageCommand({ QueueUrl: shortQueue.QueueUrl! }));
+    // Delete with stale handle — should succeed on standard queues
+    await sqs.send(new DeleteMessageCommand({ QueueUrl: shortQueue.QueueUrl!, ReceiptHandle: staleHandle }));
+  });
+
+  it("succeeds when deleting the same receipt handle twice", async () => {
+    await sqs.send(new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: "double-delete" }));
+    const received = await sqs.send(new ReceiveMessageCommand({ QueueUrl: queueUrl }));
+    const handle = received.Messages![0].ReceiptHandle!;
+    await sqs.send(new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: handle }));
+    await sqs.send(new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: handle }));
+  });
+
+  it("increments ApproximateReceiveCount on each receive", async () => {
+    const shortQueue = await sqs.send(new CreateQueueCommand({
+      QueueName: `recv-count-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      Attributes: { VisibilityTimeout: "1" },
+    }));
+    await sqs.send(new SendMessageCommand({ QueueUrl: shortQueue.QueueUrl!, MessageBody: "count me" }));
+    const first = await sqs.send(new ReceiveMessageCommand({
+      QueueUrl: shortQueue.QueueUrl!,
+      AttributeNames: ["ApproximateReceiveCount"],
+    }));
+    expect(first.Messages![0].Attributes?.ApproximateReceiveCount).toBe("1");
+    await new Promise(r => setTimeout(r, 1200));
+    const second = await sqs.send(new ReceiveMessageCommand({
+      QueueUrl: shortQueue.QueueUrl!,
+      AttributeNames: ["ApproximateReceiveCount"],
+    }));
+    expect(second.Messages![0].Attributes?.ApproximateReceiveCount).toBe("2");
+  });
+
+  it("returns correct visible, inflight, and delayed counts via GetQueueAttributes", async () => {
+    const q = await sqs.send(new CreateQueueCommand({
+      QueueName: `counts-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      Attributes: { DelaySeconds: "900" },
+    }));
+    // Send 1 delayed message
+    await sqs.send(new SendMessageCommand({ QueueUrl: q.QueueUrl!, MessageBody: "delayed" }));
+    // Send 1 immediate message (override delay)
+    await sqs.send(new SendMessageCommand({ QueueUrl: q.QueueUrl!, MessageBody: "immediate", DelaySeconds: 0 }));
+    // Receive immediate message (moves to inflight)
+    await sqs.send(new ReceiveMessageCommand({ QueueUrl: q.QueueUrl! }));
+    const attrs = await sqs.send(new GetQueueAttributesCommand({
+      QueueUrl: q.QueueUrl!,
+      AttributeNames: ["ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible", "ApproximateNumberOfMessagesDelayed"],
+    }));
+    expect(attrs.Attributes?.ApproximateNumberOfMessages).toBe("0");
+    expect(attrs.Attributes?.ApproximateNumberOfMessagesNotVisible).toBe("1");
+    expect(attrs.Attributes?.ApproximateNumberOfMessagesDelayed).toBe("1");
+  });
+
+  it("preserves carriage return characters in message body", async () => {
+    await sqs.send(new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: "line1\r\nline2\rline3" }));
+    const received = await sqs.send(new ReceiveMessageCommand({ QueueUrl: queueUrl }));
+    expect(received.Messages![0].Body).toBe("line1\r\nline2\rline3");
+  });
+
+  it("ChangeMessageVisibility extends timeout and message reappears after extended timeout", async () => {
+    const q = await sqs.send(new CreateQueueCommand({
+      QueueName: `vis-extend-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      Attributes: { VisibilityTimeout: "1" },
+    }));
+    await sqs.send(new SendMessageCommand({ QueueUrl: q.QueueUrl!, MessageBody: "extend-vis" }));
+    const first = await sqs.send(new ReceiveMessageCommand({ QueueUrl: q.QueueUrl! }));
+    // Extend visibility to 3 seconds
+    await sqs.send(new ChangeMessageVisibilityCommand({
+      QueueUrl: q.QueueUrl!,
+      ReceiptHandle: first.Messages![0].ReceiptHandle!,
+      VisibilityTimeout: 3,
+    }));
+    // After 1.5s, message should still be invisible
+    await new Promise(r => setTimeout(r, 1500));
+    const still = await sqs.send(new ReceiveMessageCommand({ QueueUrl: q.QueueUrl! }));
+    expect(still.Messages).toBeUndefined();
+    // After another 2s (3.5s total), message should reappear
+    await new Promise(r => setTimeout(r, 2000));
+    const reappeared = await sqs.send(new ReceiveMessageCommand({ QueueUrl: q.QueueUrl! }));
+    expect(reappeared.Messages).toHaveLength(1);
+    expect(reappeared.Messages![0].Body).toBe("extend-vis");
+  });
+
+  it("ChangeMessageVisibility with timeout=0 makes message immediately available", async () => {
+    await sqs.send(new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: "nack-me" }));
+    const first = await sqs.send(new ReceiveMessageCommand({ QueueUrl: queueUrl }));
+    await sqs.send(new ChangeMessageVisibilityCommand({
+      QueueUrl: queueUrl,
+      ReceiptHandle: first.Messages![0].ReceiptHandle!,
+      VisibilityTimeout: 0,
+    }));
+    const second = await sqs.send(new ReceiveMessageCommand({ QueueUrl: queueUrl }));
+    expect(second.Messages).toHaveLength(1);
+    expect(second.Messages![0].Body).toBe("nack-me");
+  });
+
+  it("throws NonExistentQueue when sending to non-existent queue", async () => {
+    await expect(
+      sqs.send(new SendMessageCommand({
+        QueueUrl: "http://sqs.us-east-1.localhost:9999/000000000000/does-not-exist",
+        MessageBody: "test",
+      }))
+    ).rejects.toThrow(/does not exist/i);
+  });
+
+  it("handles ChangeMessageVisibility with invalid receipt handle gracefully", async () => {
+    await sqs.send(new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: "vis-test" }));
+    // ChangeMessageVisibility with a bogus handle — fauxqs rejects with MessageNotInflight
+    await expect(
+      sqs.send(new ChangeMessageVisibilityCommand({
+        QueueUrl: queueUrl,
+        ReceiptHandle: "invalid-handle-12345",
+        VisibilityTimeout: 30,
+      }))
+    ).rejects.toThrow(/not available for visibility timeout change/i);
   });
 });

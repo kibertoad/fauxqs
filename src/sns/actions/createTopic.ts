@@ -17,6 +17,19 @@ export function createTopic(
     throw new SnsError("InvalidParameter", "Topic name is required");
   }
 
+  if (name.length > 256) {
+    throw new SnsError("InvalidParameter", "Invalid parameter: Topic name too long");
+  }
+
+  // Validate topic name characters: only [A-Za-z0-9_-] allowed (strip .fifo suffix before checking)
+  const nameToValidate = name.endsWith(".fifo") ? name.slice(0, -5) : name;
+  if (!/^[A-Za-z0-9_-]+$/.test(nameToValidate)) {
+    throw new SnsError(
+      "InvalidParameter",
+      "Invalid parameter: Topic name must contain only alphanumeric characters, hyphens, and underscores",
+    );
+  }
+
   const attributes: Record<string, string> = {};
   const tags: Record<string, string> = {};
 

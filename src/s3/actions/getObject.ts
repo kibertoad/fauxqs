@@ -12,6 +12,32 @@ export function getObject(
 
   const obj = store.getObject(bucket, key);
 
+  // partNumber support for multipart objects
+  const query = (request.query ?? {}) as Record<string, string>;
+  const partNumberParam = query["partNumber"];
+  if (partNumberParam && obj.parts) {
+    const pn = parseInt(partNumberParam, 10);
+    const partInfo = obj.parts.find((p) => p.partNumber === pn);
+    if (!partInfo) {
+      throw new S3Error("InvalidPartNumber", "The requested partnumber is not satisfiable", 416);
+    }
+    const partBody = obj.body.subarray(partInfo.offset, partInfo.offset + partInfo.length);
+    reply.header("content-type", obj.contentType);
+    reply.header("etag", obj.etag);
+    reply.header("last-modified", obj.lastModified.toUTCString());
+    reply.header("x-amz-mp-parts-count", String(obj.parts.length));
+    reply.header("content-length", partBody.length);
+    if (obj.contentLanguage) reply.header("content-language", obj.contentLanguage);
+    if (obj.contentDisposition) reply.header("content-disposition", obj.contentDisposition);
+    if (obj.cacheControl) reply.header("cache-control", obj.cacheControl);
+    if (obj.contentEncoding) reply.header("content-encoding", obj.contentEncoding);
+    for (const [metaKey, metaValue] of Object.entries(obj.metadata)) {
+      reply.header(`x-amz-meta-${metaKey}`, metaValue);
+    }
+    reply.status(206).send(partBody);
+    return;
+  }
+
   // Conditional request headers (RFC 7232 precedence)
   const ifMatch = request.headers["if-match"] as string | undefined;
   const ifNoneMatch = request.headers["if-none-match"] as string | undefined;
@@ -62,6 +88,10 @@ export function getObject(
   for (const [metaKey, metaValue] of Object.entries(obj.metadata)) {
     reply.header(`x-amz-meta-${metaKey}`, metaValue);
   }
+  if (obj.contentLanguage) reply.header("content-language", obj.contentLanguage);
+  if (obj.contentDisposition) reply.header("content-disposition", obj.contentDisposition);
+  if (obj.cacheControl) reply.header("cache-control", obj.cacheControl);
+  if (obj.contentEncoding) reply.header("content-encoding", obj.contentEncoding);
 
   // Fix 11: Range request support
   const rangeHeader = request.headers["range"] as string | undefined;

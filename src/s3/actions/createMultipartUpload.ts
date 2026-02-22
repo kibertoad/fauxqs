@@ -16,6 +16,28 @@ function extractMetadata(
   return metadata;
 }
 
+function extractSystemMetadata(headers: Record<string, string | string[] | undefined>): {
+  contentLanguage?: string;
+  contentDisposition?: string;
+  cacheControl?: string;
+  contentEncoding?: string;
+} {
+  const result: Record<string, string> = {};
+  const h = (name: string) => {
+    const v = headers[name];
+    return typeof v === "string" ? v : undefined;
+  };
+  const cl = h("content-language");
+  if (cl) result.contentLanguage = cl;
+  const cd = h("content-disposition");
+  if (cd) result.contentDisposition = cd;
+  const cc = h("cache-control");
+  if (cc) result.cacheControl = cc;
+  const ce = h("content-encoding");
+  if (ce && !ce.includes("aws-chunked")) result.contentEncoding = ce;
+  return result;
+}
+
 export function createMultipartUpload(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
   reply: FastifyReply,
@@ -28,7 +50,10 @@ export function createMultipartUpload(
     request.headers as Record<string, string | string[] | undefined>,
   );
 
-  const uploadId = store.createMultipartUpload(bucket, key, contentType, metadata);
+  const systemMeta = extractSystemMetadata(
+    request.headers as Record<string, string | string[] | undefined>,
+  );
+  const uploadId = store.createMultipartUpload(bucket, key, contentType, metadata, systemMeta);
 
   const result = {
     Bucket: bucket,

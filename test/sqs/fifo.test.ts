@@ -590,4 +590,22 @@ describe("SQS FIFO Queues", () => {
     expect(attrs?.MessageGroupId).toBe("my-group");
     expect(attrs?.MessageDeduplicationId).toBeDefined();
   });
+
+  it("deduplicates same dedup ID across different message groups (queue-wide scope)", async () => {
+    const { QueueUrl } = await sqs.send(new CreateQueueCommand({
+      QueueName: `cross-group-dedup-${Date.now()}.fifo`,
+      Attributes: { FifoQueue: "true" },
+    }));
+    const first = await sqs.send(new SendMessageCommand({
+      QueueUrl: QueueUrl!, MessageBody: "body-A", MessageGroupId: "groupA", MessageDeduplicationId: "shared-dedup",
+    }));
+    const second = await sqs.send(new SendMessageCommand({
+      QueueUrl: QueueUrl!, MessageBody: "body-B", MessageGroupId: "groupB", MessageDeduplicationId: "shared-dedup",
+    }));
+    expect(second.MessageId).toBe(first.MessageId);
+    // Only one message should exist
+    const received = await sqs.send(new ReceiveMessageCommand({ QueueUrl: QueueUrl!, MaxNumberOfMessages: 10 }));
+    expect(received.Messages).toHaveLength(1);
+    expect(received.Messages![0].Body).toBe("body-A");
+  });
 });

@@ -741,6 +741,33 @@ describe("S3 Multipart Upload", () => {
         ),
       ).rejects.toThrow();
     });
+
+    it("returns NoSuchUpload on double abort", async () => {
+      const { UploadId } = await s3.send(new CreateMultipartUploadCommand({
+        Bucket: "multipart-bucket", Key: "double-abort-key",
+      }));
+      await s3.send(new AbortMultipartUploadCommand({ Bucket: "multipart-bucket", Key: "double-abort-key", UploadId: UploadId! }));
+      await expect(
+        s3.send(new AbortMultipartUploadCommand({ Bucket: "multipart-bucket", Key: "double-abort-key", UploadId: UploadId! }))
+      ).rejects.toThrow(/multipart upload does not exist/);
+    });
+
+    it("abort does not affect other uploads on same key", async () => {
+      const upload1 = await s3.send(new CreateMultipartUploadCommand({ Bucket: "multipart-bucket", Key: "multi-upload-key" }));
+      const upload2 = await s3.send(new CreateMultipartUploadCommand({ Bucket: "multipart-bucket", Key: "multi-upload-key" }));
+      await s3.send(new AbortMultipartUploadCommand({ Bucket: "multipart-bucket", Key: "multi-upload-key", UploadId: upload1.UploadId! }));
+      // upload2 should still be valid
+      const etag = (await s3.send(new UploadPartCommand({
+        Bucket: "multipart-bucket", Key: "multi-upload-key", UploadId: upload2.UploadId!, PartNumber: 1,
+        Body: Buffer.alloc(5 * 1024 * 1024, "a"),
+      }))).ETag;
+      await s3.send(new CompleteMultipartUploadCommand({
+        Bucket: "multipart-bucket", Key: "multi-upload-key", UploadId: upload2.UploadId!,
+        MultipartUpload: { Parts: [{ PartNumber: 1, ETag: etag }] },
+      }));
+      const obj = await s3.send(new GetObjectCommand({ Bucket: "multipart-bucket", Key: "multi-upload-key" }));
+      expect(obj.ContentLength).toBe(5 * 1024 * 1024);
+    });
   });
 
   describe("DeleteBucket with active multipart uploads", () => {

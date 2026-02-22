@@ -255,4 +255,23 @@ describe("S3 Multipart Upload Edge Cases", () => {
 
     expect(result.ETag).toBeDefined();
   });
+
+  it("rejects CompleteMultipartUpload with non-existent part numbers", async () => {
+    const { UploadId } = await s3.send(new CreateMultipartUploadCommand({
+      Bucket: "edge-case-bucket", Key: "bad-parts-key",
+    }));
+    const etag = (await s3.send(new UploadPartCommand({
+      Bucket: "edge-case-bucket", Key: "bad-parts-key", UploadId: UploadId!, PartNumber: 1,
+      Body: Buffer.alloc(5 * 1024 * 1024, "a"),
+    }))).ETag;
+    await expect(
+      s3.send(new CompleteMultipartUploadCommand({
+        Bucket: "edge-case-bucket", Key: "bad-parts-key", UploadId: UploadId!,
+        MultipartUpload: { Parts: [
+          { PartNumber: 1, ETag: etag },
+          { PartNumber: 99, ETag: "\"fake-etag\"" },
+        ]},
+      }))
+    ).rejects.toThrow(/specified parts could not be found/);
+  });
 });

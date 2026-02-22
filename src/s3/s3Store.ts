@@ -25,16 +25,16 @@ export class S3Store {
     if (/[A-Z]/.test(name)) {
       throw new S3Error("InvalidBucketName", `The specified bucket is not valid: ${name}`, 400);
     }
-    if (!/^[a-z0-9][a-z0-9.\-]*[a-z0-9]$/.test(name)) {
+    if (!/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(name)) {
       throw new S3Error("InvalidBucketName", `The specified bucket is not valid: ${name}`, 400);
     }
-    if (/[^a-z0-9.\-]/.test(name)) {
+    if (/[^a-z0-9.-]/.test(name)) {
       throw new S3Error("InvalidBucketName", `The specified bucket is not valid: ${name}`, 400);
     }
     if (/^\d+\.\d+\.\d+\.\d+$/.test(name)) {
       throw new S3Error("InvalidBucketName", `The specified bucket is not valid: ${name}`, 400);
     }
-    if (/\.\./.test(name) || /\.\-/.test(name) || /\-\./.test(name)) {
+    if (/\.\./.test(name) || /\.-/.test(name) || /-\./.test(name)) {
       throw new S3Error("InvalidBucketName", `The specified bucket is not valid: ${name}`, 400);
     }
   }
@@ -81,6 +81,12 @@ export class S3Store {
     body: Buffer,
     contentType?: string,
     metadata?: Record<string, string>,
+    systemMetadata?: {
+      contentLanguage?: string;
+      contentDisposition?: string;
+      cacheControl?: string;
+      contentEncoding?: string;
+    },
   ): S3Object {
     const objects = this.buckets.get(bucket);
     if (!objects) {
@@ -96,6 +102,12 @@ export class S3Store {
       etag,
       lastModified: new Date(),
       metadata: metadata ?? {},
+      ...(systemMetadata?.contentLanguage && { contentLanguage: systemMetadata.contentLanguage }),
+      ...(systemMetadata?.contentDisposition && {
+        contentDisposition: systemMetadata.contentDisposition,
+      }),
+      ...(systemMetadata?.cacheControl && { cacheControl: systemMetadata.cacheControl }),
+      ...(systemMetadata?.contentEncoding && { contentEncoding: systemMetadata.contentEncoding }),
     };
 
     objects.set(key, obj);
@@ -243,6 +255,12 @@ export class S3Store {
     key: string,
     contentType?: string,
     metadata?: Record<string, string>,
+    systemMetadata?: {
+      contentLanguage?: string;
+      contentDisposition?: string;
+      cacheControl?: string;
+      contentEncoding?: string;
+    },
   ): string {
     if (!this.buckets.has(bucket)) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
@@ -257,6 +275,12 @@ export class S3Store {
       metadata: metadata ?? {},
       parts: new Map(),
       initiated: new Date(),
+      ...(systemMetadata?.contentLanguage && { contentLanguage: systemMetadata.contentLanguage }),
+      ...(systemMetadata?.contentDisposition && {
+        contentDisposition: systemMetadata.contentDisposition,
+      }),
+      ...(systemMetadata?.cacheControl && { cacheControl: systemMetadata.cacheControl }),
+      ...(systemMetadata?.contentEncoding && { contentEncoding: systemMetadata.contentEncoding }),
     });
 
     let bucketUploads = this.multipartUploadsByBucket.get(bucket);
@@ -365,6 +389,15 @@ export class S3Store {
     // Concatenate all parts
     const body = Buffer.concat(orderedParts);
 
+    // Build part boundaries for partNumber retrieval
+    let offset = 0;
+    const partBoundaries: Array<{ partNumber: number; offset: number; length: number }> = [];
+    for (const spec of partSpecs) {
+      const part = upload.parts.get(spec.partNumber)!;
+      partBoundaries.push({ partNumber: spec.partNumber, offset, length: part.body.length });
+      offset += part.body.length;
+    }
+
     // Calculate multipart ETag: MD5(concat of binary MD5 digests) + "-" + part count
     const combinedDigest = createHash("md5").update(Buffer.concat(partDigests)).digest("hex");
     const etag = `"${combinedDigest}-${partSpecs.length}"`;
@@ -377,6 +410,11 @@ export class S3Store {
       etag,
       lastModified: new Date(),
       metadata: upload.metadata,
+      parts: partBoundaries,
+      ...(upload.contentLanguage && { contentLanguage: upload.contentLanguage }),
+      ...(upload.contentDisposition && { contentDisposition: upload.contentDisposition }),
+      ...(upload.cacheControl && { cacheControl: upload.cacheControl }),
+      ...(upload.contentEncoding && { contentEncoding: upload.contentEncoding }),
     };
 
     objects.set(upload.key, obj);

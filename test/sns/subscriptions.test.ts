@@ -263,4 +263,81 @@ describe("SNS Subscriptions", () => {
     // Should fail or return not found
     expect(result).toBeDefined();
   });
+
+  it("throws NotFound when subscribing to non-existent topic", async () => {
+    await expect(
+      sns.send(
+        new SubscribeCommand({
+          TopicArn: "arn:aws:sns:us-east-1:000000000000:nonexistent",
+          Protocol: "sqs",
+          Endpoint: "arn:aws:sqs:us-east-1:000000000000:some-queue",
+        }),
+      ),
+    ).rejects.toThrow(/not exist|NotFound/);
+  });
+
+  it("succeeds when unsubscribing twice (idempotent)", async () => {
+    const topic = await sns.send(
+      new CreateTopicCommand({ Name: "unsub-idem-topic" }),
+    );
+    const sub = await sns.send(
+      new SubscribeCommand({
+        TopicArn: topic.TopicArn!,
+        Protocol: "sqs",
+        Endpoint: "arn:aws:sqs:us-east-1:000000000000:unsub-idem-queue",
+      }),
+    );
+    await sns.send(
+      new UnsubscribeCommand({ SubscriptionArn: sub.SubscriptionArn! }),
+    );
+    // Second unsubscribe should not throw
+    await sns.send(
+      new UnsubscribeCommand({ SubscriptionArn: sub.SubscriptionArn! }),
+    );
+  });
+
+  it("succeeds when unsubscribing a non-existent ARN", async () => {
+    await sns.send(
+      new UnsubscribeCommand({
+        SubscriptionArn:
+          "arn:aws:sns:us-east-1:000000000000:fake-topic:00000000-0000-0000-0000-000000000000",
+      }),
+    );
+  });
+
+  it("throws NotFound when setting attributes on deleted subscription", async () => {
+    const topic = await sns.send(
+      new CreateTopicCommand({ Name: "del-sub-attrs-topic" }),
+    );
+    const sub = await sns.send(
+      new SubscribeCommand({
+        TopicArn: topic.TopicArn!,
+        Protocol: "sqs",
+        Endpoint: "arn:aws:sqs:us-east-1:000000000000:del-sub-queue",
+      }),
+    );
+    await sns.send(
+      new UnsubscribeCommand({ SubscriptionArn: sub.SubscriptionArn! }),
+    );
+    await expect(
+      sns.send(
+        new SetSubscriptionAttributesCommand({
+          SubscriptionArn: sub.SubscriptionArn!,
+          AttributeName: "RawMessageDelivery",
+          AttributeValue: "true",
+        }),
+      ),
+    ).rejects.toThrow(/not exist|NotFound/);
+  });
+
+  it("throws NotFound when getting attributes of non-existent subscription", async () => {
+    await expect(
+      sns.send(
+        new GetSubscriptionAttributesCommand({
+          SubscriptionArn:
+            "arn:aws:sns:us-east-1:000000000000:fake:00000000-0000-0000-0000-000000000000",
+        }),
+      ),
+    ).rejects.toThrow(/not exist|NotFound/);
+  });
 });

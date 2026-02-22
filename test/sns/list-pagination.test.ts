@@ -68,7 +68,7 @@ describe("SNS List Pagination", () => {
       // Create 105 queues and subscribe each to the topic
       for (let i = 0; i < 105; i++) {
         const queueName = `sub-page-queue-${String(i).padStart(3, "0")}`;
-        const queueResult = await sqs.send(
+        await sqs.send(
           new CreateQueueCommand({ QueueName: queueName }),
         );
         await sns.send(

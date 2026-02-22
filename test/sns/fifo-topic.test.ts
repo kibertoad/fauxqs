@@ -173,4 +173,47 @@ describe("SNS FIFO Topics", () => {
       ),
     ).rejects.toThrow("MessageGroupId");
   });
+
+  it("delivers from FIFO topic to standard (non-FIFO) SQS queue subscriber", async () => {
+    const topic = await sns.send(
+      new CreateTopicCommand({
+        Name: "fifo-to-std-topic.fifo",
+        Attributes: { FifoTopic: "true", ContentBasedDeduplication: "true" },
+      }),
+    );
+    const queue = await sqs.send(
+      new CreateQueueCommand({ QueueName: "std-from-fifo-queue" }),
+    );
+    const queueArn = (
+      await sqs.send(
+        new GetQueueAttributesCommand({
+          QueueUrl: queue.QueueUrl!,
+          AttributeNames: ["QueueArn"],
+        }),
+      )
+    ).Attributes!.QueueArn;
+    await sns.send(
+      new SubscribeCommand({
+        TopicArn: topic.TopicArn!,
+        Protocol: "sqs",
+        Endpoint: queueArn!,
+      }),
+    );
+    await sns.send(
+      new PublishCommand({
+        TopicArn: topic.TopicArn!,
+        Message: "fifo-to-std",
+        MessageGroupId: "g1",
+      }),
+    );
+    const received = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: queue.QueueUrl!,
+        WaitTimeSeconds: 1,
+      }),
+    );
+    expect(received.Messages).toHaveLength(1);
+    const envelope = JSON.parse(received.Messages![0].Body!);
+    expect(envelope.Message).toBe("fifo-to-std");
+  });
 });

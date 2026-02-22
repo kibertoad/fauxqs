@@ -17,6 +17,28 @@ function extractMetadata(
   return metadata;
 }
 
+function extractSystemMetadata(headers: Record<string, string | string[] | undefined>): {
+  contentLanguage?: string;
+  contentDisposition?: string;
+  cacheControl?: string;
+  contentEncoding?: string;
+} {
+  const result: Record<string, string> = {};
+  const h = (name: string) => {
+    const v = headers[name];
+    return typeof v === "string" ? v : undefined;
+  };
+  const cl = h("content-language");
+  if (cl) result.contentLanguage = cl;
+  const cd = h("content-disposition");
+  if (cd) result.contentDisposition = cd;
+  const cc = h("cache-control");
+  if (cc) result.cacheControl = cc;
+  const ce = h("content-encoding");
+  if (ce && !ce.includes("aws-chunked")) result.contentEncoding = ce;
+  return result;
+}
+
 export function putObject(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
   reply: FastifyReply,
@@ -46,7 +68,18 @@ export function putObject(
         ? extractMetadata(request.headers as Record<string, string | string[] | undefined>)
         : srcObj.metadata;
 
-    const obj = store.putObject(bucket, key, srcObj.body, srcObj.contentType, metadata);
+    const destContentType = metadataDirective === "REPLACE" ? contentType : srcObj.contentType;
+    const systemMeta =
+      metadataDirective === "REPLACE"
+        ? extractSystemMetadata(request.headers as Record<string, string | string[] | undefined>)
+        : {
+            ...(srcObj.contentLanguage && { contentLanguage: srcObj.contentLanguage }),
+            ...(srcObj.contentDisposition && { contentDisposition: srcObj.contentDisposition }),
+            ...(srcObj.cacheControl && { cacheControl: srcObj.cacheControl }),
+            ...(srcObj.contentEncoding && { contentEncoding: srcObj.contentEncoding }),
+          };
+
+    const obj = store.putObject(bucket, key, srcObj.body, destContentType, metadata, systemMeta);
 
     if (store.spy) {
       store.spy.addMessage({
@@ -89,7 +122,10 @@ export function putObject(
   const metadata = extractMetadata(
     request.headers as Record<string, string | string[] | undefined>,
   );
-  const obj = store.putObject(bucket, key, body, contentType, metadata);
+  const systemMeta = extractSystemMetadata(
+    request.headers as Record<string, string | string[] | undefined>,
+  );
+  const obj = store.putObject(bucket, key, body, contentType, metadata, systemMeta);
 
   reply.header("etag", obj.etag);
   reply.status(200).send();
