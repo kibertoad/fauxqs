@@ -40,6 +40,10 @@ export function setSubscriptionAttributes(
       validateFilterPolicyLimits(attributeValue);
     }
     subscription.attributes[attributeName] = attributeValue;
+    // Invalidate cached parsed filter policy when relevant attributes change
+    if (attributeName === "FilterPolicy" || attributeName === "FilterPolicyScope") {
+      subscription.parsedFilterPolicy = undefined;
+    }
   }
 
   return snsSuccessResponse("SetSubscriptionAttributes", "");

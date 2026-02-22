@@ -507,6 +507,87 @@ describe("SQS FIFO Queues", () => {
     expect(dlqMessages.Messages![0].Body).toBe("fifo-dlq-test");
   });
 
+  it("FIFO group unlocks after message is DLQ'd — next message in same group is available", async () => {
+    const dlq = await sqs.send(
+      new CreateQueueCommand({
+        QueueName: `fifo-dlq-unlock-${Date.now()}.fifo`,
+        Attributes: { FifoQueue: "true" },
+      }),
+    );
+    const dlqAttrs = await sqs.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: dlq.QueueUrl!,
+        AttributeNames: ["QueueArn"],
+      }),
+    );
+
+    const source = await sqs.send(
+      new CreateQueueCommand({
+        QueueName: `fifo-src-unlock-${Date.now()}.fifo`,
+        Attributes: {
+          FifoQueue: "true",
+          ContentBasedDeduplication: "true",
+          VisibilityTimeout: "1",
+        },
+      }),
+    );
+
+    await sqs.send(
+      new SetQueueAttributesCommand({
+        QueueUrl: source.QueueUrl!,
+        Attributes: {
+          RedrivePolicy: JSON.stringify({
+            deadLetterTargetArn: dlqAttrs.Attributes!.QueueArn,
+            maxReceiveCount: 2,
+          }),
+        },
+      }),
+    );
+
+    // Send two messages in the same group
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: source.QueueUrl!,
+        MessageBody: "msg-1-will-dlq",
+        MessageGroupId: "group1",
+        MessageDeduplicationId: "dedup-1",
+      }),
+    );
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: source.QueueUrl!,
+        MessageBody: "msg-2-should-survive",
+        MessageGroupId: "group1",
+        MessageDeduplicationId: "dedup-2",
+      }),
+    );
+
+    // Receive msg-1 twice to exhaust its receive count
+    await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: source.QueueUrl! }),
+    );
+    await new Promise((r) => setTimeout(r, 1200));
+
+    await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: source.QueueUrl! }),
+    );
+    await new Promise((r) => setTimeout(r, 1200));
+
+    // 3rd receive: msg-1 should be DLQ'd, msg-2 should be returned
+    const thirdReceive = await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: source.QueueUrl! }),
+    );
+    expect(thirdReceive.Messages).toHaveLength(1);
+    expect(thirdReceive.Messages![0].Body).toBe("msg-2-should-survive");
+
+    // Verify msg-1 landed in the DLQ
+    const dlqMessages = await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: dlq.QueueUrl! }),
+    );
+    expect(dlqMessages.Messages).toHaveLength(1);
+    expect(dlqMessages.Messages![0].Body).toBe("msg-1-will-dlq");
+  });
+
   it("allows changing ContentBasedDeduplication on existing FIFO queue", async () => {
     const { QueueUrl } = await sqs.send(
       new CreateQueueCommand({

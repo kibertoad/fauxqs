@@ -15,7 +15,7 @@ export function listObjects(
   const prefix = query["prefix"] ?? "";
   const delimiter = query["delimiter"];
   const maxKeysStr = query["max-keys"];
-  const maxKeys = maxKeysStr ? parseInt(maxKeysStr, 10) : 1000;
+  const maxKeys = Math.min(maxKeysStr ? parseInt(maxKeysStr, 10) : 1000, 1000);
 
   if (listType === "2") {
     listObjectsV2(bucket, prefix, delimiter, maxKeys, query, reply, store);

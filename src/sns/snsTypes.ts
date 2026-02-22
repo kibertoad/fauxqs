@@ -13,6 +13,8 @@ export interface SnsSubscription {
   endpoint: string;
   confirmed: boolean;
   attributes: Record<string, string>;
+  /** Cached parsed FilterPolicy — invalidated when attributes change. */
+  parsedFilterPolicy?: Record<string, unknown>;
 }
 
 export interface SnsMessageAttribute {

@@ -220,5 +220,28 @@ describe("S3 ListObjects V1 and V2", () => {
       expect(result.Contents).toHaveLength(2);
       expect(result.IsTruncated).toBe(true);
     });
+
+    it("caps MaxKeys at 1000 (V2)", async () => {
+      const result = await s3.send(
+        new ListObjectsV2Command({
+          Bucket: "list-v2-bucket",
+          MaxKeys: 5000,
+        }),
+      );
+      // Should return all 7 objects (all fit within the 1000 cap)
+      expect(result.Contents).toHaveLength(7);
+      expect(result.MaxKeys).toBe(1000);
+    });
+
+    it("caps MaxKeys at 1000 (V1)", async () => {
+      const result = await s3.send(
+        new ListObjectsCommand({
+          Bucket: "list-v2-bucket",
+          MaxKeys: 5000,
+        }),
+      );
+      expect(result.Contents).toHaveLength(7);
+      expect(result.MaxKeys).toBe(1000);
+    });
   });
 });

@@ -281,8 +281,14 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+const wildcardRegexCache = new Map<string, RegExp>();
+
 function matchesWildcard(value: string, pattern: string): boolean {
-  const regex = new RegExp("^" + pattern.split("*").map(escapeRegex).join(".*") + "$");
+  let regex = wildcardRegexCache.get(pattern);
+  if (!regex) {
+    regex = new RegExp("^" + pattern.split("*").map(escapeRegex).join(".*") + "$");
+    wildcardRegexCache.set(pattern, regex);
+  }
   return regex.test(value);
 }
 

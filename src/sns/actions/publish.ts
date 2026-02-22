@@ -292,7 +292,11 @@ export function fanOutToSubscriptions(params: {
     // Filter policy check
     if (sub.attributes.FilterPolicy) {
       try {
-        const filterPolicy = JSON.parse(sub.attributes.FilterPolicy);
+        // Use cached parsed policy to avoid JSON.parse on every publish
+        if (sub.parsedFilterPolicy === undefined) {
+          sub.parsedFilterPolicy = JSON.parse(sub.attributes.FilterPolicy);
+        }
+        const filterPolicy = sub.parsedFilterPolicy!;
         const scope = sub.attributes.FilterPolicyScope ?? "MessageAttributes";
 
         if (scope === "MessageBody") {

@@ -14,6 +14,7 @@ import { DEFAULT_QUEUE_ATTRIBUTES, ALL_ATTRIBUTE_NAMES } from "./sqsTypes.ts";
 
 const DEDUP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const DEDUP_CACHE_MAX_SIZE = 10_000;
+const DEFAULT_FIFO_GROUP_ID = "__default";
 
 export class SqsQueue {
   readonly name: string;
@@ -138,7 +139,7 @@ export class SqsQueue {
     }
 
     if (this.isFifo()) {
-      const groupId = msg.messageGroupId ?? "__default";
+      const groupId = msg.messageGroupId ?? DEFAULT_FIFO_GROUP_ID;
       if (msg.delayUntil && msg.delayUntil > Date.now()) {
         const group = this.fifoDelayed.get(groupId) ?? [];
         group.push(msg);
@@ -420,7 +421,7 @@ export class SqsQueue {
       for (const [handle, entry] of this.inflightMessages) {
         if (entry.visibilityDeadline <= now) {
           this.inflightMessages.delete(handle);
-          const groupId = entry.message.messageGroupId ?? "__default";
+          const groupId = entry.message.messageGroupId ?? DEFAULT_FIFO_GROUP_ID;
           // Decrement locked group count
           const lockCount = (this.fifoLockedGroups.get(groupId) ?? 1) - 1;
           if (lockCount <= 0) {

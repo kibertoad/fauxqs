@@ -348,10 +348,13 @@ export class S3Store {
       }
     }
 
-    // Validate all specified parts exist and ETags match
+    // Validate all specified parts exist and ETags match, collect buffers and sizes in one pass
     const orderedParts: Buffer[] = [];
     const partDigests: Buffer[] = [];
-    for (const spec of partSpecs) {
+    const partSizes: number[] = [];
+    const MIN_PART_SIZE = 5 * 1024 * 1024;
+    for (let i = 0; i < partSpecs.length; i++) {
+      const spec = partSpecs[i];
       const part = upload.parts.get(spec.partNumber);
       if (!part) {
         throw new S3Error(
@@ -370,33 +373,32 @@ export class S3Store {
           400,
         );
       }
-      orderedParts.push(part.body);
-      partDigests.push(createHash("md5").update(part.body).digest());
-    }
-
-    // Validate non-last parts are >= 5 MiB (AWS enforces at CompleteMultipartUpload time)
-    const MIN_PART_SIZE = 5 * 1024 * 1024;
-    for (let i = 0; i < partSpecs.length - 1; i++) {
-      const part = upload.parts.get(partSpecs[i].partNumber)!;
-      if (part.body.length < MIN_PART_SIZE) {
+      // Validate non-last parts are >= 5 MiB (AWS enforces at CompleteMultipartUpload time)
+      if (i < partSpecs.length - 1 && part.body.length < MIN_PART_SIZE) {
         throw new S3Error(
           "EntityTooSmall",
           "Your proposed upload is smaller than the minimum allowed size",
           400,
         );
       }
+      orderedParts.push(part.body);
+      partDigests.push(createHash("md5").update(part.body).digest());
+      partSizes.push(part.body.length);
     }
+
+    // Release individual part buffers before concat so GC can reclaim them sooner
+    upload.parts.clear();
 
     // Concatenate all parts
     const body = Buffer.concat(orderedParts);
+    orderedParts.length = 0; // release references to individual buffers
 
     // Build part boundaries for partNumber retrieval
     let offset = 0;
     const partBoundaries: Array<{ partNumber: number; offset: number; length: number }> = [];
-    for (const spec of partSpecs) {
-      const part = upload.parts.get(spec.partNumber)!;
-      partBoundaries.push({ partNumber: spec.partNumber, offset, length: part.body.length });
-      offset += part.body.length;
+    for (let i = 0; i < partSpecs.length; i++) {
+      partBoundaries.push({ partNumber: partSpecs[i].partNumber, offset, length: partSizes[i] });
+      offset += partSizes[i];
     }
 
     // Calculate multipart ETag: MD5(concat of binary MD5 digests) + "-" + part count
