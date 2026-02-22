@@ -84,8 +84,16 @@ export class SnsStore {
     return this.topics.get(arn);
   }
 
-  listTopics(): SnsTopic[] {
-    return Array.from(this.topics.values());
+  listTopics(nextToken?: string): { topics: SnsTopic[]; nextToken?: string } {
+    let topics = Array.from(this.topics.values()).sort((a, b) => a.arn.localeCompare(b.arn));
+    if (nextToken) {
+      topics = topics.filter((t) => t.arn > nextToken);
+    }
+    if (topics.length > 100) {
+      const resultToken = topics[99].arn;
+      return { topics: topics.slice(0, 100), nextToken: resultToken };
+    }
+    return { topics };
   }
 
   subscribe(
@@ -157,16 +165,36 @@ export class SnsStore {
     return this.subscriptions.get(arn);
   }
 
-  listSubscriptions(): SnsSubscription[] {
-    return Array.from(this.subscriptions.values());
+  listSubscriptions(nextToken?: string): { subscriptions: SnsSubscription[]; nextToken?: string } {
+    let subs = Array.from(this.subscriptions.values()).sort((a, b) => a.arn.localeCompare(b.arn));
+    if (nextToken) {
+      subs = subs.filter((s) => s.arn > nextToken);
+    }
+    if (subs.length > 100) {
+      const resultToken = subs[99].arn;
+      return { subscriptions: subs.slice(0, 100), nextToken: resultToken };
+    }
+    return { subscriptions: subs };
   }
 
-  listSubscriptionsByTopic(topicArn: string): SnsSubscription[] {
+  listSubscriptionsByTopic(
+    topicArn: string,
+    nextToken?: string,
+  ): { subscriptions: SnsSubscription[]; nextToken?: string } {
     const topic = this.topics.get(topicArn);
-    if (!topic) return [];
-    return topic.subscriptionArns
+    if (!topic) return { subscriptions: [] };
+    let subs = topic.subscriptionArns
       .map((arn) => this.subscriptions.get(arn))
-      .filter((s): s is SnsSubscription => s !== undefined);
+      .filter((s): s is SnsSubscription => s !== undefined)
+      .sort((a, b) => a.arn.localeCompare(b.arn));
+    if (nextToken) {
+      subs = subs.filter((s) => s.arn > nextToken);
+    }
+    if (subs.length > 100) {
+      const resultToken = subs[99].arn;
+      return { subscriptions: subs.slice(0, 100), nextToken: resultToken };
+    }
+    return { subscriptions: subs };
   }
 
   purgeAll(): void {

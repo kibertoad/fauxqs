@@ -1,3 +1,4 @@
+import { isIPv4, isIPv6 } from "node:net";
 import type { MessageAttributeValue } from "../sqs/sqsTypes.ts";
 
 /**
@@ -66,9 +67,11 @@ function matchesKeyConditions(
 
   const attr = attributes[key];
 
+  const hasAnyAttributes = Object.keys(attributes).length > 0;
+
   // Check each condition (OR)
   for (const condition of conditions as unknown[]) {
-    if (matchesSingleCondition(condition, attr)) {
+    if (matchesSingleCondition(condition, attr, hasAnyAttributes)) {
       return true;
     }
   }
@@ -79,6 +82,7 @@ function matchesKeyConditions(
 function matchesSingleCondition(
   condition: unknown,
   attr: MessageAttributeValue | undefined,
+  hasAnyAttributes = true,
 ): boolean {
   // Null condition — matches if attribute is not present
   if (condition === null || condition === undefined) {
@@ -106,7 +110,9 @@ function matchesSingleCondition(
 
     // { "exists": true/false }
     if ("exists" in op) {
-      return op.exists ? attr !== undefined : attr === undefined;
+      if (op.exists) return attr !== undefined;
+      // exists: false — attribute must be absent, but message must have at least one attribute
+      return attr === undefined && hasAnyAttributes;
     }
 
     // { "prefix": "value" }
@@ -121,7 +127,25 @@ function matchesSingleCondition(
       return getStringValue(attr).endsWith(op.suffix as string);
     }
 
-    // { "anything-but": "value" | ["value1", "value2"] | { "prefix": "..." } | { "suffix": "..." } }
+    // { "equals-ignore-case": "value" }
+    if ("equals-ignore-case" in op) {
+      if (attr === undefined) return false;
+      return getStringValue(attr).toLowerCase() === (op["equals-ignore-case"] as string).toLowerCase();
+    }
+
+    // { "wildcard": "pattern*" }
+    if ("wildcard" in op) {
+      if (attr === undefined) return false;
+      return matchesWildcard(getStringValue(attr), op.wildcard as string);
+    }
+
+    // { "cidr": "10.0.0.0/24" }
+    if ("cidr" in op) {
+      if (attr === undefined) return false;
+      return matchesCidr(getStringValue(attr), op.cidr as string);
+    }
+
+    // { "anything-but": "value" | ["value1", "value2"] | { "prefix": "..." } | { "suffix": "..." } | { "wildcard": "..." } }
     if ("anything-but" in op) {
       if (attr === undefined) return false;
       const value = getStringValue(attr);
@@ -144,6 +168,9 @@ function matchesSingleCondition(
         if ("suffix" in excludedObj) {
           return !value.endsWith(excludedObj.suffix);
         }
+        if ("wildcard" in excludedObj) {
+          return !matchesWildcard(value, excludedObj.wildcard);
+        }
       }
 
       if (typeof excluded === "string") return value !== excluded;
@@ -158,6 +185,60 @@ function matchesSingleCondition(
       if (numValue === undefined) return false;
       return evaluateNumeric(numValue, op.numeric as unknown[]);
     }
+  }
+
+  return false;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchesWildcard(value: string, pattern: string): boolean {
+  const regex = new RegExp("^" + pattern.split("*").map(escapeRegex).join(".*") + "$");
+  return regex.test(value);
+}
+
+function ipv4ToInt(ip: string): number {
+  const parts = ip.split(".").map(Number);
+  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
+}
+
+function ipv6ToBigInt(ip: string): bigint {
+  // Expand :: notation
+  const halves = ip.split("::");
+  let groups: string[];
+  if (halves.length === 2) {
+    const left = halves[0] ? halves[0].split(":") : [];
+    const right = halves[1] ? halves[1].split(":") : [];
+    const missing = 8 - left.length - right.length;
+    groups = [...left, ...Array(missing).fill("0"), ...right];
+  } else {
+    groups = ip.split(":");
+  }
+  let result = 0n;
+  for (const group of groups) {
+    result = (result << 16n) | BigInt(parseInt(group || "0", 16));
+  }
+  return result;
+}
+
+function matchesCidr(ip: string, cidr: string): boolean {
+  const [baseIp, prefixStr] = cidr.split("/");
+  const prefixLen = parseInt(prefixStr, 10);
+
+  if (isIPv4(ip) && isIPv4(baseIp)) {
+    const ipInt = ipv4ToInt(ip);
+    const baseInt = ipv4ToInt(baseIp);
+    const mask = prefixLen === 0 ? 0 : (~0 << (32 - prefixLen)) >>> 0;
+    return (ipInt & mask) === (baseInt & mask);
+  }
+
+  if (isIPv6(ip) && isIPv6(baseIp)) {
+    const ipBig = ipv6ToBigInt(ip);
+    const baseBig = ipv6ToBigInt(baseIp);
+    const mask = prefixLen === 0 ? 0n : ((1n << 128n) - 1n) << BigInt(128 - prefixLen);
+    return (ipBig & mask) === (baseBig & mask);
   }
 
   return false;
@@ -282,7 +363,7 @@ function flattenFilterPolicy(
     } else if (typeof value === "object" && value !== null) {
       const obj = value as Record<string, unknown>;
       // Check if this is an operator object (leaf) rather than a nested key
-      const operatorKeys = ["prefix", "suffix", "anything-but", "numeric", "exists"];
+      const operatorKeys = ["prefix", "suffix", "anything-but", "numeric", "exists", "equals-ignore-case", "wildcard", "cidr"];
       const isOperator = Object.keys(obj).some((k) => operatorKeys.includes(k));
       if (isOperator) {
         // Single operator condition, wrap in array

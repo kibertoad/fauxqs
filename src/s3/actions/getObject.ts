@@ -12,40 +12,47 @@ export function getObject(
 
   const obj = store.getObject(bucket, key);
 
-  // Fix 12: Conditional request headers
-  const ifNoneMatch = request.headers["if-none-match"] as string | undefined;
-  if (ifNoneMatch && ifNoneMatch === obj.etag) {
-    reply.status(304).send();
-    return;
-  }
-
+  // Conditional request headers (RFC 7232 precedence)
   const ifMatch = request.headers["if-match"] as string | undefined;
-  if (ifMatch && ifMatch !== obj.etag) {
-    throw new S3Error(
-      "PreconditionFailed",
-      "At least one of the pre-conditions you specified did not hold",
-      412,
-    );
-  }
+  const ifNoneMatch = request.headers["if-none-match"] as string | undefined;
 
-  const ifModifiedSince = request.headers["if-modified-since"] as string | undefined;
-  if (ifModifiedSince) {
-    const since = new Date(ifModifiedSince);
-    if (!isNaN(since.getTime()) && obj.lastModified <= since) {
-      reply.status(304).send();
-      return;
-    }
-  }
-
-  const ifUnmodifiedSince = request.headers["if-unmodified-since"] as string | undefined;
-  if (ifUnmodifiedSince) {
-    const since = new Date(ifUnmodifiedSince);
-    if (!isNaN(since.getTime()) && obj.lastModified > since) {
+  if (ifMatch) {
+    if (ifMatch !== obj.etag) {
       throw new S3Error(
         "PreconditionFailed",
         "At least one of the pre-conditions you specified did not hold",
         412,
       );
+    }
+    // If-Match succeeded — skip If-Unmodified-Since per RFC 7232
+  } else {
+    const ifUnmodifiedSince = request.headers["if-unmodified-since"] as string | undefined;
+    if (ifUnmodifiedSince) {
+      const since = new Date(ifUnmodifiedSince);
+      if (!isNaN(since.getTime()) && obj.lastModified > since) {
+        throw new S3Error(
+          "PreconditionFailed",
+          "At least one of the pre-conditions you specified did not hold",
+          412,
+        );
+      }
+    }
+  }
+
+  if (ifNoneMatch) {
+    if (ifNoneMatch === obj.etag) {
+      reply.status(304).send();
+      return;
+    }
+    // If-None-Match evaluated — skip If-Modified-Since per RFC 7232
+  } else {
+    const ifModifiedSince = request.headers["if-modified-since"] as string | undefined;
+    if (ifModifiedSince) {
+      const since = new Date(ifModifiedSince);
+      if (!isNaN(since.getTime()) && obj.lastModified <= since) {
+        reply.status(304).send();
+        return;
+      }
     }
   }
 

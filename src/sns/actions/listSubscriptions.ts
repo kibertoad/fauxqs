@@ -2,9 +2,10 @@ import type { Subscription } from "@aws-sdk/client-sns";
 import { snsSuccessResponse, escapeXml } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
 
-export function listSubscriptions(_params: Record<string, string>, snsStore: SnsStore): string {
-  const subscriptions = snsStore.listSubscriptions();
-  return formatSubscriptionList("ListSubscriptions", subscriptions);
+export function listSubscriptions(params: Record<string, string>, snsStore: SnsStore): string {
+  const nextToken = params.NextToken;
+  const result = snsStore.listSubscriptions(nextToken || undefined);
+  return formatSubscriptionList("ListSubscriptions", result.subscriptions, result.nextToken);
 }
 
 export function listSubscriptionsByTopic(
@@ -12,8 +13,12 @@ export function listSubscriptionsByTopic(
   snsStore: SnsStore,
 ): string {
   const topicArn = params.TopicArn;
-  const subscriptions = topicArn ? snsStore.listSubscriptionsByTopic(topicArn) : [];
-  return formatSubscriptionList("ListSubscriptionsByTopic", subscriptions);
+  const nextToken = params.NextToken;
+  if (!topicArn) {
+    return formatSubscriptionList("ListSubscriptionsByTopic", []);
+  }
+  const result = snsStore.listSubscriptionsByTopic(topicArn, nextToken || undefined);
+  return formatSubscriptionList("ListSubscriptionsByTopic", result.subscriptions, result.nextToken);
 }
 
 function formatSubscriptionList(
@@ -24,6 +29,7 @@ function formatSubscriptionList(
     protocol: string;
     endpoint: string;
   }>,
+  nextToken?: string,
 ): string {
   const membersXml = subscriptions
     .map((s) => {
@@ -44,5 +50,9 @@ function formatSubscriptionList(
     })
     .join("\n    ");
 
-  return snsSuccessResponse(action, `<Subscriptions>${membersXml}</Subscriptions>`);
+  const nextTokenXml = nextToken
+    ? `<NextToken>${escapeXml(nextToken)}</NextToken>`
+    : "";
+
+  return snsSuccessResponse(action, `<Subscriptions>${membersXml}</Subscriptions>${nextTokenXml}`);
 }

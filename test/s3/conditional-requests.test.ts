@@ -85,4 +85,20 @@ describe("S3 Conditional Requests", () => {
       ),
     ).rejects.toThrow();
   });
+
+  it("If-Match takes precedence over If-Unmodified-Since", async () => {
+    // If-Match matches + If-Unmodified-Since in the past → should return 200
+    // because If-Match takes precedence per HTTP spec
+    const result = await s3.send(
+      new GetObjectCommand({
+        Bucket: "cond-bucket",
+        Key: "cond-test.txt",
+        IfMatch: etag,
+        IfUnmodifiedSince: new Date("2000-01-01"),
+      }),
+    );
+
+    const body = await result.Body!.transformToString();
+    expect(body).toBe("conditional test");
+  });
 });

@@ -108,6 +108,8 @@ export class SqsQueue {
         return String(this.createdTimestamp);
       case "LastModifiedTimestamp":
         return String(this.lastModifiedTimestamp);
+      case "SqsManagedSseEnabled":
+        return this.attributes.SqsManagedSseEnabled ?? "true";
       default:
         return this.attributes[name];
     }
@@ -655,15 +657,28 @@ export class SqsStore {
     return this.queuesByName.get(name);
   }
 
-  listQueues(prefix?: string, maxResults?: number): SqsQueue[] {
+  listQueues(
+    prefix?: string,
+    maxResults?: number,
+    nextToken?: string,
+  ): { queues: SqsQueue[]; nextToken?: string } {
     let queues = Array.from(this.queues.values());
     if (prefix) {
       queues = queues.filter((q) => q.name.startsWith(prefix));
     }
-    if (maxResults) {
-      queues = queues.slice(0, maxResults);
+    queues.sort((a, b) => a.name.localeCompare(b.name));
+
+    if (nextToken) {
+      queues = queues.filter((q) => q.name > nextToken);
     }
-    return queues;
+
+    let resultNextToken: string | undefined;
+    if (maxResults && queues.length > maxResults) {
+      queues = queues.slice(0, maxResults);
+      resultNextToken = queues[queues.length - 1].name;
+    }
+
+    return { queues, nextToken: resultNextToken };
   }
 
   getQueueByArn(arn: string): SqsQueue | undefined {

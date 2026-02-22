@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import { SqsStore } from "./sqs/sqsStore.ts";
+import type { MessageAttributeValue } from "./sqs/sqsTypes.ts";
+import { INVALID_MESSAGE_BODY_CHAR, calculateMessageSize } from "./sqs/sqsTypes.ts";
+import { md5, md5OfMessageAttributes } from "./common/md5.ts";
 import { SqsRouter } from "./sqs/sqsRouter.ts";
 import { SnsStore } from "./sns/snsStore.ts";
 import { SnsRouter } from "./sns/snsRouter.ts";
@@ -32,16 +35,17 @@ import { confirmSubscription } from "./sns/actions/confirmSubscription.ts";
 import { listSubscriptions, listSubscriptionsByTopic } from "./sns/actions/listSubscriptions.ts";
 import { getSubscriptionAttributes } from "./sns/actions/getSubscriptionAttributes.ts";
 import { setSubscriptionAttributes } from "./sns/actions/setSubscriptionAttributes.ts";
-import { publish, publishBatch } from "./sns/actions/publish.ts";
+import { publish, publishBatch, fanOutToSubscriptions } from "./sns/actions/publish.ts";
 import { tagResource, untagResource, listTagsForResource } from "./sns/actions/tagResource.ts";
 import { S3Store } from "./s3/s3Store.ts";
 import { registerS3Routes } from "./s3/s3Router.ts";
 import { getCallerIdentity } from "./sts/getCallerIdentity.ts";
 import { sqsQueueArn, snsTopicArn } from "./common/arnHelper.ts";
-import { DEFAULT_REGION } from "./common/types.ts";
+import { DEFAULT_REGION, SNS_MAX_MESSAGE_SIZE_BYTES } from "./common/types.ts";
 import { loadInitConfig, applyInitConfig } from "./initConfig.ts";
 import { MessageSpy, type MessageSpyReader } from "./spy.ts";
 export type { FauxqsInitConfig } from "./initConfig.ts";
+export type { MessageAttributeValue } from "./sqs/sqsTypes.ts";
 export { createLocalhostHandler, interceptLocalhostDns } from "./localhost.ts";
 export type {
   MessageSpyReader,
@@ -209,7 +213,7 @@ export function buildApp(options?: BuildAppOptions) {
 
   // Non-destructive queue inspection endpoints
   app.get("/_fauxqs/queues", async () => {
-    return sqsStore.listQueues().map((q) => ({
+    return sqsStore.listQueues().queues.map((q) => ({
       name: q.name,
       url: q.url,
       arn: q.arn,
@@ -307,6 +311,30 @@ export interface FauxqsServer {
   deleteTopic(name: string, options?: { region?: string }): void;
   /** Remove all objects from a bucket but keep the bucket itself. No-op if the bucket does not exist. */
   emptyBucket(name: string): void;
+  /** Enqueue a message into an SQS queue by name. Supports messageAttributes, delaySeconds, and FIFO fields. Spy events emitted automatically. */
+  sendMessage(
+    queueName: string,
+    body: string,
+    options?: {
+      messageAttributes?: Record<string, MessageAttributeValue>;
+      delaySeconds?: number;
+      messageGroupId?: string;
+      messageDeduplicationId?: string;
+      region?: string;
+    },
+  ): { messageId: string; md5OfBody: string; md5OfMessageAttributes?: string; sequenceNumber?: string };
+  /** Publish a message to an SNS topic by name, with full fan-out to SQS subscriptions (filter policies, raw delivery). Spy events emitted automatically. */
+  publish(
+    topicName: string,
+    message: string,
+    options?: {
+      subject?: string;
+      messageAttributes?: Record<string, MessageAttributeValue>;
+      messageGroupId?: string;
+      messageDeduplicationId?: string;
+      region?: string;
+    },
+  ): { messageId: string };
   setup(config: import("./initConfig.ts").FauxqsInitConfig): void;
   /** Clear all messages from queues and all objects from buckets, but keep queues, topics, subscriptions, and buckets intact. Also clears the spy buffer. */
   reset(): void;
@@ -420,6 +448,170 @@ export async function startFauxqs(options?: {
     },
     emptyBucket(name) {
       s3Store.emptyBucket(name);
+    },
+    sendMessage(queueName, body, opts) {
+      const r = opts?.region ?? region;
+      const arn = sqsQueueArn(queueName, r);
+      const queue = sqsStore.getQueueByArn(arn);
+      if (!queue) {
+        throw new Error(`Queue '${queueName}' not found`);
+      }
+
+      // Validate message body characters (same as SDK handler)
+      if (INVALID_MESSAGE_BODY_CHAR.test(body)) {
+        throw new Error(
+          "Invalid characters found. Valid unicode characters are #x9 | #xA | #xD | #x20 to #xD7FF and #xE000 to #xFFFD.",
+        );
+      }
+
+      const messageAttributes = opts?.messageAttributes ?? {};
+
+      // Validate message size against queue's MaximumMessageSize
+      const maxMessageSize = parseInt(queue.attributes.MaximumMessageSize);
+      const totalSize = calculateMessageSize(body, messageAttributes);
+      if (totalSize > maxMessageSize) {
+        throw new Error(
+          `Message must be shorter than ${maxMessageSize} bytes.`,
+        );
+      }
+
+      if (queue.isFifo()) {
+        if (!opts?.messageGroupId) {
+          throw new Error("messageGroupId is required for FIFO queues");
+        }
+
+        // Per-message DelaySeconds is not supported on FIFO queues
+        if (opts?.delaySeconds !== undefined && opts.delaySeconds !== 0) {
+          throw new Error(
+            `Value ${opts.delaySeconds} for parameter DelaySeconds is invalid. Reason: The request include parameter that is not valid for this queue type.`,
+          );
+        }
+
+        let dedupId = opts?.messageDeduplicationId;
+        if (!dedupId) {
+          if (queue.attributes.ContentBasedDeduplication === "true") {
+            dedupId = SqsStore.contentBasedDeduplicationId(body);
+          } else {
+            throw new Error(
+              "messageDeduplicationId is required for FIFO queues without ContentBasedDeduplication",
+            );
+          }
+        }
+
+        const dedupResult = queue.checkDeduplication(dedupId);
+        if (dedupResult.isDuplicate) {
+          const attrsDigest = md5OfMessageAttributes(messageAttributes);
+          return {
+            messageId: dedupResult.originalMessageId!,
+            md5OfBody: md5(body),
+            ...(attrsDigest ? { md5OfMessageAttributes: attrsDigest } : {}),
+            sequenceNumber: dedupResult.originalSequenceNumber,
+          };
+        }
+
+        // Queue-level delay applies to FIFO queues
+        const queueDelay = parseInt(queue.attributes.DelaySeconds);
+        const msg = SqsStore.createMessage(
+          body,
+          messageAttributes,
+          queueDelay > 0 ? queueDelay : undefined,
+          opts.messageGroupId,
+          dedupId,
+        );
+        msg.sequenceNumber = queue.nextSequenceNumber();
+        queue.recordDeduplication(dedupId, msg.messageId, msg.sequenceNumber);
+        queue.enqueue(msg);
+        return {
+          messageId: msg.messageId,
+          md5OfBody: msg.md5OfBody,
+          ...(msg.md5OfMessageAttributes ? { md5OfMessageAttributes: msg.md5OfMessageAttributes } : {}),
+          sequenceNumber: msg.sequenceNumber,
+        };
+      }
+
+      // Per-message override or queue default
+      const delaySeconds =
+        opts?.delaySeconds ?? parseInt(queue.attributes.DelaySeconds);
+      const msg = SqsStore.createMessage(
+        body,
+        messageAttributes,
+        delaySeconds > 0 ? delaySeconds : undefined,
+      );
+      queue.enqueue(msg);
+      return {
+        messageId: msg.messageId,
+        md5OfBody: msg.md5OfBody,
+        ...(msg.md5OfMessageAttributes ? { md5OfMessageAttributes: msg.md5OfMessageAttributes } : {}),
+      };
+    },
+    publish(topicName, message, opts) {
+      const r = opts?.region ?? region;
+      const topicArn = snsTopicArn(topicName, r);
+      const topic = snsStore.getTopic(topicArn);
+      if (!topic) {
+        throw new Error(`Topic '${topicName}' not found`);
+      }
+
+      if (Buffer.byteLength(message, "utf8") > SNS_MAX_MESSAGE_SIZE_BYTES) {
+        throw new Error(
+          `Message too long. Message must be shorter than ${SNS_MAX_MESSAGE_SIZE_BYTES} bytes.`,
+        );
+      }
+
+      const messageId = randomUUID();
+      const messageAttributes = opts?.messageAttributes ?? {};
+      const subject = opts?.subject;
+
+      const isFifoTopic = topic.attributes.FifoTopic === "true";
+      let messageGroupId: string | undefined;
+      let messageDeduplicationId: string | undefined;
+
+      if (isFifoTopic) {
+        messageGroupId = opts?.messageGroupId;
+        if (!messageGroupId) {
+          throw new Error("messageGroupId is required for FIFO topics");
+        }
+
+        messageDeduplicationId = opts?.messageDeduplicationId;
+        if (!messageDeduplicationId) {
+          if (topic.attributes.ContentBasedDeduplication === "true") {
+            messageDeduplicationId = SqsStore.contentBasedDeduplicationId(message);
+          } else {
+            throw new Error(
+              "messageDeduplicationId is required for FIFO topics without ContentBasedDeduplication",
+            );
+          }
+        }
+      }
+
+      // Emit SNS spy event
+      if (snsStore.spy) {
+        snsStore.spy.addMessage({
+          service: "sns",
+          topicArn,
+          topicName: topic.name,
+          messageId,
+          body: message,
+          messageAttributes,
+          status: "published",
+          timestamp: Date.now(),
+        });
+      }
+
+      fanOutToSubscriptions({
+        topicArn,
+        topic,
+        messageId,
+        message,
+        messageAttributes,
+        subject,
+        messageGroupId,
+        messageDeduplicationId,
+        snsStore,
+        sqsStore,
+      });
+
+      return { messageId };
     },
     setup(config) {
       applyInitConfig(config, sqsStore, snsStore, s3Store, {

@@ -22,6 +22,10 @@ export function deleteObjects(
     ? request.body.toString("utf-8")
     : (request.body as string);
 
+  // Parse <Quiet> flag from XML body
+  const quietMatch = /<Quiet>(true|false)<\/Quiet>/i.exec(body);
+  const quiet = quietMatch?.[1]?.toLowerCase() === "true";
+
   // Parse <Key> elements from XML body with proper entity unescaping
   const keys: string[] = [];
   const keyRegex = /<Key>([\s\S]*?)<\/Key>/g;
@@ -32,11 +36,13 @@ export function deleteObjects(
 
   const deleted = store.deleteObjects(bucket, keys);
 
-  const deletedData = deleted.map((key) => ({ Key: key }) satisfies DeletedObject);
-
-  const deletedXml = deletedData
-    .map((d) => `<Deleted><Key>${escapeXml(d.Key!)}</Key></Deleted>`)
-    .join("\n    ");
+  let deletedXml = "";
+  if (!quiet) {
+    const deletedData = deleted.map((key) => ({ Key: key }) satisfies DeletedObject);
+    deletedXml = deletedData
+      .map((d) => `<Deleted><Key>${escapeXml(d.Key!)}</Key></Deleted>`)
+      .join("\n    ");
+  }
 
   const xml = [
     `<?xml version="1.0" encoding="UTF-8"?>`,

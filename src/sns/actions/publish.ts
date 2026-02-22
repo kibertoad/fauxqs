@@ -83,83 +83,19 @@ export function publish(
     }
   }
 
-  // Pre-build envelope template for non-raw subscriptions (stringify once, not per subscription)
-  const UNSUB_PLACEHOLDER = "__UNSUB_ARN_PLACEHOLDER__";
-  const envelopeTemplate = JSON.stringify({
-    Type: "Notification",
-    MessageId: messageId,
-    TopicArn: topicArn,
-    Subject: subject ?? null,
-    Message: message,
-    Timestamp: new Date().toISOString(),
-    SignatureVersion: "1",
-    Signature: "EXAMPLE",
-    SigningCertURL:
-      "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem",
-    UnsubscribeURL: UNSUB_PLACEHOLDER,
-    MessageAttributes: formatEnvelopeAttributes(messageAttributes),
-  });
-
   // Fan out to subscriptions
-  for (const subArn of topic.subscriptionArns) {
-    const sub = snsStore.getSubscription(subArn);
-    if (!sub || !sub.confirmed) continue;
-    if (sub.protocol !== "sqs") continue;
-
-    // Filter policy check
-    if (sub.attributes.FilterPolicy) {
-      try {
-        const filterPolicy = JSON.parse(sub.attributes.FilterPolicy);
-        const scope = sub.attributes.FilterPolicyScope ?? "MessageAttributes";
-
-        if (scope === "MessageBody") {
-          if (!matchesFilterPolicyOnBody(filterPolicy, message)) continue;
-        } else {
-          if (!matchesFilterPolicy(filterPolicy, messageAttributes)) continue;
-        }
-      } catch {
-        // Invalid filter policy JSON — fail-open: deliver the message rather than silently dropping it.
-        // Validation should happen at SetSubscriptionAttributes time; if somehow invalid at publish time, delivering is the safer default.
-      }
-    }
-
-    const sqsQueueArn = sub.endpoint;
-    const queue = sqsStore.getQueueByArn(sqsQueueArn);
-    if (!queue) continue;
-
-    const isRaw = sub.attributes.RawMessageDelivery === "true";
-
-    let sqsBody: string;
-    let sqsAttributes: Record<string, MessageAttributeValue> = {};
-
-    if (isRaw) {
-      sqsBody = message;
-      sqsAttributes = messageAttributes;
-    } else {
-      // Wrap in SNS envelope (reuse pre-built template, only substitute UnsubscribeURL)
-      sqsBody = envelopeTemplate.replace(
-        UNSUB_PLACEHOLDER,
-        `https://sns.us-east-1.amazonaws.com/?Action=Unsubscribe&SubscriptionArn=${sub.arn}`,
-      );
-    }
-
-    const sqsMsg = SqsStoreClass.createMessage(
-      sqsBody,
-      sqsAttributes,
-      undefined,
-      messageGroupId,
-      messageDeduplicationId,
-    );
-
-    if (queue.isFifo() && messageDeduplicationId) {
-      const dedupResult = queue.checkDeduplication(messageDeduplicationId);
-      if (dedupResult.isDuplicate) continue;
-      sqsMsg.sequenceNumber = queue.nextSequenceNumber();
-      queue.recordDeduplication(messageDeduplicationId, sqsMsg.messageId);
-    }
-
-    queue.enqueue(sqsMsg);
-  }
+  fanOutToSubscriptions({
+    topicArn,
+    topic,
+    messageId,
+    message,
+    messageAttributes,
+    subject,
+    messageGroupId,
+    messageDeduplicationId,
+    snsStore,
+    sqsStore,
+  });
 
   const result = { MessageId: messageId } satisfies PublishResponse;
   return snsSuccessResponse("Publish", `<MessageId>${result.MessageId}</MessageId>`);
@@ -237,70 +173,18 @@ export function publishBatch(
     }
 
     // Fan out each entry
-    for (const subArn of topic.subscriptionArns) {
-      const sub = snsStore.getSubscription(subArn);
-      if (!sub || !sub.confirmed || sub.protocol !== "sqs") continue;
-
-      // Filter policy check
-      if (sub.attributes.FilterPolicy) {
-        try {
-          const filterPolicy = JSON.parse(sub.attributes.FilterPolicy);
-          const scope = sub.attributes.FilterPolicyScope ?? "MessageAttributes";
-
-          if (scope === "MessageBody") {
-            if (!matchesFilterPolicyOnBody(filterPolicy, entry.message)) continue;
-          } else {
-            if (!matchesFilterPolicy(filterPolicy, entry.messageAttributes)) continue;
-          }
-        } catch {
-          // Invalid filter policy JSON — fail-open: deliver the message (see single publish handler for rationale)
-        }
-      }
-
-      const queue = sqsStore.getQueueByArn(sub.endpoint);
-      if (!queue) continue;
-
-      const isRaw = sub.attributes.RawMessageDelivery === "true";
-      let sqsBody: string;
-      let sqsAttributes: Record<string, MessageAttributeValue> = {};
-
-      if (isRaw) {
-        sqsBody = entry.message;
-        sqsAttributes = entry.messageAttributes;
-      } else {
-        sqsBody = JSON.stringify({
-          Type: "Notification",
-          MessageId: messageId,
-          TopicArn: topicArn,
-          Subject: entry.subject ?? null,
-          Message: entry.message,
-          Timestamp: new Date().toISOString(),
-          SignatureVersion: "1",
-          Signature: "EXAMPLE",
-          SigningCertURL:
-            "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem",
-          UnsubscribeURL: `https://sns.us-east-1.amazonaws.com/?Action=Unsubscribe&SubscriptionArn=${sub.arn}`,
-          MessageAttributes: formatEnvelopeAttributes(entry.messageAttributes),
-        });
-      }
-
-      const sqsMsg = SqsStoreClass.createMessage(
-        sqsBody,
-        sqsAttributes,
-        undefined,
-        messageGroupId,
-        messageDeduplicationId,
-      );
-
-      if (queue.isFifo() && messageDeduplicationId) {
-        const dedupResult = queue.checkDeduplication(messageDeduplicationId);
-        if (dedupResult.isDuplicate) continue;
-        sqsMsg.sequenceNumber = queue.nextSequenceNumber();
-        queue.recordDeduplication(messageDeduplicationId, sqsMsg.messageId);
-      }
-
-      queue.enqueue(sqsMsg);
-    }
+    fanOutToSubscriptions({
+      topicArn,
+      topic,
+      messageId,
+      message: entry.message,
+      messageAttributes: entry.messageAttributes,
+      subject: entry.subject,
+      messageGroupId,
+      messageDeduplicationId,
+      snsStore,
+      sqsStore,
+    });
 
     successfulXml.push(`<member><Id>${entry.id}</Id><MessageId>${messageId}</MessageId></member>`);
   }
@@ -309,6 +193,104 @@ export function publishBatch(
     "PublishBatch",
     `<Successful>${successfulXml.join("")}</Successful><Failed>${failedXml.join("")}</Failed>`,
   );
+}
+
+export function fanOutToSubscriptions(params: {
+  topicArn: string;
+  topic: { subscriptionArns: string[] };
+  messageId: string;
+  message: string;
+  messageAttributes: Record<string, MessageAttributeValue>;
+  subject?: string;
+  messageGroupId?: string;
+  messageDeduplicationId?: string;
+  snsStore: SnsStore;
+  sqsStore: SqsStore;
+}): void {
+  const {
+    topicArn,
+    topic,
+    messageId,
+    message,
+    messageAttributes,
+    subject,
+    messageGroupId,
+    messageDeduplicationId,
+    snsStore,
+    sqsStore,
+  } = params;
+
+  // Pre-compute envelope fields shared across subscriptions (only UnsubscribeURL varies)
+  const envelopeBase = {
+    Type: "Notification" as const,
+    MessageId: messageId,
+    TopicArn: topicArn,
+    Subject: subject ?? null,
+    Message: message,
+    Timestamp: new Date().toISOString(),
+    SignatureVersion: "1" as const,
+    Signature: "EXAMPLE" as const,
+    SigningCertURL:
+      "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem" as const,
+    UnsubscribeURL: "",
+    MessageAttributes: formatEnvelopeAttributes(messageAttributes),
+  };
+
+  for (const subArn of topic.subscriptionArns) {
+    const sub = snsStore.getSubscription(subArn);
+    if (!sub || !sub.confirmed) continue;
+    if (sub.protocol !== "sqs") continue;
+
+    // Filter policy check
+    if (sub.attributes.FilterPolicy) {
+      try {
+        const filterPolicy = JSON.parse(sub.attributes.FilterPolicy);
+        const scope = sub.attributes.FilterPolicyScope ?? "MessageAttributes";
+
+        if (scope === "MessageBody") {
+          if (!matchesFilterPolicyOnBody(filterPolicy, message)) continue;
+        } else {
+          if (!matchesFilterPolicy(filterPolicy, messageAttributes)) continue;
+        }
+      } catch {
+        // Invalid filter policy JSON — fail-open: deliver the message rather than silently dropping it.
+      }
+    }
+
+    const sqsQueueArn = sub.endpoint;
+    const queue = sqsStore.getQueueByArn(sqsQueueArn);
+    if (!queue) continue;
+
+    const isRaw = sub.attributes.RawMessageDelivery === "true";
+
+    let sqsBody: string;
+    let sqsAttributes: Record<string, MessageAttributeValue> = {};
+
+    if (isRaw) {
+      sqsBody = message;
+      sqsAttributes = messageAttributes;
+    } else {
+      envelopeBase.UnsubscribeURL = `https://sns.us-east-1.amazonaws.com/?Action=Unsubscribe&SubscriptionArn=${sub.arn}`;
+      sqsBody = JSON.stringify(envelopeBase);
+    }
+
+    const sqsMsg = SqsStoreClass.createMessage(
+      sqsBody,
+      sqsAttributes,
+      undefined,
+      messageGroupId,
+      messageDeduplicationId,
+    );
+
+    if (queue.isFifo() && messageDeduplicationId) {
+      const dedupResult = queue.checkDeduplication(messageDeduplicationId);
+      if (dedupResult.isDuplicate) continue;
+      sqsMsg.sequenceNumber = queue.nextSequenceNumber();
+      queue.recordDeduplication(messageDeduplicationId, sqsMsg.messageId);
+    }
+
+    queue.enqueue(sqsMsg);
+  }
 }
 
 function parseMessageAttributes(

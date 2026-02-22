@@ -5,6 +5,7 @@ import {
   ListQueuesCommand,
   ReceiveMessageCommand,
   SendMessageCommand,
+  DeleteMessageCommand,
 } from "@aws-sdk/client-sqs";
 import { CreateTopicCommand, ListTopicsCommand, ListSubscriptionsCommand, PublishCommand } from "@aws-sdk/client-sns";
 import {
@@ -296,6 +297,307 @@ describe("programmatic API", () => {
     it("is a no-op for non-existent bucket", async () => {
       server = await startFauxqs({ port: 0, logger: false });
       expect(() => server.emptyBucket("no-such-bucket")).not.toThrow();
+    });
+  });
+
+  describe("sendMessage", () => {
+    it("enqueues message receivable via SDK", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const { queueUrl } = server.createQueue("send-q");
+
+      const result = server.sendMessage("send-q", "hello programmatic");
+      expect(result.messageId).toBeDefined();
+      expect(result.md5OfBody).toBeDefined();
+
+      const sqs = createSqsClient(server.port);
+      const msgs = await sqs.send(
+        new ReceiveMessageCommand({ QueueUrl: queueUrl, WaitTimeSeconds: 1 }),
+      );
+      expect(msgs.Messages).toHaveLength(1);
+      expect(msgs.Messages![0].Body).toBe("hello programmatic");
+      expect(msgs.Messages![0].MessageId).toBe(result.messageId);
+    });
+
+    it("sends with messageAttributes", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const { queueUrl } = server.createQueue("send-attr-q");
+
+      server.sendMessage("send-attr-q", "with attrs", {
+        messageAttributes: {
+          color: { DataType: "String", StringValue: "blue" },
+        },
+      });
+
+      const sqs = createSqsClient(server.port);
+      const msgs = await sqs.send(
+        new ReceiveMessageCommand({
+          QueueUrl: queueUrl,
+          WaitTimeSeconds: 1,
+          MessageAttributeNames: ["All"],
+        }),
+      );
+      expect(msgs.Messages).toHaveLength(1);
+      expect(msgs.Messages![0].MessageAttributes?.color?.StringValue).toBe("blue");
+    });
+
+    it("sends with delaySeconds", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const { queueUrl } = server.createQueue("send-delay-q");
+
+      server.sendMessage("send-delay-q", "delayed", { delaySeconds: 1 });
+
+      // Not immediately visible
+      const sqs = createSqsClient(server.port);
+      const immediate = await sqs.send(
+        new ReceiveMessageCommand({ QueueUrl: queueUrl, WaitTimeSeconds: 0 }),
+      );
+      expect(immediate.Messages ?? []).toHaveLength(0);
+
+      // Visible after delay
+      const delayed = await sqs.send(
+        new ReceiveMessageCommand({ QueueUrl: queueUrl, WaitTimeSeconds: 2 }),
+      );
+      expect(delayed.Messages).toHaveLength(1);
+      expect(delayed.Messages![0].Body).toBe("delayed");
+    });
+
+    it("sends to FIFO queue and returns sequenceNumber", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const { queueUrl } = server.createQueue("send-fifo-q.fifo", {
+        attributes: { FifoQueue: "true", ContentBasedDeduplication: "true" },
+      });
+
+      const r1 = server.sendMessage("send-fifo-q.fifo", "msg1", { messageGroupId: "g1" });
+      const r2 = server.sendMessage("send-fifo-q.fifo", "msg2", { messageGroupId: "g1" });
+
+      expect(r1.sequenceNumber).toBeDefined();
+      expect(r2.sequenceNumber).toBeDefined();
+      expect(Number(r2.sequenceNumber)).toBeGreaterThan(Number(r1.sequenceNumber));
+
+      const sqs = createSqsClient(server.port);
+      const msgs = await sqs.send(
+        new ReceiveMessageCommand({ QueueUrl: queueUrl, MaxNumberOfMessages: 1, WaitTimeSeconds: 1 }),
+      );
+      expect(msgs.Messages).toHaveLength(1);
+      expect(msgs.Messages![0].Body).toBe("msg1");
+
+      // Delete first to unlock group, then receive second
+      await sqs.send(new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: msgs.Messages![0].ReceiptHandle }));
+      const msgs2 = await sqs.send(
+        new ReceiveMessageCommand({ QueueUrl: queueUrl, MaxNumberOfMessages: 1, WaitTimeSeconds: 1 }),
+      );
+      expect(msgs2.Messages).toHaveLength(1);
+      expect(msgs2.Messages![0].Body).toBe("msg2");
+    });
+
+    it("throws for non-existent queue", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      expect(() => server.sendMessage("no-such-queue", "hello")).toThrow("not found");
+    });
+
+    it("is visible in inspectQueue", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createQueue("inspect-send-q");
+
+      server.sendMessage("inspect-send-q", "inspectable");
+
+      const state = server.inspectQueue("inspect-send-q");
+      expect(state).toBeDefined();
+      expect(state!.messages.ready).toHaveLength(1);
+      expect(state!.messages.ready[0].body).toBe("inspectable");
+    });
+
+    it("applies queue-level DelaySeconds default", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const { queueUrl } = server.createQueue("queue-delay-q", {
+        attributes: { DelaySeconds: "1" },
+      });
+
+      server.sendMessage("queue-delay-q", "default-delayed");
+
+      // Not immediately visible (queue default delay = 1s)
+      const sqs = createSqsClient(server.port);
+      const immediate = await sqs.send(
+        new ReceiveMessageCommand({ QueueUrl: queueUrl, WaitTimeSeconds: 0 }),
+      );
+      expect(immediate.Messages ?? []).toHaveLength(0);
+
+      // Visible after delay
+      const delayed = await sqs.send(
+        new ReceiveMessageCommand({ QueueUrl: queueUrl, WaitTimeSeconds: 2 }),
+      );
+      expect(delayed.Messages).toHaveLength(1);
+      expect(delayed.Messages![0].Body).toBe("default-delayed");
+    });
+
+    it("rejects invalid message body characters", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createQueue("invalid-char-q");
+
+      expect(() => server.sendMessage("invalid-char-q", "bad\x00char")).toThrow(
+        "Invalid characters",
+      );
+    });
+
+    it("rejects messages exceeding MaximumMessageSize", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createQueue("small-q", {
+        attributes: { MaximumMessageSize: "1024" },
+      });
+
+      const bigBody = "x".repeat(2000);
+      expect(() => server.sendMessage("small-q", bigBody)).toThrow(
+        "shorter than 1024 bytes",
+      );
+    });
+
+    it("returns md5OfMessageAttributes when attributes are provided", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createQueue("md5-attr-q");
+
+      const result = server.sendMessage("md5-attr-q", "body", {
+        messageAttributes: {
+          color: { DataType: "String", StringValue: "blue" },
+        },
+      });
+      expect(result.md5OfMessageAttributes).toBeDefined();
+      expect(result.md5OfMessageAttributes).toMatch(/^[a-f0-9]{32}$/);
+
+      // Without attributes, md5OfMessageAttributes should be absent
+      const result2 = server.sendMessage("md5-attr-q", "body2");
+      expect(result2.md5OfMessageAttributes).toBeUndefined();
+    });
+
+    it("rejects per-message DelaySeconds on FIFO queues", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createQueue("fifo-nodelay.fifo", {
+        attributes: { FifoQueue: "true", ContentBasedDeduplication: "true" },
+      });
+
+      expect(() =>
+        server.sendMessage("fifo-nodelay.fifo", "msg", {
+          messageGroupId: "g1",
+          delaySeconds: 5,
+        }),
+      ).toThrow("not valid for this queue type");
+    });
+  });
+
+  describe("publish", () => {
+    it("fans out to subscribed queue", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const { queueUrl } = server.createQueue("pub-q");
+      server.createTopic("pub-t");
+      server.subscribe({ topic: "pub-t", queue: "pub-q" });
+
+      const result = server.publish("pub-t", "published message");
+      expect(result.messageId).toBeDefined();
+
+      const sqs = createSqsClient(server.port);
+      const msgs = await sqs.send(
+        new ReceiveMessageCommand({ QueueUrl: queueUrl, WaitTimeSeconds: 1 }),
+      );
+      expect(msgs.Messages).toHaveLength(1);
+      expect(msgs.Messages![0].Body).toContain("published message");
+    });
+
+    it("applies filter policy", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const { queueUrl } = server.createQueue("filter-q");
+      server.createTopic("filter-t");
+      server.subscribe({
+        topic: "filter-t",
+        queue: "filter-q",
+        attributes: {
+          FilterPolicy: JSON.stringify({ color: ["blue"] }),
+        },
+      });
+
+      // Non-matching message — should be filtered
+      server.publish("filter-t", "red msg", {
+        messageAttributes: {
+          color: { DataType: "String", StringValue: "red" },
+        },
+      });
+
+      // Matching message
+      server.publish("filter-t", "blue msg", {
+        messageAttributes: {
+          color: { DataType: "String", StringValue: "blue" },
+        },
+      });
+
+      const sqs = createSqsClient(server.port);
+      const msgs = await sqs.send(
+        new ReceiveMessageCommand({ QueueUrl: queueUrl, MaxNumberOfMessages: 10, WaitTimeSeconds: 1 }),
+      );
+      expect(msgs.Messages).toHaveLength(1);
+      // Wrapped in SNS envelope
+      const envelope = JSON.parse(msgs.Messages![0].Body!);
+      expect(envelope.Message).toBe("blue msg");
+    });
+
+    it("delivers raw when RawMessageDelivery is true", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const { queueUrl } = server.createQueue("raw-q");
+      server.createTopic("raw-t");
+      server.subscribe({
+        topic: "raw-t",
+        queue: "raw-q",
+        attributes: { RawMessageDelivery: "true" },
+      });
+
+      server.publish("raw-t", "raw body");
+
+      const sqs = createSqsClient(server.port);
+      const msgs = await sqs.send(
+        new ReceiveMessageCommand({ QueueUrl: queueUrl, WaitTimeSeconds: 1 }),
+      );
+      expect(msgs.Messages).toHaveLength(1);
+      expect(msgs.Messages![0].Body).toBe("raw body");
+    });
+
+    it("preserves message body containing special strings in envelope", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const { queueUrl } = server.createQueue("special-q");
+      server.createTopic("special-t");
+      server.subscribe({ topic: "special-t", queue: "special-q" });
+
+      const tricky = "message with __UNSUB_ARN_PLACEHOLDER__ in it";
+      server.publish("special-t", tricky);
+
+      const sqs = createSqsClient(server.port);
+      const msgs = await sqs.send(
+        new ReceiveMessageCommand({ QueueUrl: queueUrl, WaitTimeSeconds: 1 }),
+      );
+      expect(msgs.Messages).toHaveLength(1);
+      const envelope = JSON.parse(msgs.Messages![0].Body!);
+      expect(envelope.Message).toBe(tricky);
+      // UnsubscribeURL should be a proper URL, not corrupted
+      expect(envelope.UnsubscribeURL).toContain("https://sns.us-east-1.amazonaws.com/");
+    });
+
+    it("throws for non-existent topic", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      expect(() => server.publish("no-such-topic", "hello")).toThrow("not found");
+    });
+
+    it("emits spy events", async () => {
+      server = await startFauxqs({ port: 0, logger: false, messageSpies: true });
+      server.createQueue("spy-pub-q");
+      server.createTopic("spy-pub-t");
+      server.subscribe({ topic: "spy-pub-t", queue: "spy-pub-q" });
+
+      server.publish("spy-pub-t", "spy message");
+
+      const messages = server.spy.getAllMessages();
+      // Should have SNS published event + SQS published event (fan-out)
+      const snsEvents = messages.filter((m) => m.service === "sns");
+      const sqsEvents = messages.filter((m) => m.service === "sqs");
+      expect(snsEvents).toHaveLength(1);
+      expect(snsEvents[0].status).toBe("published");
+      expect(sqsEvents).toHaveLength(1);
+      expect(sqsEvents[0].status).toBe("published");
     });
   });
 

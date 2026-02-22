@@ -228,9 +228,17 @@ describe("SNS Filter Policy: Advanced Features", () => {
   });
 
   describe("exists: false", () => {
-    it("matches when attribute is absent", () => {
+    it("does not match when message has no attributes at all", () => {
       const policy = { color: [{ exists: false }] };
-      expect(matchesFilterPolicy(policy, {})).toBe(true);
+      expect(matchesFilterPolicy(policy, {})).toBe(false);
+    });
+
+    it("matches when attribute is absent but other attributes are present", () => {
+      const policy = { color: [{ exists: false }] };
+      const attrs = {
+        size: { DataType: "String", StringValue: "large" },
+      };
+      expect(matchesFilterPolicy(policy, attrs)).toBe(true);
     });
 
     it("does not match when attribute is present", () => {

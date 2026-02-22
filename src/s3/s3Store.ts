@@ -12,8 +12,30 @@ export class S3Store {
 
   createBucket(name: string): void {
     if (!this.buckets.has(name)) {
+      this.validateBucketName(name);
       this.buckets.set(name, new Map());
       this.bucketCreationDates.set(name, new Date());
+    }
+  }
+
+  private validateBucketName(name: string): void {
+    if (name.length < 3 || name.length > 63) {
+      throw new S3Error("InvalidBucketName", `The specified bucket is not valid: ${name}`, 400);
+    }
+    if (/[A-Z]/.test(name)) {
+      throw new S3Error("InvalidBucketName", `The specified bucket is not valid: ${name}`, 400);
+    }
+    if (!/^[a-z0-9][a-z0-9.\-]*[a-z0-9]$/.test(name)) {
+      throw new S3Error("InvalidBucketName", `The specified bucket is not valid: ${name}`, 400);
+    }
+    if (/[^a-z0-9.\-]/.test(name)) {
+      throw new S3Error("InvalidBucketName", `The specified bucket is not valid: ${name}`, 400);
+    }
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(name)) {
+      throw new S3Error("InvalidBucketName", `The specified bucket is not valid: ${name}`, 400);
+    }
+    if (/\.\./.test(name) || /\.\-/.test(name) || /\-\./.test(name)) {
+      throw new S3Error("InvalidBucketName", `The specified bucket is not valid: ${name}`, 400);
     }
   }
 

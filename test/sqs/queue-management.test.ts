@@ -191,6 +191,44 @@ describe("SQS Queue Management", () => {
     expect(attrs.Attributes?.ApproximateNumberOfMessages).toBe("0");
   });
 
+  it("returns SqsManagedSseEnabled when requesting All attributes", async () => {
+    const created = await sqs.send(
+      new CreateQueueCommand({ QueueName: "sse-check-queue" }),
+    );
+
+    const result = await sqs.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: created.QueueUrl,
+        AttributeNames: ["All"],
+      }),
+    );
+
+    expect(result.Attributes?.SqsManagedSseEnabled).toBe("true");
+  });
+
+  it("returns RedriveAllowPolicy when set", async () => {
+    const created = await sqs.send(
+      new CreateQueueCommand({ QueueName: "rdap-queue" }),
+    );
+
+    const allowPolicy = JSON.stringify({ redrivePermission: "allowAll" });
+    await sqs.send(
+      new SetQueueAttributesCommand({
+        QueueUrl: created.QueueUrl,
+        Attributes: { RedriveAllowPolicy: allowPolicy },
+      }),
+    );
+
+    const result = await sqs.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: created.QueueUrl,
+        AttributeNames: ["All"],
+      }),
+    );
+
+    expect(result.Attributes?.RedriveAllowPolicy).toBe(allowPolicy);
+  });
+
   it("creates and updates KMS attributes", async () => {
     const created = await sqs.send(
       new CreateQueueCommand({

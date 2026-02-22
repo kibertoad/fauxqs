@@ -52,9 +52,11 @@ export const SETTABLE_ATTRIBUTES: ReadonlySet<string> = new Set([
   "MessageRetentionPeriod",
   "ReceiveMessageWaitTimeSeconds",
   "RedrivePolicy",
+  "RedriveAllowPolicy",
   "Policy",
   "KmsMasterKeyId",
   "KmsDataKeyReusePeriodSeconds",
+  "SqsManagedSseEnabled",
   "FifoQueue",
   "ContentBasedDeduplication",
 ] satisfies QueueAttributeName[]);
@@ -142,4 +144,6 @@ export const ALL_ATTRIBUTE_NAMES = [
   "ContentBasedDeduplication",
   "DeduplicationScope",
   "FifoThroughputLimit",
+  "SqsManagedSseEnabled",
+  "RedriveAllowPolicy",
 ] satisfies QueueAttributeName[];
