@@ -18,6 +18,7 @@ All state is in-memory. No persistence, no external storage dependencies.
   - [Configuring AWS SDK clients](#configuring-aws-sdk-clients)
   - [Programmatic usage](#programmatic-usage)
     - [Programmatic state setup](#programmatic-state-setup)
+    - [Sending messages programmatically](#sending-messages-programmatically)
     - [Init config file](#init-config-file)
     - [Init config schema reference](#init-config-schema-reference)
     - [Message spy](#message-spy)
@@ -327,6 +328,54 @@ server.reset();
 // Or nuke everything — removes queues, topics, subscriptions, and buckets too
 server.purgeAll();
 ```
+
+#### Sending messages programmatically
+
+Send SQS messages and publish to SNS topics without instantiating SDK clients:
+
+```typescript
+// SQS: enqueue a message directly
+const { messageId, md5OfBody } = server.sendMessage("my-queue", "hello world");
+
+// With message attributes
+server.sendMessage("my-queue", JSON.stringify({ orderId: "123" }), {
+  messageAttributes: {
+    eventType: { DataType: "String", StringValue: "order.created" },
+  },
+});
+
+// With delay
+server.sendMessage("my-queue", "delayed message", { delaySeconds: 10 });
+
+// FIFO queue — returns sequenceNumber
+const { sequenceNumber } = server.sendMessage("my-queue.fifo", "fifo message", {
+  messageGroupId: "group-1",
+  messageDeduplicationId: "dedup-1",
+});
+
+// SNS: publish to a topic (fans out to all SQS subscriptions)
+const { messageId: snsMessageId } = server.publish("my-topic", "event payload");
+
+// With subject and message attributes
+server.publish("my-topic", JSON.stringify({ orderId: "456" }), {
+  subject: "Order Update",
+  messageAttributes: {
+    eventType: { DataType: "String", StringValue: "order.updated" },
+  },
+});
+
+// FIFO topic
+server.publish("my-topic.fifo", "fifo event", {
+  messageGroupId: "group-1",
+  messageDeduplicationId: "dedup-1",
+});
+```
+
+`sendMessage` validates the message body (invalid characters, size limits), applies queue-level `DelaySeconds` defaults, handles FIFO deduplication, and emits spy events automatically. Returns `{ messageId, md5OfBody, md5OfMessageAttributes?, sequenceNumber? }`.
+
+`publish` validates message size, evaluates filter policies on each subscription, supports raw message delivery, and emits spy events. Returns `{ messageId }`.
+
+Both methods throw if the target queue or topic doesn't exist.
 
 #### Init config file
 
@@ -1056,7 +1105,7 @@ fauxqs supports two deployment modes that complement each other for a complete t
 
 | Mode | Best for | Startup | Assertions |
 |------|----------|---------|------------|
-| **Library** (embedded) | Unit tests, integration tests, CI | Milliseconds, in-process | Full programmatic API: `spy`, `inspectQueue`, `reset`, `purgeAll` |
+| **Library** (embedded) | Unit tests, integration tests, CI | Milliseconds, in-process | Full programmatic API: `sendMessage`, `publish`, `spy`, `inspectQueue`, `reset`, `purgeAll` |
 | **Docker** (standalone) | Local development, acceptance tests, dev environments | Seconds, real HTTP | Init config, HTTP inspection endpoints |
 
 ### Library mode for tests
@@ -1307,6 +1356,7 @@ With fauxqs in library mode:
 | DLQ verification | Receive from DLQ queue via SDK | `spy.waitForMessage({ status: "dlq" })` + `inspectQueue()` |
 | Queue state inspection | `GetQueueAttributes` (counts only) | `inspectQueue()` — see every message, grouped by state |
 | State reset between tests | Restart container or re-create resources | `server.reset()` — instant, preserves resource definitions |
+| Seeding test data | SDK calls through network stack | `server.sendMessage()` / `server.publish()` — direct, no network |
 | S3 event tracking | Check bucket contents via SDK | `spy.waitForMessage({ service: "s3", status: "uploaded" })` |
 | Parallel test files | Port conflicts or shared state | Each file gets its own server on port 0 |
 
