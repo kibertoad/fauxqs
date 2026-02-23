@@ -24,10 +24,10 @@ async function main() {
 
   const sqsClient = new SQSClient({ endpoint, region, credentials });
   const snsClient = new SNSClient({ endpoint, region, credentials });
-  // forcePathStyle is the simplest option for local emulators.
-  // Alternatives: fauxqs.dev wildcard DNS, interceptLocalhostDns(), createLocalhostHandler().
-  // See the README "S3 URL styles" section for details.
-  const s3Client = new S3Client({ endpoint, region, credentials, forcePathStyle: true });
+  // fauxqs.dev wildcard DNS resolves *.localhost.fauxqs.dev → 127.0.0.1,
+  // so virtual-hosted-style S3 works without forcePathStyle or any runtime helpers.
+  // See the README "S3 URL styles" section for alternatives.
+  const s3Client = new S3Client({ endpoint: "http://s3.localhost.fauxqs.dev:4566", region, credentials });
 
   // --- SQS ---
 

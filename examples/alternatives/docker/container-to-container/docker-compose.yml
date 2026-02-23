@@ -8,11 +8,7 @@ services:
       - FAUXQS_HOST=fauxqs
     volumes:
       - ./init.json:/app/init.json
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:4566/health"]
-      interval: 2s
-      timeout: 5s
-      retries: 10
+    # The Docker image has a built-in HEALTHCHECK — no need to define one here.
 
   app:
     build: .

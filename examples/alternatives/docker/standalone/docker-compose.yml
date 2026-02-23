@@ -1,0 +1,5 @@
+services:
+  fauxqs:
+    image: kibertoad/fauxqs
+    ports:
+      - "4566:4566"
