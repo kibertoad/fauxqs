@@ -24,6 +24,7 @@ export function confirmSubscription(params: Record<string, string>, snsStore: Sn
 
   if (matchesTopic) {
     sub.confirmed = true;
+    snsStore.persistence?.insertSubscription(sub);
     const result = { SubscriptionArn: sub.arn } satisfies ConfirmSubscriptionResponse;
     return snsSuccessResponse(
       "ConfirmSubscription",

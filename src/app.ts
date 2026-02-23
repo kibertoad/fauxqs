@@ -44,6 +44,7 @@ import { sqsQueueArn, snsTopicArn } from "./common/arnHelper.ts";
 import { DEFAULT_REGION, SNS_MAX_MESSAGE_SIZE_BYTES } from "./common/types.ts";
 import { loadInitConfig, applyInitConfig } from "./initConfig.ts";
 import { MessageSpy, type MessageSpyReader } from "./spy.ts";
+import { PersistenceManager } from "./persistence.ts";
 export type { FauxqsInitConfig } from "./initConfig.ts";
 export type { MessageAttributeValue } from "./sqs/sqsTypes.ts";
 export { createLocalhostHandler, interceptLocalhostDns } from "./localhost.ts";
@@ -370,6 +371,8 @@ export async function startFauxqs(options?: {
   messageSpies?: boolean | import("./spy.ts").MessageSpyParams;
   /** Relax certain AWS-strict validations for local development convenience. */
   relaxedRules?: RelaxedRules;
+  /** Directory for SQLite persistence. When set, state survives restarts. No env var fallback — explicit opt-in only. */
+  dataDir?: string;
 }): Promise<FauxqsServer> {
   const port = options?.port ?? parseInt(process.env.FAUXQS_PORT ?? "4566");
   const host = options?.host ?? process.env.FAUXQS_HOST;
@@ -381,6 +384,21 @@ export async function startFauxqs(options?: {
   const sqsStore = new SqsStore();
   const snsStore = new SnsStore();
   const s3Store = new S3Store();
+
+  // Persistence: create manager and wire into stores before any data is loaded
+  const persistenceManager = options?.dataDir ? new PersistenceManager(options.dataDir) : undefined;
+  if (persistenceManager) {
+    // Load persisted state BEFORE assigning persistence to stores.
+    // This avoids INSERT OR REPLACE triggering ON DELETE CASCADE during load.
+    persistenceManager.load(sqsStore, snsStore, s3Store);
+    sqsStore.persistence = persistenceManager;
+    snsStore.persistence = persistenceManager;
+    s3Store.persistence = persistenceManager;
+    // Wire persistence into queues created during load
+    for (const queue of sqsStore.allQueues()) {
+      queue.persistence = persistenceManager;
+    }
+  }
 
   const spyOption = options?.messageSpies;
   const messageSpy = spyOption
@@ -400,12 +418,19 @@ export async function startFauxqs(options?: {
     relaxedRules: options?.relaxedRules,
   });
 
+  if (persistenceManager) {
+    app.addHook("preClose", () => {
+      persistenceManager.close();
+    });
+  }
+
   const listenAddress = await app.listen({ port, host: "0.0.0.0" });
   const url = new URL(listenAddress);
   const actualPort = parseInt(url.port);
   const region = defaultRegion ?? DEFAULT_REGION;
 
   const defaultHost = `127.0.0.1:${actualPort}`;
+
   function makeQueueUrl(name: string, queueRegion: string): string {
     return sqsStore.buildQueueUrl(name, String(actualPort), defaultHost, queueRegion);
   }
@@ -652,6 +677,7 @@ export async function startFauxqs(options?: {
     reset() {
       sqsStore.clearMessages();
       s3Store.clearObjects();
+      persistenceManager?.clearMessagesAndObjects();
       if (messageSpy) {
         messageSpy.clear();
       }
@@ -660,6 +686,7 @@ export async function startFauxqs(options?: {
       sqsStore.purgeAll();
       snsStore.purgeAll();
       s3Store.purgeAll();
+      persistenceManager?.purgeAll();
     },
   };
 

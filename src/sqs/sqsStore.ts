@@ -4,6 +4,7 @@ import { FifoMap } from "toad-cache";
 import { md5, md5OfMessageAttributes } from "../common/md5.ts";
 import { DEFAULT_ACCOUNT_ID } from "../common/types.ts";
 import type { MessageSpy } from "../spy.ts";
+import type { PersistenceManager } from "../persistence.ts";
 import type {
   SqsMessage,
   InflightEntry,
@@ -34,6 +35,7 @@ export class SqsQueue {
   private pollTimer?: ReturnType<typeof setInterval>;
 
   spy?: MessageSpy;
+  persistence?: PersistenceManager;
 
   // FIFO-specific fields
   fifoMessages: Map<string, SqsMessage[]> = new Map();
@@ -123,6 +125,7 @@ export class SqsQueue {
       delete this.attributes.RedrivePolicy;
     }
     this.lastModifiedTimestamp = Math.floor(Date.now() / 1000);
+    this.persistence?.updateQueueAttributes(this.name, this.attributes, this.lastModifiedTimestamp);
   }
 
   enqueue(msg: SqsMessage): void {
@@ -137,6 +140,8 @@ export class SqsQueue {
         timestamp: Date.now(),
       });
     }
+
+    this.persistence?.insertMessage(this.name, msg);
 
     if (this.isFifo()) {
       const groupId = msg.messageGroupId ?? DEFAULT_FIFO_GROUP_ID;
@@ -216,6 +221,8 @@ export class SqsQueue {
               timestamp: Date.now(),
             });
           }
+          // Persistence: delete from this queue (dlq.enqueue will insert into DLQ)
+          this.persistence?.deleteMessage(msg.messageId);
           dlq.enqueue(msg);
           continue;
         }
@@ -229,6 +236,14 @@ export class SqsQueue {
         receiptHandle,
         visibilityDeadline,
       });
+
+      this.persistence?.updateMessageInflight(
+        msg.messageId,
+        receiptHandle,
+        visibilityDeadline,
+        msg.approximateReceiveCount,
+        msg.approximateFirstReceiveTimestamp,
+      );
 
       const received: ReceivedMessage = {
         MessageId: msg.messageId,
@@ -307,6 +322,7 @@ export class SqsQueue {
                 timestamp: Date.now(),
               });
             }
+            this.persistence?.deleteMessage(msg.messageId);
             dlq.enqueue(msg);
             continue;
           }
@@ -320,6 +336,14 @@ export class SqsQueue {
           receiptHandle,
           visibilityDeadline,
         });
+
+        this.persistence?.updateMessageInflight(
+          msg.messageId,
+          receiptHandle,
+          visibilityDeadline,
+          msg.approximateReceiveCount,
+          msg.approximateFirstReceiveTimestamp,
+        );
 
         const received: ReceivedMessage = {
           MessageId: msg.messageId,
@@ -355,6 +379,7 @@ export class SqsQueue {
   deleteMessage(receiptHandle: string): boolean {
     const entry = this.inflightMessages.get(receiptHandle);
     if (entry) {
+      this.persistence?.deleteMessage(entry.message.messageId);
       if (this.spy) {
         this.spy.addMessage({
           service: "sqs",
@@ -392,6 +417,7 @@ export class SqsQueue {
 
     if (timeoutSeconds === 0) {
       this.inflightMessages.delete(receiptHandle);
+      this.persistence?.updateMessageReady(entry.message.messageId);
       if (this.isFifo() && entry.message.messageGroupId) {
         const groupId = entry.message.messageGroupId;
         // Decrement locked group count
@@ -410,6 +436,13 @@ export class SqsQueue {
       this.notifyWaiters();
     } else {
       entry.visibilityDeadline = Date.now() + timeoutSeconds * 1000;
+      this.persistence?.updateMessageInflight(
+        entry.message.messageId,
+        receiptHandle,
+        entry.visibilityDeadline,
+        entry.message.approximateReceiveCount,
+        entry.message.approximateFirstReceiveTimestamp,
+      );
     }
   }
 
@@ -525,6 +558,7 @@ export class SqsQueue {
     this.fifoMessages.clear();
     this.fifoDelayed.clear();
     this.fifoLockedGroups.clear();
+    this.persistence?.deleteQueueMessages(this.name);
   }
 
   /** Return a non-destructive snapshot of all messages in the queue, grouped by state. */
@@ -594,6 +628,7 @@ export class SqsQueue {
 
   nextSequenceNumber(): string {
     this.sequenceCounter++;
+    this.persistence?.updateQueueSequenceCounter(this.name, this.sequenceCounter);
     return String(this.sequenceCounter).padStart(20, "0");
   }
 
@@ -621,6 +656,7 @@ export class SqsStore {
   host: string = "localhost";
   region?: string;
   spy?: MessageSpy;
+  persistence?: PersistenceManager;
 
   createQueue(
     name: string,
@@ -633,6 +669,10 @@ export class SqsStore {
     if (this.spy) {
       queue.spy = this.spy;
     }
+    if (this.persistence) {
+      queue.persistence = this.persistence;
+      this.persistence.insertQueue(queue);
+    }
     this.queues.set(url, queue);
     this.queuesByName.set(name, queue);
     this.queuesByArn.set(arn, queue);
@@ -640,10 +680,11 @@ export class SqsStore {
   }
 
   deleteQueue(url: string): boolean {
-    const queue = this.queues.get(url);
+    const queue = this.getQueue(url);
     if (!queue) return false;
     queue.cancelWaiters();
-    this.queues.delete(url);
+    this.persistence?.deleteQueue(queue.name);
+    this.queues.delete(queue.url);
     this.queuesByName.delete(queue.name);
     this.queuesByArn.delete(queue.arn);
     return true;
@@ -654,8 +695,28 @@ export class SqsStore {
     return `http://${host}/${DEFAULT_ACCOUNT_ID}/${queueName}`;
   }
 
+  /** Parse queue URL to extract region (from hostname) and name (from path). */
+  private static parseQueueUrl(url: string): { region?: string; name: string } {
+    const path = url.replace(/^https?:\/\/[^/]+/, "");
+    const segments = path.split("/").filter(Boolean);
+    const name = segments[segments.length - 1];
+    // Region is in hostname for standard format: sqs.{region}.{host}:{port}
+    const hostMatch = url.match(/^https?:\/\/sqs\.([^.]+)\./);
+    return { region: hostMatch?.[1], name };
+  }
+
   getQueue(url: string): SqsQueue | undefined {
-    return this.queues.get(url);
+    // Parse region + name from URL, ignore host/port/scheme.
+    // This matches LocalStack's approach and makes lookups port-agnostic.
+    const { region, name } = SqsStore.parseQueueUrl(url);
+    if (region) {
+      return this.queuesByArn.get(`arn:aws:sqs:${region}:${DEFAULT_ACCOUNT_ID}:${name}`);
+    }
+    return this.queuesByName.get(name);
+  }
+
+  allQueues(): Iterable<SqsQueue> {
+    return this.queues.values();
   }
 
   getQueueByName(name: string): SqsQueue | undefined {

@@ -6,7 +6,7 @@
 
 Local SNS/SQS/S3 emulator for development and testing. Point your `@aws-sdk/client-sqs`, `@aws-sdk/client-sns`, and `@aws-sdk/client-s3` clients at fauxqs instead of real AWS.
 
-All state is in-memory. No persistence, no external storage dependencies.
+All state is in-memory by default. Optional SQLite-based persistence is available via the `dataDir` option.
 
 ## Table of Contents
 
@@ -26,6 +26,7 @@ All state is in-memory. No persistence, no external storage dependencies.
     - [Init config schema reference](#init-config-schema-reference)
     - [Message spy](#message-spy)
     - [Queue inspection](#queue-inspection)
+  - [Persistence](#persistence)
   - [Configurable queue URL host](#configurable-queue-url-host)
   - [Region](#region)
 - [Supported API Actions](#supported-api-actions)
@@ -66,6 +67,8 @@ docker run -p 4566:4566 kibertoad/fauxqs
 npm install fauxqs
 ```
 
+> **Node.js 20:** fauxqs requires Node.js 22.5+ (for `node:sqlite`). If you need Node.js 20 support, use `fauxqs@1.13.0` which is the last version that supports it.
+
 ## Usage
 
 ### Running the server
@@ -85,6 +88,8 @@ The server starts on port `4566` and handles SQS, SNS, and S3 on a single endpoi
 | `FAUXQS_DEFAULT_REGION` | Fallback region for ARNs and URLs | `us-east-1` |
 | `FAUXQS_LOGGER` | Enable request logging (`true`/`false`) | `true` |
 | `FAUXQS_INIT` | Path to a JSON init config file (see [Init config file](#init-config-file)) | (none) |
+| `FAUXQS_DATA_DIR` | Directory for SQLite persistence (see [Persistence](#persistence)). Omit to keep all state in-memory. | (none) |
+| `FAUXQS_PERSISTENCE` | Set to `false` to disable persistence even when `FAUXQS_DATA_DIR` is set | `true` |
 | `FAUXQS_DNS_NAME` | Domain that dnsmasq resolves (including all subdomains) to the container IP. Only needed when the container hostname doesn't match the docker-compose service name — e.g., when using `container_name` or running with plain `docker run`. In docker-compose the hostname is set to the service name automatically, so this is rarely needed. (Docker only) | container hostname |
 | `FAUXQS_DNS_UPSTREAM` | Where dnsmasq forwards non-fauxqs DNS queries (e.g., `registry.npmjs.org`). Change this if you're in a corporate network with an internal DNS server, or if you prefer a different public resolver like `1.1.1.1`. (Docker only) | `8.8.8.8` |
 
@@ -125,13 +130,20 @@ npx cross-port-killer 4566
 The official Docker image is available on Docker Hub:
 
 ```bash
-docker run -p 4566:4566 kibertoad/fauxqs
+docker run -p 4566:4566 -v fauxqs-data:/data kibertoad/fauxqs
+```
+
+Mount a volume at `/data` to persist state across container restarts. Without a volume, persistence is automatically disabled. To explicitly run without persistence even with a volume mounted:
+
+```bash
+docker run -p 4566:4566 -e FAUXQS_PERSISTENCE=false kibertoad/fauxqs
 ```
 
 With an init config file:
 
 ```bash
 docker run -p 4566:4566 \
+  -v fauxqs-data:/data \
   -v ./init.json:/app/init.json \
   -e FAUXQS_INIT=/app/init.json \
   kibertoad/fauxqs
@@ -168,15 +180,19 @@ services:
       - FAUXQS_INIT=/app/init.json
     volumes:
       - ./scripts/fauxqs/init.json:/app/init.json
+      - fauxqs-data:/data
 
   app:
     # ...
     depends_on:
       fauxqs:
         condition: service_healthy
+
+volumes:
+  fauxqs-data:
 ```
 
-The image has a built-in `HEALTHCHECK`, so `service_healthy` works without extra configuration in your compose file. Other containers reference fauxqs using the Docker service name (`http://fauxqs:4566`). The init config file creates all queues, topics, subscriptions, and buckets before the healthcheck passes, so dependent services start only after resources are ready.
+The image has a built-in `HEALTHCHECK`, so `service_healthy` works without extra configuration in your compose file. Other containers reference fauxqs using the Docker service name (`http://fauxqs:4566`). The init config file creates all queues, topics, subscriptions, and buckets before the healthcheck passes, so dependent services start only after resources are ready. The `fauxqs-data` volume persists state across `docker compose down` / `up` cycles — queues, messages, objects, and all other state are restored on startup. Init config is idempotent, so re-applying it after a restart skips resources that already exist.
 
 #### Container-to-container S3 virtual-hosted-style
 
@@ -199,6 +215,7 @@ services:
       - FAUXQS_HOST=fauxqs
     volumes:
       - ./scripts/fauxqs/init.json:/app/init.json
+      - fauxqs-data:/data
 
   app:
     dns: 10.0.0.2
@@ -207,6 +224,9 @@ services:
         condition: service_healthy
     environment:
       - AWS_ENDPOINT=http://s3.fauxqs:4566
+
+volumes:
+  fauxqs-data:
 
 networks:
   default:
@@ -816,6 +836,43 @@ curl http://localhost:4566/_fauxqs/queues/my-queue
 
 Returns 404 for non-existent queues. Inspection never modifies queue state — messages remain exactly where they are.
 
+### Persistence
+
+By default (when using `npx fauxqs` or the programmatic API without `dataDir`), all state is in-memory and lost when the server stops. To persist state across restarts, set a `dataDir` — fauxqs will store all queues, messages, topics, subscriptions, buckets, and objects in a SQLite database inside that directory.
+
+**CLI:**
+
+```bash
+FAUXQS_DATA_DIR=./data npx fauxqs
+```
+
+**Docker:**
+
+The Docker image automatically enables persistence when a volume is mounted at `/data`:
+
+```bash
+docker run -p 4566:4566 -v fauxqs-data:/data kibertoad/fauxqs
+```
+
+No `FAUXQS_DATA_DIR` env var is needed — the image sets it automatically. If no volume is mounted at `/data`, persistence is silently disabled (no unnecessary writes to ephemeral container storage). To explicitly disable persistence even with a volume, set `FAUXQS_PERSISTENCE=false`.
+
+**Programmatic:**
+
+```typescript
+const server = await startFauxqs({ port: 4566, dataDir: "./data" });
+```
+
+All mutations are written through to SQLite immediately (no batching or delayed flush). On restart with the same `dataDir`, the server restores all state including:
+
+- SQS queues with attributes, tags, and messages (ready, delayed, and inflight with their visibility deadlines)
+- FIFO sequence counters (no duplicate sequence numbers after restart)
+- SNS topics with attributes and tags, subscriptions with attributes (fan-out works immediately after restart)
+- S3 buckets (including directory bucket type), objects with metadata, and in-progress multipart uploads
+
+`reset()` and `purgeAll()` also write through to the database — `reset()` clears messages and objects, `purgeAll()` clears everything.
+
+To disable persistence even when `FAUXQS_DATA_DIR` is set, use `FAUXQS_PERSISTENCE=false`.
+
 ### Configurable queue URL host
 
 Queue URLs use the AWS-style `sqs.<region>.<host>` format. The `host` defaults to `localhost`, producing URLs like `http://sqs.us-east-1.localhost:4566/000000000000/myQueue`.
@@ -1206,6 +1263,7 @@ services:
       - FAUXQS_INIT=/app/init.json
     volumes:
       - ./fauxqs-init.json:/app/init.json
+      - fauxqs-data:/data
 
   app:
     build: .
@@ -1214,9 +1272,12 @@ services:
         condition: service_healthy
     environment:
       - AWS_ENDPOINT=http://fauxqs:4566
+
+volumes:
+  fauxqs-data:
 ```
 
-Docker mode validates your real deployment topology — networking, DNS, container-to-container communication — and is language-agnostic (any AWS SDK can connect).
+Docker mode validates your real deployment topology — networking, DNS, container-to-container communication — and is language-agnostic (any AWS SDK can connect). The `fauxqs-data` volume persists state across restarts — queues, messages, and objects survive `docker compose down` / `up` cycles.
 
 ### Recommended combination
 
@@ -1237,7 +1298,6 @@ See the [`examples/recommended/`](examples/recommended/) directory for a complet
 fauxqs is designed for development and testing. It does not support:
 
 - Non-SQS SNS delivery protocols (HTTP/S, Lambda, email, SMS)
-- Persistence across restarts
 - Authentication or authorization
 - Cross-account operations
 

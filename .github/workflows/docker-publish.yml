@@ -26,6 +26,26 @@ jobs:
         env:
           GITHUB_REF_TAG: ${{ github.ref_name }}
 
+      - name: Build image for testing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: fauxqs-ci-test:latest
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install test dependencies
+        run: npm ci
+
+      - name: Run persistence acceptance test
+        run: node docker-acceptance/docker-persistence-acceptance.ts
+        env:
+          FAUXQS_TEST_IMAGE: fauxqs-ci-test:latest
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { S3Error } from "../common/errors.ts";
 import type { MessageSpy } from "../spy.ts";
+import type { PersistenceManager } from "../persistence.ts";
 import type { S3Object, MultipartUpload, ChecksumAlgorithm } from "./s3Types.ts";
 import { computeCompositeChecksum } from "./checksum.ts";
 
@@ -13,15 +14,40 @@ export class S3Store {
   private multipartUploads = new Map<string, MultipartUpload>();
   private multipartUploadsByBucket = new Map<string, Set<string>>();
   spy?: MessageSpy;
+  persistence?: PersistenceManager;
   relaxedRules?: { disableMinCopySourceSize?: boolean };
 
   createBucket(name: string, type?: BucketType): void {
     if (!this.buckets.has(name)) {
       this.validateBucketName(name);
+      const creationDate = new Date();
+      const bucketType = type ?? "general-purpose";
       this.buckets.set(name, new Map());
-      this.bucketCreationDates.set(name, new Date());
-      this.bucketTypes.set(name, type ?? "general-purpose");
+      this.bucketCreationDates.set(name, creationDate);
+      this.bucketTypes.set(name, bucketType);
+      this.persistence?.insertBucket(name, creationDate, bucketType);
     }
+  }
+
+  setBucketCreationDate(name: string, date: Date): void {
+    this.bucketCreationDates.set(name, date);
+  }
+
+  restoreObject(bucket: string, obj: S3Object): void {
+    const objects = this.buckets.get(bucket);
+    if (objects) {
+      objects.set(obj.key, obj);
+    }
+  }
+
+  restoreMultipartUpload(upload: MultipartUpload): void {
+    this.multipartUploads.set(upload.uploadId, upload);
+    let bucketUploads = this.multipartUploadsByBucket.get(upload.bucket);
+    if (!bucketUploads) {
+      bucketUploads = new Set();
+      this.multipartUploadsByBucket.set(upload.bucket, bucketUploads);
+    }
+    bucketUploads.add(upload.uploadId);
   }
 
   getBucketType(name: string): BucketType | undefined {
@@ -69,6 +95,7 @@ export class S3Store {
     this.buckets.delete(name);
     this.bucketCreationDates.delete(name);
     this.bucketTypes.delete(name);
+    this.persistence?.deleteBucket(name);
   }
 
   hasBucket(name: string): boolean {
@@ -134,6 +161,7 @@ export class S3Store {
     };
 
     objects.set(key, obj);
+    this.persistence?.upsertObject(bucket, obj);
 
     if (this.spy) {
       this.spy.addMessage({
@@ -189,6 +217,7 @@ export class S3Store {
     }
 
     objects.delete(key);
+    this.persistence?.deleteObject(bucket, key);
   }
 
   headObject(bucket: string, key: string): S3Object {
@@ -293,6 +322,7 @@ export class S3Store {
     if (sourceKey !== destKey) {
       objects.delete(sourceKey);
     }
+    this.persistence?.renameObject(bucket, sourceKey, destKey);
 
     if (this.spy) {
       this.spy.addMessage({
@@ -334,7 +364,7 @@ export class S3Store {
     }
 
     const uploadId = randomUUID();
-    this.multipartUploads.set(uploadId, {
+    const upload: MultipartUpload = {
       uploadId,
       bucket,
       key,
@@ -349,7 +379,9 @@ export class S3Store {
       ...(systemMetadata?.cacheControl && { cacheControl: systemMetadata.cacheControl }),
       ...(systemMetadata?.contentEncoding && { contentEncoding: systemMetadata.contentEncoding }),
       ...(checksumAlgorithm && { checksumAlgorithm }),
-    });
+    };
+    this.multipartUploads.set(uploadId, upload);
+    this.persistence?.insertMultipartUpload(upload);
 
     let bucketUploads = this.multipartUploadsByBucket.get(bucket);
     if (!bucketUploads) {
@@ -377,13 +409,15 @@ export class S3Store {
     }
 
     const etag = `"${createHash("md5").update(body).digest("hex")}"`;
-    upload.parts.set(partNumber, {
+    const part = {
       partNumber,
       body,
       etag,
       lastModified: new Date(),
       ...(checksumValue && { checksumValue }),
-    });
+    };
+    upload.parts.set(partNumber, part);
+    this.persistence?.upsertMultipartPart(uploadId, part);
 
     return { etag, checksumValue };
   }
@@ -519,6 +553,7 @@ export class S3Store {
     objects.set(upload.key, obj);
     this.multipartUploads.delete(uploadId);
     this.multipartUploadsByBucket.get(upload.bucket)?.delete(uploadId);
+    this.persistence?.completeMultipartUpload(uploadId, upload.bucket, obj);
 
     if (this.spy) {
       this.spy.addMessage({
@@ -545,6 +580,7 @@ export class S3Store {
 
     this.multipartUploads.delete(uploadId);
     this.multipartUploadsByBucket.get(upload.bucket)?.delete(uploadId);
+    this.persistence?.deleteMultipartUpload(uploadId);
   }
 
   /** Remove all objects from a single bucket and abort its multipart uploads. No-op if the bucket does not exist. */
@@ -552,10 +588,12 @@ export class S3Store {
     const objects = this.buckets.get(name);
     if (!objects) return;
     objects.clear();
+    this.persistence?.deleteObjectsByBucket(name);
     const bucketUploads = this.multipartUploadsByBucket.get(name);
     if (bucketUploads) {
       for (const uploadId of bucketUploads) {
         this.multipartUploads.delete(uploadId);
+        this.persistence?.deleteMultipartUpload(uploadId);
       }
       bucketUploads.clear();
     }

@@ -24,7 +24,7 @@ Single Fastify server handles SQS, SNS, and S3 on one port. Requests are dispatc
 - `POST /` with `application/x-www-form-urlencoded` → SNS (Query/XML protocol, `Action` param)
 - `PUT/GET/HEAD/DELETE /:bucket/*` → S3 (REST protocol, HTTP method + URL path)
 
-All state is in-memory. No persistence.
+All state is in-memory by default. Optional SQLite-based persistence via `dataDir` option (see Persistence below).
 
 ## Project Structure
 
@@ -34,6 +34,7 @@ src/
   server.ts                  # Entry point (listen on port 3000)
   initConfig.ts              # FauxqsInitConfig type, loadInitConfig(), applyInitConfig()
   spy.ts                     # MessageSpyReader (public) + MessageSpy (internal): tracks SQS/SNS/S3 events via discriminated union
+  persistence.ts             # PersistenceManager: SQLite write-through persistence (optional, enabled via dataDir)
   common/
     types.ts                 # Constants: DEFAULT_ACCOUNT_ID, DEFAULT_REGION
     errors.ts                # SqsError, SnsError, S3Error classes
@@ -66,6 +67,7 @@ test/
   sqs/                       # SQS integration tests (real SDK against server)
   sns/                       # SNS integration tests
   s3/                        # S3 integration tests
+  persistence/               # Persistence tests (start with dataDir, mutate, stop, restart, verify)
 docker/
   entrypoint.sh              # Docker entrypoint: starts dnsmasq (wildcard DNS for container-to-container S3), then execs node
 docker-acceptance/
@@ -118,7 +120,8 @@ docker-acceptance/
 - **S3 system metadata**: PutObject, CopyObject, and CreateMultipartUpload accept `Content-Language`, `Content-Disposition`, `Cache-Control`, and `Content-Encoding` headers. These are stored on the S3Object and returned by GetObject and HeadObject. CopyObject with `COPY` directive preserves them from source; `REPLACE` uses request headers.
 - **S3 bucket types**: Tracks bucket type (`"general-purpose"` or `"directory"`) via `S3Store.bucketTypes` map. Default is `"general-purpose"`. CreateBucket parses optional `<CreateBucketConfiguration><Bucket><Type>Directory</Type></Bucket></CreateBucketConfiguration>` XML body. Init config supports both string (`"my-bucket"`) and object (`{ name: "my-bucket", type: "directory" }`) forms in the `buckets` array. Programmatic API: `server.createBucket(name, { type: "directory" })`.
 - **S3 RenameObject**: `PUT /:bucket/:key?renameObject` with `x-amz-rename-source` header. Only supported for directory buckets — returns `InvalidRequest` (400) for general-purpose buckets. Rejects keys ending with `/` delimiter. **Default no-overwrite**: if destination already exists and no destination conditional headers are provided, returns `412 Precondition Failed` (matching AWS behavior). Use `If-Match: <etag>` to explicitly allow overwriting a specific destination version. Preserves all object metadata, ETag, lastModified, and checksums (atomic move within the store). Supports source conditionals (`x-amz-rename-source-if-match`, `x-amz-rename-source-if-none-match`, `x-amz-rename-source-if-modified-since`, `x-amz-rename-source-if-unmodified-since`) and destination conditionals (`if-match`, `if-none-match`, `if-modified-since`, `if-unmodified-since`). `If-Match` on a non-existent destination returns 412. Returns HTTP 200 with empty body. Emits spy `"renamed"` event.
-- **Env vars**: `startFauxqs` reads `FAUXQS_PORT`, `FAUXQS_HOST`, `FAUXQS_DEFAULT_REGION`, `FAUXQS_LOGGER`, and `FAUXQS_INIT` as fallbacks. Programmatic options take precedence over env vars.
+- **Persistence**: Optional SQLite-based persistence via `dataDir` option or `FAUXQS_DATA_DIR` env var. `PersistenceManager` in `persistence.ts` uses Node.js built-in `node:sqlite` (requires Node 22.5+). Write-through: every mutation (create/delete queue, enqueue/dequeue message, create/delete topic, subscribe/unsubscribe, put/delete object, multipart operations, tag changes, attribute changes) is immediately written to SQLite. On startup, `load()` restores all state from the DB, including recalculating message state from persisted timestamps (inflight messages with expired visibility deadlines are returned to ready state). Uses WAL journal mode for concurrent read/write performance. `reset()` and `purgeAll()` also write through. `FAUXQS_PERSISTENCE=false` disables persistence even when `FAUXQS_DATA_DIR` is set.
+- **Env vars**: `startFauxqs` reads `FAUXQS_PORT`, `FAUXQS_HOST`, `FAUXQS_DEFAULT_REGION`, `FAUXQS_LOGGER`, `FAUXQS_INIT`, `FAUXQS_DATA_DIR`, and `FAUXQS_PERSISTENCE` as fallbacks. Programmatic options take precedence over env vars.
 - **Init config**: `FAUXQS_INIT` (or the `init` option) points to a JSON file (or inline object) that pre-creates queues, topics, subscriptions, and buckets on startup. Resources are created in dependency order: queues first, then topics, then subscriptions, then buckets. Queue creation is idempotent — re-applying init config skips queues that already exist, preserving any messages they contain.
 - **Programmatic API**: `FauxqsServer` exposes `createQueue()`, `createTopic()`, `subscribe()`, `createBucket()`, `sendMessage()`, `publish()`, `setup()`, `reset()`, `purgeAll()`, and `inspectQueue()` for state management and debugging without going through the SDK. `buildApp` accepts an optional `stores` parameter to use pre-created store instances. `sendMessage(queueName, body, options?)` enqueues a message into an SQS queue by name, returning `{ messageId, md5OfBody, sequenceNumber? }`. Supports `messageAttributes`, `delaySeconds`, and FIFO fields (`messageGroupId`, `messageDeduplicationId`). Spy events emitted automatically. `publish(topicName, message, options?)` publishes a message to an SNS topic by name, with full fan-out to SQS subscriptions (filter policies, raw delivery), returning `{ messageId }`. Supports `subject`, `messageAttributes`, and FIFO fields.
 - **reset() vs purgeAll()**: `reset()` clears all messages from queues and all objects from S3 buckets, but keeps queues, topics, subscriptions, and buckets intact. Also clears the spy buffer. Ideal for `beforeEach`/`afterEach` cleanup in tests. `purgeAll()` removes everything — queues, topics, subscriptions, buckets, and all their contents.

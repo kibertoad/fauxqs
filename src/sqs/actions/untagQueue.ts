@@ -17,5 +17,7 @@ export function untagQueue(body: Record<string, unknown>, store: SqsStore): unkn
     queue.tags.delete(key);
   }
 
+  queue.persistence?.insertQueue(queue);
+
   return {};
 }

@@ -31,6 +31,7 @@ export function setTopicAttributes(params: Record<string, string>, snsStore: Sns
       throw new SnsError("InvalidParameter", `Invalid parameter: AttributeName`);
     }
     topic.attributes[attributeName] = attributeValue;
+    snsStore.persistence?.updateTopicAttributes(topicArn, topic.attributes);
   }
 
   return snsSuccessResponse("SetTopicAttributes", "");

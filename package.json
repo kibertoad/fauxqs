@@ -1,6 +1,6 @@
 {
   "name": "fauxqs",
-  "version": "1.13.0",
+  "version": "2.0.0",
   "description": "SNS/SQS/S3 emulator",
   "type": "module",
   "scripts": {
@@ -11,6 +11,7 @@
     "test:coverage": "vitest run --coverage",
     "test:docker": "node docker-acceptance/docker-acceptance.ts",
     "test:docker:compose": "node docker-acceptance/docker-compose-acceptance.ts",
+    "test:docker:persistence": "node docker-acceptance/docker-persistence-acceptance.ts",
     "bench": "node bench/getQueueByArn.bench.ts && node bench/createMessage.bench.ts && node bench/snsPublish.bench.ts",
     "lint": "oxlint && oxfmt src && tsc --noEmit",
     "lint:fix": "oxlint --fix && oxfmt --write src",
@@ -85,6 +86,6 @@
   "license": "MIT",
   "author": "Igor Savin",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.5.0"
   }
 }

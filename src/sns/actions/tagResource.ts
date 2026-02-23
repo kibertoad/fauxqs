@@ -24,6 +24,8 @@ export function tagResource(params: Record<string, string>, snsStore: SnsStore):
     }
   }
 
+  snsStore.persistence?.insertTopic(topic);
+
   return snsSuccessResponse("TagResource", "");
 }
 
@@ -45,6 +47,8 @@ export function untagResource(params: Record<string, string>, snsStore: SnsStore
       topic.tags.delete(value);
     }
   }
+
+  snsStore.persistence?.insertTopic(topic);
 
   return snsSuccessResponse("UntagResource", "");
 }

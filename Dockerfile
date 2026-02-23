@@ -23,6 +23,7 @@ COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENV FAUXQS_HOST=localhost
+ENV FAUXQS_DATA_DIR=/data
 
 EXPOSE 4566
 

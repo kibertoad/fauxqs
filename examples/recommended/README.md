@@ -61,7 +61,7 @@ npm test
 docker compose up
 ```
 
-Point your app at `http://localhost:4566`. The init config creates all queues (including DLQ with RedrivePolicy), topics, subscriptions (with filter policies), and buckets before the healthcheck passes.
+Point your app at `http://localhost:4566`. The init config creates all queues (including DLQ with RedrivePolicy), topics, subscriptions (with filter policies), and buckets before the healthcheck passes. The `fauxqs-data` volume persists all state across `docker compose down` / `up` cycles.
 
 ## When to use which
 
@@ -72,6 +72,7 @@ Point your app at `http://localhost:4566`. The init config creates all queues (i
 | Spy / inspectQueue | Full programmatic API | HTTP inspection endpoints only |
 | Network realism | In-process (Fastify inject) | Real TCP connections |
 | Multi-service | Single process | docker-compose |
-| State reset | `purgeAll()` / `spy.clear()` | Restart container |
+| Persistence | In-memory only (use `dataDir` to opt in) | Enabled by default (`/data` volume) |
+| State reset | `purgeAll()` / `spy.clear()` | Restart container (or `docker compose down -v` to clear) |
 | Filter policy testing | `expectNoMessage()` assertions | Manual verification |
 | DLQ testing | Spy `"dlq"` events + `inspectQueue()` | Receive from DLQ via SDK |

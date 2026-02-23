@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { snsTopicArn, snsSubscriptionArn, parseArn } from "../common/arnHelper.ts";
 import { SnsError } from "../common/errors.ts";
 import type { MessageSpy } from "../spy.ts";
+import type { PersistenceManager } from "../persistence.ts";
 import type { SnsTopic, SnsSubscription } from "./snsTypes.ts";
 
 export class SnsStore {
@@ -9,6 +10,7 @@ export class SnsStore {
   subscriptions = new Map<string, SnsSubscription>();
   region?: string;
   spy?: MessageSpy;
+  persistence?: PersistenceManager;
 
   createTopic(
     name: string,
@@ -64,6 +66,7 @@ export class SnsStore {
       subscriptionArns: [],
     };
     this.topics.set(arn, topic);
+    this.persistence?.insertTopic(topic);
     return topic;
   }
 
@@ -74,9 +77,11 @@ export class SnsStore {
     // Remove associated subscriptions
     for (const subArn of topic.subscriptionArns) {
       this.subscriptions.delete(subArn);
+      this.persistence?.deleteSubscription(subArn);
     }
 
     this.topics.delete(arn);
+    this.persistence?.deleteTopic(arn);
     return true;
   }
 
@@ -145,6 +150,8 @@ export class SnsStore {
 
     this.subscriptions.set(arn, subscription);
     topic.subscriptionArns.push(arn);
+    this.persistence?.insertSubscription(subscription);
+    this.persistence?.updateTopicSubscriptionArns(topicArn, topic.subscriptionArns);
     return subscription;
   }
 
@@ -155,9 +162,11 @@ export class SnsStore {
     const topic = this.topics.get(sub.topicArn);
     if (topic) {
       topic.subscriptionArns = topic.subscriptionArns.filter((s) => s !== arn);
+      this.persistence?.updateTopicSubscriptionArns(sub.topicArn, topic.subscriptionArns);
     }
 
     this.subscriptions.delete(arn);
+    this.persistence?.deleteSubscription(arn);
     return true;
   }
 

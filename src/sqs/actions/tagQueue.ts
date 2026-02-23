@@ -17,5 +17,7 @@ export function tagQueue(body: Record<string, unknown>, store: SqsStore): unknow
     queue.tags.set(key, value);
   }
 
+  queue.persistence?.insertQueue(queue);
+
   return {};
 }
