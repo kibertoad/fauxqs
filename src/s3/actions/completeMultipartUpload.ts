@@ -2,6 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import type { CompleteMultipartUploadOutput } from "@aws-sdk/client-s3";
 import { escapeXml } from "../../common/xml.ts";
 import type { S3Store } from "../s3Store.ts";
+import { checksumHeaderName } from "../checksum.ts";
 
 function unescapeXml(str: string): string {
   return str
@@ -27,25 +28,19 @@ export function completeMultipartUpload(
     : (request.body as string);
 
   // Parse <Part> elements from XML body
+  // Extract each <Part>...</Part> block, then find PartNumber and ETag within it
+  // (order varies, and optional elements like ChecksumCRC32 may appear between them)
   const parts: { partNumber: number; etag: string }[] = [];
-  const partRegex =
-    /<Part>\s*<PartNumber>(\d+)<\/PartNumber>\s*<ETag>([\s\S]*?)<\/ETag>\s*<\/Part>/g;
+  const partBlockRegex = /<Part>([\s\S]*?)<\/Part>/g;
   let match: RegExpExecArray | null;
-  while ((match = partRegex.exec(body)) !== null) {
-    parts.push({
-      partNumber: parseInt(match[1], 10),
-      etag: unescapeXml(match[2]),
-    });
-  }
-
-  // Also handle reversed order (ETag before PartNumber)
-  if (parts.length === 0) {
-    const altRegex =
-      /<Part>\s*<ETag>([\s\S]*?)<\/ETag>\s*<PartNumber>(\d+)<\/PartNumber>\s*<\/Part>/g;
-    while ((match = altRegex.exec(body)) !== null) {
+  while ((match = partBlockRegex.exec(body)) !== null) {
+    const block = match[1];
+    const pnMatch = block.match(/<PartNumber>(\d+)<\/PartNumber>/);
+    const etagMatch = block.match(/<ETag>([\s\S]*?)<\/ETag>/);
+    if (pnMatch && etagMatch) {
       parts.push({
-        partNumber: parseInt(match[2], 10),
-        etag: unescapeXml(match[1]),
+        partNumber: parseInt(pnMatch[1], 10),
+        etag: unescapeXml(etagMatch[1]),
       });
     }
   }
@@ -62,16 +57,29 @@ export function completeMultipartUpload(
     ETag: obj.etag,
   } satisfies CompleteMultipartUploadOutput;
 
-  const xml = [
+  const xmlParts = [
     `<?xml version="1.0" encoding="UTF-8"?>`,
     `<CompleteMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`,
     `  <Location>${escapeXml(result.Location!)}</Location>`,
     `  <Bucket>${escapeXml(result.Bucket!)}</Bucket>`,
     `  <Key>${escapeXml(result.Key!)}</Key>`,
     `  <ETag>${escapeXml(result.ETag!)}</ETag>`,
-    `</CompleteMultipartUploadResult>`,
-  ].join("\n");
+  ];
+
+  if (obj.checksumAlgorithm && obj.checksumValue) {
+    const tag = `Checksum${obj.checksumAlgorithm}`;
+    xmlParts.push(`  <${tag}>${obj.checksumValue}</${tag}>`);
+    if (obj.checksumType) {
+      xmlParts.push(`  <ChecksumType>${obj.checksumType}</ChecksumType>`);
+    }
+  }
+
+  xmlParts.push(`</CompleteMultipartUploadResult>`);
+  const xml = xmlParts.join("\n");
 
   reply.header("content-type", "application/xml");
+  if (obj.checksumAlgorithm && obj.checksumValue) {
+    reply.header(checksumHeaderName(obj.checksumAlgorithm), obj.checksumValue);
+  }
   reply.status(200).send(xml);
 }

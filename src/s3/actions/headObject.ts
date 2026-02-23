@@ -1,5 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import type { S3Store } from "../s3Store.ts";
+import { checksumHeaderName } from "../checksum.ts";
 
 export function headObject(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
@@ -23,5 +24,10 @@ export function headObject(
   if (obj.cacheControl) reply.header("cache-control", obj.cacheControl);
   if (obj.contentEncoding) reply.header("content-encoding", obj.contentEncoding);
   if (obj.parts) reply.header("x-amz-mp-parts-count", String(obj.parts.length));
+  const checksumMode = request.headers["x-amz-checksum-mode"] as string | undefined;
+  if (checksumMode?.toUpperCase() === "ENABLED" && obj.checksumAlgorithm && obj.checksumValue) {
+    reply.header(checksumHeaderName(obj.checksumAlgorithm), obj.checksumValue);
+    if (obj.checksumType) reply.header("x-amz-checksum-type", obj.checksumType);
+  }
   reply.status(200).send();
 }

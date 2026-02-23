@@ -55,7 +55,9 @@ src/
   s3/
     s3Store.ts               # S3Store: buckets + objects in Maps
     s3Router.ts              # REST route registration (/:bucket, /:bucket/*)
-    s3Types.ts               # S3Object interface
+    s3Types.ts               # S3Object, MultipartUpload, MultipartPart, ChecksumAlgorithm
+    checksum.ts              # CRC32, computeChecksum, computeCompositeChecksum, header helpers
+    chunkedEncoding.ts       # AWS chunked transfer encoding decoder (body + trailing headers)
     actions/                 # One file per S3 API action
 test/
   helpers/
@@ -111,6 +113,8 @@ docker-acceptance/
 - **Multipart upload routing**: The S3 router differentiates multipart operations from regular operations using query parameters: `?uploads` for CreateMultipartUpload, `?uploadId=&partNumber=` for UploadPart (or UploadPartCopy when `x-amz-copy-source` header is present), `?uploadId=` on POST for CompleteMultipartUpload, `?uploadId=` on DELETE for AbortMultipartUpload.
 - **UploadPartCopy**: `PUT /:bucket/:key?partNumber=N&uploadId=ID` with `x-amz-copy-source` header copies from an existing object (or byte range via `x-amz-copy-source-range: bytes=start-end`) as a multipart part. Returns XML `CopyPartResult` with ETag and LastModified.
 - **GetObject partNumber**: `GET /:bucket/:key?partNumber=N` returns a specific part of a multipart-uploaded object. Response includes `x-amz-mp-parts-count` header and HTTP 206 status. Returns `InvalidPartNumber` (416) for invalid part numbers. Only works on objects created via multipart upload (which have stored part boundaries).
+- **GetObjectAttributes**: `GET /:bucket/:key?attributes` returns selective object metadata based on the `x-amz-object-attributes` header (comma-separated): `ETag` (unquoted), `StorageClass` (always `STANDARD`), `ObjectSize`, `ObjectParts` (multipart only, with pagination via `x-amz-max-parts` and `x-amz-part-number-marker` headers), `Checksum` (includes algorithm-specific value and `ChecksumType`; per-part checksums in `ObjectParts` for multipart objects). Response is XML with `last-modified` header. Only requested attributes appear in the response. `ObjectParts` is omitted entirely for non-multipart objects.
+- **S3 checksums**: Supports CRC32, SHA1, and SHA256 checksum algorithms. CRC32C and CRC64NVME are silently ignored. Checksums are stored-and-returned (no body validation). PutObject and UploadPart extract checksums from `x-amz-checksum-{algo}` headers (regular or aws-chunked trailing headers) and store them on the S3Object/MultipartPart. GetObject and HeadObject return `x-amz-checksum-{algo}` and `x-amz-checksum-type` headers when `x-amz-checksum-mode: ENABLED` is sent. Checksum headers are omitted from range responses (206). CreateMultipartUpload reads `x-amz-checksum-algorithm` header. CompleteMultipartUpload computes composite checksums (base64-decode per-part checksums, concatenate, re-hash, append `-N`). CopyObject with COPY directive preserves source checksums; REPLACE reads from request headers. S3Object stores `checksumAlgorithm`, `checksumValue`, `checksumType` ('FULL_OBJECT'|'COMPOSITE'), and `partChecksums` (multipart). `checksum.ts` provides CRC32 computation (uses `zlib.crc32` on Node 22.2+, fallback lookup table), `computeChecksum()`, `computeCompositeChecksum()`, `extractChecksumFromHeaders()`, and `checksumHeaderName()`. `chunkedEncoding.ts` `decodeAwsChunked()` returns `{ body, trailers }` to expose trailing headers from aws-chunked encoding.
 - **S3 system metadata**: PutObject, CopyObject, and CreateMultipartUpload accept `Content-Language`, `Content-Disposition`, `Cache-Control`, and `Content-Encoding` headers. These are stored on the S3Object and returned by GetObject and HeadObject. CopyObject with `COPY` directive preserves them from source; `REPLACE` uses request headers.
 - **Env vars**: `startFauxqs` reads `FAUXQS_PORT`, `FAUXQS_HOST`, `FAUXQS_DEFAULT_REGION`, `FAUXQS_LOGGER`, and `FAUXQS_INIT` as fallbacks. Programmatic options take precedence over env vars.
 - **Init config**: `FAUXQS_INIT` (or the `init` option) points to a JSON file (or inline object) that pre-creates queues, topics, subscriptions, and buckets on startup. Resources are created in dependency order: queues first, then topics, then subscriptions, then buckets. Queue creation is idempotent — re-applying init config skips queues that already exist, preserving any messages they contain.
@@ -151,6 +155,7 @@ docker-acceptance/
 - `POST /:bucket?delete` → DeleteObjects (bulk delete via XML body)
 - `POST /:bucket/:key?uploads` → CreateMultipartUpload, `PUT /:bucket/:key?partNumber=N&uploadId=ID` → UploadPart (or UploadPartCopy with `x-amz-copy-source`), `POST /:bucket/:key?uploadId=ID` → CompleteMultipartUpload, `DELETE /:bucket/:key?uploadId=ID` → AbortMultipartUpload
 - `GET /:bucket/:key?partNumber=N` → GetObject (specific part of multipart-uploaded object)
+- `GET /:bucket/:key?attributes` → GetObjectAttributes (selective metadata via `x-amz-object-attributes` header)
 - XML responses for list/delete/multipart/error operations
 - SDK must use `forcePathStyle: true` or a virtual-hosted-style helper (`createLocalhostHandler` / `interceptLocalhostDns`) for local emulators
 - Presigned URLs work out of the box — `X-Amz-*` query params are ignored by the router. Use `@aws-sdk/s3-request-presigner`'s `getSignedUrl()` then `fetch()` the URL directly.

@@ -1,3 +1,5 @@
+export type ChecksumAlgorithm = "CRC32" | "SHA1" | "SHA256";
+
 export interface S3Object {
   key: string;
   body: Buffer;
@@ -13,6 +15,11 @@ export interface S3Object {
   contentEncoding?: string;
   // Multipart part boundaries (for partNumber retrieval)
   parts?: Array<{ partNumber: number; offset: number; length: number }>;
+  // Checksum
+  checksumAlgorithm?: ChecksumAlgorithm;
+  checksumValue?: string;
+  checksumType?: "FULL_OBJECT" | "COMPOSITE";
+  partChecksums?: string[];
 }
 
 export interface MultipartPart {
@@ -20,6 +27,7 @@ export interface MultipartPart {
   body: Buffer;
   etag: string;
   lastModified: Date;
+  checksumValue?: string;
 }
 
 export interface MultipartUpload {
@@ -35,4 +43,6 @@ export interface MultipartUpload {
   contentDisposition?: string;
   cacheControl?: string;
   contentEncoding?: string;
+  // Checksum
+  checksumAlgorithm?: ChecksumAlgorithm;
 }

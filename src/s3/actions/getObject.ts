@@ -1,6 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { S3Error } from "../../common/errors.ts";
 import type { S3Store } from "../s3Store.ts";
+import { checksumHeaderName } from "../checksum.ts";
 
 export function getObject(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
@@ -33,6 +34,19 @@ export function getObject(
     if (obj.contentEncoding) reply.header("content-encoding", obj.contentEncoding);
     for (const [metaKey, metaValue] of Object.entries(obj.metadata)) {
       reply.header(`x-amz-meta-${metaKey}`, metaValue);
+    }
+    const checksumModePartNum = request.headers["x-amz-checksum-mode"] as string | undefined;
+    if (
+      checksumModePartNum?.toUpperCase() === "ENABLED" &&
+      obj.checksumAlgorithm &&
+      obj.partChecksums
+    ) {
+      // For partNumber requests, return the individual part's checksum
+      const partIdx = obj.parts!.findIndex((p) => p.partNumber === pn);
+      if (partIdx >= 0 && partIdx < obj.partChecksums.length) {
+        reply.header(checksumHeaderName(obj.checksumAlgorithm), obj.partChecksums[partIdx]);
+        reply.header("x-amz-checksum-type", "FULL_OBJECT");
+      }
     }
     reply.status(206).send(partBody);
     return;
@@ -110,6 +124,13 @@ export function getObject(
     reply.header("content-range", `bytes ${start}-${end}/${total}`);
     reply.status(206).send(sliced);
     return;
+  }
+
+  // Checksum headers when x-amz-checksum-mode: ENABLED (only on full-object responses, not ranges)
+  const checksumMode = request.headers["x-amz-checksum-mode"] as string | undefined;
+  if (checksumMode?.toUpperCase() === "ENABLED" && obj.checksumAlgorithm && obj.checksumValue) {
+    reply.header(checksumHeaderName(obj.checksumAlgorithm), obj.checksumValue);
+    if (obj.checksumType) reply.header("x-amz-checksum-type", obj.checksumType);
   }
 
   reply.header("content-length", obj.contentLength);

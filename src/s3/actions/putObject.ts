@@ -2,7 +2,16 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import type { CopyObjectOutput } from "@aws-sdk/client-s3";
 import { S3Error } from "../../common/errors.ts";
 import type { S3Store } from "../s3Store.ts";
+import type { ChecksumAlgorithm } from "../s3Types.ts";
 import { decodeAwsChunked } from "../chunkedEncoding.ts";
+import { extractChecksumFromHeaders, checksumHeaderName } from "../checksum.ts";
+
+interface ChecksumData {
+  algorithm: ChecksumAlgorithm;
+  value: string;
+  type: "FULL_OBJECT" | "COMPOSITE";
+  partChecksums?: string[];
+}
 
 function extractMetadata(
   headers: Record<string, string | string[] | undefined>,
@@ -79,7 +88,33 @@ export function putObject(
             ...(srcObj.contentEncoding && { contentEncoding: srcObj.contentEncoding }),
           };
 
-    const obj = store.putObject(bucket, key, srcObj.body, destContentType, metadata, systemMeta);
+    // Checksum: COPY preserves source checksum, REPLACE reads from request headers
+    let checksumData: ChecksumData | undefined;
+    if (metadataDirective === "REPLACE") {
+      const cksum = extractChecksumFromHeaders(
+        request.headers as Record<string, string | string[] | undefined>,
+      );
+      if (cksum) {
+        checksumData = { algorithm: cksum.algorithm, value: cksum.value, type: "FULL_OBJECT" };
+      }
+    } else if (srcObj.checksumAlgorithm && srcObj.checksumValue && srcObj.checksumType) {
+      checksumData = {
+        algorithm: srcObj.checksumAlgorithm,
+        value: srcObj.checksumValue,
+        type: srcObj.checksumType,
+        ...(srcObj.partChecksums && { partChecksums: srcObj.partChecksums }),
+      };
+    }
+
+    const obj = store.putObject(
+      bucket,
+      key,
+      srcObj.body,
+      destContentType,
+      metadata,
+      systemMeta,
+      checksumData,
+    );
 
     if (store.spy) {
       store.spy.addMessage({
@@ -114,9 +149,12 @@ export function putObject(
   let body = Buffer.isBuffer(request.body) ? request.body : Buffer.from(request.body as string);
 
   // Decode aws-chunked encoding if present
+  let trailers: Record<string, string> = {};
   const contentEncoding = request.headers["content-encoding"];
   if (contentEncoding && contentEncoding.includes("aws-chunked")) {
-    body = decodeAwsChunked(body);
+    const decoded = decodeAwsChunked(body);
+    body = decoded.body;
+    trailers = decoded.trailers;
   }
 
   const metadata = extractMetadata(
@@ -125,8 +163,21 @@ export function putObject(
   const systemMeta = extractSystemMetadata(
     request.headers as Record<string, string | string[] | undefined>,
   );
-  const obj = store.putObject(bucket, key, body, contentType, metadata, systemMeta);
+
+  // Extract checksum from trailing headers first, then regular headers
+  const cksum =
+    extractChecksumFromHeaders(trailers) ??
+    extractChecksumFromHeaders(request.headers as Record<string, string | string[] | undefined>);
+  const checksumData = cksum
+    ? { algorithm: cksum.algorithm, value: cksum.value, type: "FULL_OBJECT" as const }
+    : undefined;
+
+  const obj = store.putObject(bucket, key, body, contentType, metadata, systemMeta, checksumData);
 
   reply.header("etag", obj.etag);
+  if (obj.checksumAlgorithm && obj.checksumValue) {
+    reply.header(checksumHeaderName(obj.checksumAlgorithm), obj.checksumValue);
+    if (obj.checksumType) reply.header("x-amz-checksum-type", obj.checksumType);
+  }
   reply.status(200).send();
 }

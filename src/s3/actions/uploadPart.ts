@@ -2,6 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { S3Error } from "../../common/errors.ts";
 import type { S3Store } from "../s3Store.ts";
 import { decodeAwsChunked } from "../chunkedEncoding.ts";
+import { extractChecksumFromHeaders, checksumHeaderName } from "../checksum.ts";
 
 export function uploadPart(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
@@ -57,12 +58,12 @@ export function uploadPart(
       partBody = srcObj.body;
     }
 
-    const etag = store.uploadPart(uploadId, partNumber, partBody);
+    const result = store.uploadPart(uploadId, partNumber, partBody);
 
     const xml = [
       `<?xml version="1.0" encoding="UTF-8"?>`,
       `<CopyPartResult>`,
-      `  <ETag>${etag}</ETag>`,
+      `  <ETag>${result.etag}</ETag>`,
       `  <LastModified>${new Date().toISOString()}</LastModified>`,
       `</CopyPartResult>`,
     ].join("\n");
@@ -75,13 +76,24 @@ export function uploadPart(
   let body = Buffer.isBuffer(request.body) ? request.body : Buffer.from(request.body as string);
 
   // Decode aws-chunked encoding if present
+  let trailers: Record<string, string> = {};
   const contentEncoding = request.headers["content-encoding"];
   if (contentEncoding && contentEncoding.includes("aws-chunked")) {
-    body = decodeAwsChunked(body);
+    const decoded = decodeAwsChunked(body);
+    body = decoded.body;
+    trailers = decoded.trailers;
   }
 
-  const etag = store.uploadPart(uploadId, partNumber, body);
+  // Extract checksum from trailing headers first, then regular headers
+  const cksum =
+    extractChecksumFromHeaders(trailers) ??
+    extractChecksumFromHeaders(request.headers as Record<string, string | string[] | undefined>);
 
-  reply.header("etag", etag);
+  const result = store.uploadPart(uploadId, partNumber, body, cksum?.value);
+
+  reply.header("etag", result.etag);
+  if (cksum && result.checksumValue) {
+    reply.header(checksumHeaderName(cksum.algorithm), result.checksumValue);
+  }
   reply.status(200).send();
 }

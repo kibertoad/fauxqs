@@ -1,5 +1,7 @@
 <img src="logo-readme.jpg" alt="fauxqs" width="360" />
 
+[![npm version](https://img.shields.io/npm/v/fauxqs.svg)](https://www.npmjs.com/package/fauxqs)
+
 # fauxqs
 
 Local SNS/SQS/S3 emulator for development and testing. Point your `@aws-sdk/client-sqs`, `@aws-sdk/client-sns`, and `@aws-sdk/client-s3` clients at fauxqs instead of real AWS.
@@ -938,9 +940,9 @@ Platform application, SMS, and phone number actions are not supported.
 | UploadPartCopy | Yes |
 | CompleteMultipartUpload | Yes |
 | AbortMultipartUpload | Yes |
+| GetObjectAttributes | Yes |
 | GetBucketLocation | No |
 | ListObjectVersions | No |
-| GetObjectAttributes | No |
 | SelectObjectContent | No |
 | RestoreObject | No |
 | RenameObject | No |
@@ -998,7 +1000,9 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **User metadata** — `x-amz-meta-*` headers are stored and returned on GetObject and HeadObject
 - **Bulk delete** — DeleteObjects for batch key deletion with proper XML entity handling
 - **Keys with slashes** — full support for slash-delimited keys (e.g., `path/to/file.txt`)
-- **Stream uploads** — handles AWS chunked transfer encoding (`Content-Encoding: aws-chunked`) for stream bodies
+- **Stream uploads** — handles AWS chunked transfer encoding (`Content-Encoding: aws-chunked`) for stream bodies, including trailing header parsing for checksums
+- **Checksums** — CRC32, SHA1, and SHA256 checksums are stored on upload (PutObject, UploadPart) and returned on download (GetObject, HeadObject with `x-amz-checksum-mode: ENABLED`). Multipart uploads compute composite checksums. GetObjectAttributes supports the `Checksum` attribute. CRC32C and CRC64NVME are silently ignored. Checksums are stored and returned as-is — no body validation is performed.
+- **GetObjectAttributes** — selective metadata retrieval via `x-amz-object-attributes` header: ETag, StorageClass, ObjectSize, ObjectParts (with pagination), and Checksum (including per-part checksums for multipart objects)
 - **Path-style and virtual-hosted-style** — both S3 URL styles are supported (see below)
 
 ### S3 URL styles

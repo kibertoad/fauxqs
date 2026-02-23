@@ -15,6 +15,7 @@ import { createMultipartUpload } from "./actions/createMultipartUpload.ts";
 import { uploadPart } from "./actions/uploadPart.ts";
 import { completeMultipartUpload } from "./actions/completeMultipartUpload.ts";
 import { abortMultipartUpload } from "./actions/abortMultipartUpload.ts";
+import { getObjectAttributes } from "./actions/getObjectAttributes.ts";
 
 export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
   const handleError = (err: unknown, reply: import("fastify").FastifyReply, isHead = false) => {
@@ -126,6 +127,8 @@ export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
       try {
         if (!getKey(request.params as Record<string, unknown>)) {
           listObjects(request as any, reply, store);
+        } else if ("attributes" in getQuery(request)) {
+          getObjectAttributes(request as any, reply, store);
         } else {
           getObject(request as any, reply, store);
         }

@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { S3Error } from "../common/errors.ts";
 import type { MessageSpy } from "../spy.ts";
-import type { S3Object, MultipartUpload } from "./s3Types.ts";
+import type { S3Object, MultipartUpload, ChecksumAlgorithm } from "./s3Types.ts";
+import { computeCompositeChecksum } from "./checksum.ts";
 
 export class S3Store {
   private buckets = new Map<string, Map<string, S3Object>>();
@@ -88,6 +89,12 @@ export class S3Store {
       cacheControl?: string;
       contentEncoding?: string;
     },
+    checksumData?: {
+      algorithm: ChecksumAlgorithm;
+      value: string;
+      type: "FULL_OBJECT" | "COMPOSITE";
+      partChecksums?: string[];
+    },
   ): S3Object {
     const objects = this.buckets.get(bucket);
     if (!objects) {
@@ -109,6 +116,12 @@ export class S3Store {
       }),
       ...(systemMetadata?.cacheControl && { cacheControl: systemMetadata.cacheControl }),
       ...(systemMetadata?.contentEncoding && { contentEncoding: systemMetadata.contentEncoding }),
+      ...(checksumData && {
+        checksumAlgorithm: checksumData.algorithm,
+        checksumValue: checksumData.value,
+        checksumType: checksumData.type,
+        ...(checksumData.partChecksums && { partChecksums: checksumData.partChecksums }),
+      }),
     };
 
     objects.set(key, obj);
@@ -262,6 +275,7 @@ export class S3Store {
       cacheControl?: string;
       contentEncoding?: string;
     },
+    checksumAlgorithm?: ChecksumAlgorithm,
   ): string {
     if (!this.buckets.has(bucket)) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
@@ -282,6 +296,7 @@ export class S3Store {
       }),
       ...(systemMetadata?.cacheControl && { cacheControl: systemMetadata.cacheControl }),
       ...(systemMetadata?.contentEncoding && { contentEncoding: systemMetadata.contentEncoding }),
+      ...(checksumAlgorithm && { checksumAlgorithm }),
     });
 
     let bucketUploads = this.multipartUploadsByBucket.get(bucket);
@@ -294,7 +309,12 @@ export class S3Store {
     return uploadId;
   }
 
-  uploadPart(uploadId: string, partNumber: number, body: Buffer): string {
+  uploadPart(
+    uploadId: string,
+    partNumber: number,
+    body: Buffer,
+    checksumValue?: string,
+  ): { etag: string; checksumValue?: string } {
     const upload = this.multipartUploads.get(uploadId);
     if (!upload) {
       throw new S3Error(
@@ -310,9 +330,10 @@ export class S3Store {
       body,
       etag,
       lastModified: new Date(),
+      ...(checksumValue && { checksumValue }),
     });
 
-    return etag;
+    return { etag, checksumValue };
   }
 
   completeMultipartUpload(
@@ -386,6 +407,28 @@ export class S3Store {
       partSizes.push(part.body.length);
     }
 
+    // Collect per-part checksums before clearing parts
+    let checksumFields: Partial<
+      Pick<S3Object, "checksumAlgorithm" | "checksumValue" | "checksumType" | "partChecksums">
+    > = {};
+    if (upload.checksumAlgorithm) {
+      const partChecksumsArr: string[] = [];
+      for (const spec of partSpecs) {
+        const part = upload.parts.get(spec.partNumber)!;
+        if (part.checksumValue) {
+          partChecksumsArr.push(part.checksumValue);
+        }
+      }
+      if (partChecksumsArr.length > 0) {
+        checksumFields = {
+          checksumAlgorithm: upload.checksumAlgorithm,
+          checksumValue: computeCompositeChecksum(upload.checksumAlgorithm, partChecksumsArr),
+          checksumType: "COMPOSITE",
+          partChecksums: partChecksumsArr,
+        };
+      }
+    }
+
     // Release individual part buffers before concat so GC can reclaim them sooner
     upload.parts.clear();
 
@@ -418,6 +461,7 @@ export class S3Store {
       ...(upload.contentDisposition && { contentDisposition: upload.contentDisposition }),
       ...(upload.cacheControl && { cacheControl: upload.cacheControl }),
       ...(upload.contentEncoding && { contentEncoding: upload.contentEncoding }),
+      ...checksumFields,
     };
 
     objects.set(upload.key, obj);
