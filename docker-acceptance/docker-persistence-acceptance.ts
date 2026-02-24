@@ -292,6 +292,9 @@ async function testWithoutVolume(): Promise<void> {
   console.log("S3: no buckets (no persistence): OK");
 
   console.log("\nScenario 2 PASSED: state did NOT survive restart without volume.");
+
+  // Cleanup container so port is free for next scenario
+  try { run(`docker rm -f ${NO_VOL_CONTAINER}`); } catch { /* ignore */ }
 }
 
 async function testNoVolumeWithOptIn(): Promise<void> {
