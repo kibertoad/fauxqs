@@ -10,9 +10,9 @@
 # The init config mirrors exactly what setup() creates in test/setup.ts,
 # so your app runs against the same resource topology in both modes.
 #
-# The fauxqs-data volume persists all state (queues, messages, objects)
-# across docker compose down/up cycles. Init config is idempotent —
-# re-applying it after a restart skips resources that already exist.
+# Persistence is off by default. To persist state across restarts,
+# create a .env file with FAUXQS_PERSISTENCE=true. Init config is
+# idempotent — re-applying it after a restart skips existing resources.
 
 services:
   fauxqs:
@@ -21,6 +21,7 @@ services:
       - "4566:4566"
     environment:
       - FAUXQS_INIT=/app/init.json
+      - FAUXQS_PERSISTENCE=${FAUXQS_PERSISTENCE-}  # set to "true" in .env for local persistence
     volumes:
       - ./fauxqs-init.json:/app/init.json
       - fauxqs-data:/data

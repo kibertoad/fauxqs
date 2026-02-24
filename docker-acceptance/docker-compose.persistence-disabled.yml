@@ -1,0 +1,16 @@
+# Used by docker-persistence-acceptance.ts Scenario 4.
+# Tests that FAUXQS_PERSISTENCE pass-through in docker-compose works end-to-end.
+# Mirrors the pattern from examples/recommended/docker-compose.yml.
+
+services:
+  fauxqs:
+    image: ${FAUXQS_TEST_IMAGE:-fauxqs-persistence-test}
+    ports:
+      - "${FAUXQS_TEST_PORT:-14567}:4566"
+    environment:
+      - FAUXQS_PERSISTENCE=${FAUXQS_PERSISTENCE-}  # pass-through from host — set to "true" to enable persistence
+    volumes:
+      - persist-data:/data
+
+volumes:
+  persist-data:

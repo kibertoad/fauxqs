@@ -14,4 +14,13 @@ if [ -n "$FAUXQS_DATA_DIR" ] && ! mountpoint -q "$FAUXQS_DATA_DIR" 2>/dev/null; 
   unset FAUXQS_DATA_DIR
 fi
 
+# Log persistence status
+if [ -z "$FAUXQS_DATA_DIR" ]; then
+  echo "Persistence: OFF (no data directory)"
+elif [ "$FAUXQS_PERSISTENCE" = "true" ]; then
+  echo "Persistence: ON (dataDir=$FAUXQS_DATA_DIR)"
+else
+  echo "Persistence: OFF (set FAUXQS_PERSISTENCE=true to enable)"
+fi
+
 exec tini -- node dist/server.js

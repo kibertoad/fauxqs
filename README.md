@@ -89,7 +89,7 @@ The server starts on port `4566` and handles SQS, SNS, and S3 on a single endpoi
 | `FAUXQS_LOGGER` | Enable request logging (`true`/`false`) | `true` |
 | `FAUXQS_INIT` | Path to a JSON init config file (see [Init config file](#init-config-file)) | (none) |
 | `FAUXQS_DATA_DIR` | Directory for SQLite persistence (see [Persistence](#persistence)). Omit to keep all state in-memory. | (none) |
-| `FAUXQS_PERSISTENCE` | Set to `false` to disable persistence even when `FAUXQS_DATA_DIR` is set | `true` |
+| `FAUXQS_PERSISTENCE` | Set to `true` to enable persistence when `FAUXQS_DATA_DIR` is set | `false` |
 | `FAUXQS_DNS_NAME` | Domain that dnsmasq resolves (including all subdomains) to the container IP. Only needed when the container hostname doesn't match the docker-compose service name — e.g., when using `container_name` or running with plain `docker run`. In docker-compose the hostname is set to the service name automatically, so this is rarely needed. (Docker only) | container hostname |
 | `FAUXQS_DNS_UPSTREAM` | Where dnsmasq forwards non-fauxqs DNS queries (e.g., `registry.npmjs.org`). Change this if you're in a corporate network with an internal DNS server, or if you prefer a different public resolver like `1.1.1.1`. (Docker only) | `8.8.8.8` |
 
@@ -133,11 +133,13 @@ The official Docker image is available on Docker Hub:
 docker run -p 4566:4566 -v fauxqs-data:/data kibertoad/fauxqs
 ```
 
-Mount a volume at `/data` to persist state across container restarts. Without a volume, persistence is automatically disabled. To explicitly run without persistence even with a volume mounted:
+Mount a volume at `/data` and set `FAUXQS_PERSISTENCE=true` to persist state across container restarts:
 
 ```bash
-docker run -p 4566:4566 -e FAUXQS_PERSISTENCE=false kibertoad/fauxqs
+docker run -p 4566:4566 -v fauxqs-data:/data -e FAUXQS_PERSISTENCE=true kibertoad/fauxqs
 ```
+
+Without `FAUXQS_PERSISTENCE=true`, the server runs in-memory even if a volume is mounted.
 
 With an init config file:
 
@@ -848,13 +850,13 @@ FAUXQS_DATA_DIR=./data npx fauxqs
 
 **Docker:**
 
-The Docker image automatically enables persistence when a volume is mounted at `/data`:
+The Docker image has `FAUXQS_DATA_DIR=/data` preset. Mount a volume and set `FAUXQS_PERSISTENCE=true` to enable persistence:
 
 ```bash
-docker run -p 4566:4566 -v fauxqs-data:/data kibertoad/fauxqs
+docker run -p 4566:4566 -v fauxqs-data:/data -e FAUXQS_PERSISTENCE=true kibertoad/fauxqs
 ```
 
-No `FAUXQS_DATA_DIR` env var is needed — the image sets it automatically. If no volume is mounted at `/data`, persistence is silently disabled (no unnecessary writes to ephemeral container storage). To explicitly disable persistence even with a volume, set `FAUXQS_PERSISTENCE=false`.
+Without `FAUXQS_PERSISTENCE=true`, the server runs in-memory even if a volume is mounted. If no volume is mounted at `/data`, persistence is silently disabled regardless of the env var (no unnecessary writes to ephemeral container storage).
 
 **Programmatic:**
 
@@ -871,7 +873,7 @@ All mutations are written through to SQLite immediately (no batching or delayed 
 
 `reset()` and `purgeAll()` also write through to the database — `reset()` clears messages and objects, `purgeAll()` clears everything.
 
-To disable persistence even when `FAUXQS_DATA_DIR` is set, use `FAUXQS_PERSISTENCE=false`.
+To enable persistence, set `FAUXQS_PERSISTENCE=true` in addition to `FAUXQS_DATA_DIR`.
 
 ### Configurable queue URL host
 

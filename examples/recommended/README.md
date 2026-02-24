@@ -61,7 +61,30 @@ npm test
 docker compose up
 ```
 
-Point your app at `http://localhost:4566`. The init config creates all queues (including DLQ with RedrivePolicy), topics, subscriptions (with filter policies), and buckets before the healthcheck passes. The `fauxqs-data` volume persists all state across `docker compose down` / `up` cycles.
+Point your app at `http://localhost:4566`. The init config creates all queues (including DLQ with RedrivePolicy), topics, subscriptions (with filter policies), and buckets before the healthcheck passes. By default, state is in-memory only — see below to enable persistence.
+
+## Enabling persistence
+
+Persistence is **off by default** — no `docker-compose.yml` changes are needed to toggle it. Set `FAUXQS_PERSISTENCE=true` to enable it via any of these methods:
+
+**`.env` file** — Docker Compose automatically loads a `.env` file from the same directory as `docker-compose.yml` (no flags needed). Create one with:
+```
+FAUXQS_PERSISTENCE=true
+```
+
+**Environment variable** — set it in the shell, CI config, or cloud orchestrator:
+```bash
+# shell
+FAUXQS_PERSISTENCE=true docker compose up
+
+# or export for the session
+export FAUXQS_PERSISTENCE=true
+docker compose up
+```
+
+Both approaches work because the `docker-compose.yml` passes the `FAUXQS_PERSISTENCE` variable through to the container — Docker Compose resolves it from the host environment or `.env` file, whichever is available. The `fauxqs-data` volume preserves all state across `docker compose down` / `up` cycles when persistence is enabled.
+
+The same compose file works in all contexts — persistence is controlled entirely by whether `FAUXQS_PERSISTENCE=true` is set. For local dev, a `.env` file (added to `.gitignore`) is the most convenient approach. CI environments and ephemeral containers that don't set the variable get in-memory mode with no cleanup needed.
 
 ## When to use which
 
@@ -72,7 +95,7 @@ Point your app at `http://localhost:4566`. The init config creates all queues (i
 | Spy / inspectQueue | Full programmatic API | HTTP inspection endpoints only |
 | Network realism | In-process (Fastify inject) | Real TCP connections |
 | Multi-service | Single process | docker-compose |
-| Persistence | In-memory only (use `dataDir` to opt in) | Enabled by default (`/data` volume) |
+| Persistence | In-memory only (use `dataDir` to opt in) | Off by default (set `FAUXQS_PERSISTENCE=true` to opt in) |
 | State reset | `purgeAll()` / `spy.clear()` | Restart container (or `docker compose down -v` to clear) |
 | Filter policy testing | `expectNoMessage()` assertions | Manual verification |
 | DLQ testing | Spy `"dlq"` events + `inspectQueue()` | Receive from DLQ via SDK |
