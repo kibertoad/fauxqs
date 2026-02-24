@@ -33,3 +33,6 @@ jobs:
 
       - name: Run Docker Compose acceptance test
         run: npm run test:docker:compose
+
+      - name: Run Docker persistence acceptance test
+        run: npm run test:docker:persistence

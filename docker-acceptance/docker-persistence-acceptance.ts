@@ -21,6 +21,7 @@ const IMAGE = process.env.FAUXQS_TEST_IMAGE ?? "fauxqs-persistence-test";
 const VOLUME_NAME = `fauxqs-persist-test-${Date.now()}`;
 const CONTAINER_PREFIX = `fauxqs-persist-${Date.now()}`;
 const NO_VOL_CONTAINER = `fauxqs-novol-${Date.now()}`;
+const NO_VOL_OPT_IN_CONTAINER = `fauxqs-novol-optin-${Date.now()}`;
 const DISABLED_VOLUME = `fauxqs-disabled-test-${Date.now()}`;
 const DISABLED_CONTAINER = `fauxqs-disabled-${Date.now()}`;
 const COMPOSE_PROJECT = `fauxqs-compose-persist-${Date.now()}`;
@@ -291,6 +292,111 @@ async function testWithoutVolume(): Promise<void> {
   console.log("S3: no buckets (no persistence): OK");
 
   console.log("\nScenario 2 PASSED: state did NOT survive restart without volume.");
+}
+
+async function testNoVolumeWithOptIn(): Promise<void> {
+  console.log("\n══════════════════════════════════════");
+  console.log("  Scenario 2b: No volume + FAUXQS_PERSISTENCE=true (opt-in ignored)");
+  console.log("══════════════════════════════════════\n");
+
+  // ── Phase 1: Start container with opt-in but NO volume ──
+  console.log("Starting container with FAUXQS_PERSISTENCE=true but no volume...");
+  run(
+    `docker run -d --name ${NO_VOL_OPT_IN_CONTAINER} -p ${HOST_PORT}:4566 -e FAUXQS_PERSISTENCE=true ${IMAGE}`,
+  );
+
+  console.log("Waiting for health check...");
+  await pollHealth(HOST_PORT, NO_VOL_OPT_IN_CONTAINER);
+  console.log("Container healthy.");
+
+  // Verify entrypoint detected missing volume and persistence is OFF despite opt-in
+  const logs = getLogs(NO_VOL_OPT_IN_CONTAINER);
+  assert.ok(
+    logs.includes("No volume mounted at /data"),
+    `Expected "No volume mounted at /data" in container logs.\nLogs:\n${logs}`,
+  );
+  assert.ok(
+    logs.includes("Persistence: OFF"),
+    `Expected "Persistence: OFF" despite FAUXQS_PERSISTENCE=true (no volume).\nLogs:\n${logs}`,
+  );
+  console.log("Mountpoint detection overrides opt-in: OK");
+
+  const sqs = makeSqsClient(HOST_PORT);
+  const s3 = makeS3Client(HOST_PORT);
+
+  // ── Phase 2: Create state ──
+  console.log("Creating SQS queue and sending message...");
+  const createQueueResult = await sqs.send(new CreateQueueCommand({ QueueName: "novol-optin-q" }));
+  await sqs.send(
+    new SendMessageCommand({
+      QueueUrl: createQueueResult.QueueUrl!,
+      MessageBody: "should-not-persist-despite-optin",
+    }),
+  );
+
+  console.log("Creating S3 bucket and uploading object...");
+  await s3.send(new CreateBucketCommand({ Bucket: "novol-optin-bucket" }));
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: "novol-optin-bucket",
+      Key: "optin.txt",
+      Body: "This should vanish — no volume",
+      ContentType: "text/plain",
+    }),
+  );
+
+  // ── Phase 3: docker stop + docker start ──
+  console.log("Stopping container (docker stop)...");
+  run(`docker stop ${NO_VOL_OPT_IN_CONTAINER}`);
+  console.log("Container stopped.");
+
+  console.log("Restarting same container (docker start)...");
+  run(`docker start ${NO_VOL_OPT_IN_CONTAINER}`);
+
+  console.log("Waiting for health check...");
+  await pollHealth(HOST_PORT, NO_VOL_OPT_IN_CONTAINER);
+  console.log("Container healthy after restart.");
+
+  // ── Phase 4: Verify state is GONE ──
+  const sqs2 = makeSqsClient(HOST_PORT);
+  const s32 = makeS3Client(HOST_PORT);
+
+  console.log("Verifying SQS state is gone...");
+  try {
+    const recv = await sqs2.send(
+      new ReceiveMessageCommand({
+        QueueUrl: `http://sqs.us-east-1.localhost:${HOST_PORT}/000000000000/novol-optin-q`,
+        MaxNumberOfMessages: 1,
+        WaitTimeSeconds: 0,
+      }),
+    );
+    assert.strictEqual(
+      recv.Messages?.length ?? 0,
+      0,
+      "Expected no messages — opt-in should be ignored without volume",
+    );
+    console.log("SQS: queue exists but empty (opt-in ignored): OK");
+  } catch (err: any) {
+    assert.ok(
+      err.name === "QueueDoesNotExist" || err.name === "AWS.SimpleQueueService.NonExistentQueue",
+      `Unexpected error: ${err.name}: ${err.message}`,
+    );
+    console.log("SQS: queue does not exist (opt-in ignored): OK");
+  }
+
+  console.log("Verifying S3 state is gone...");
+  const buckets = await s32.send(new ListBucketsCommand({}));
+  assert.strictEqual(
+    buckets.Buckets?.length ?? 0,
+    0,
+    `Expected no buckets — opt-in ignored without volume, got: ${buckets.Buckets?.map((b) => b.Name).join(", ")}`,
+  );
+  console.log("S3: no buckets (opt-in ignored): OK");
+
+  console.log("\nScenario 2b PASSED: FAUXQS_PERSISTENCE=true ignored without volume.");
+
+  // Cleanup
+  try { run(`docker rm -f ${NO_VOL_OPT_IN_CONTAINER}`); } catch { /* ignore */ }
 }
 
 async function testPersistenceDefaultOff(): Promise<void> {
@@ -638,6 +744,7 @@ async function main() {
 
   await testWithVolume();
   await testWithoutVolume();
+  await testNoVolumeWithOptIn();
   await testPersistenceDefaultOff();
   await testComposeEnvFileOptIn();
   await testComposeDefaultOff();
@@ -657,6 +764,7 @@ main()
     try { run(`docker rm -f ${CONTAINER_PREFIX}-1`); } catch { /* ignore */ }
     try { run(`docker rm -f ${CONTAINER_PREFIX}-2`); } catch { /* ignore */ }
     try { run(`docker rm -f ${NO_VOL_CONTAINER}`); } catch { /* ignore */ }
+    try { run(`docker rm -f ${NO_VOL_OPT_IN_CONTAINER}`); } catch { /* ignore */ }
     try { run(`docker rm -f ${DISABLED_CONTAINER}-1`); } catch { /* ignore */ }
     try { run(`docker rm -f ${DISABLED_CONTAINER}-2`); } catch { /* ignore */ }
     try { run(`docker volume rm ${VOLUME_NAME}`); } catch { /* ignore */ }
