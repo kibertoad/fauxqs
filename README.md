@@ -67,7 +67,7 @@ docker run -p 4566:4566 kibertoad/fauxqs
 npm install fauxqs
 ```
 
-> **Node.js 20:** fauxqs requires Node.js 22.5+ (for `node:sqlite`). If you need Node.js 20 support, use `fauxqs@1.13.0` which is the last version that supports it.
+> **Node.js compatibility:** fauxqs requires Node.js 22.5+ (for `node:sqlite`) when used as a library. If your project is on Node.js 20, you can either use `fauxqs@1.13.0` (last version with Node.js 20 support) or run the latest fauxqs as a [Docker container](#running-with-docker).
 
 ## Usage
 
@@ -130,16 +130,14 @@ npx cross-port-killer 4566
 The official Docker image is available on Docker Hub:
 
 ```bash
-docker run -p 4566:4566 -v fauxqs-data:/data kibertoad/fauxqs
+docker run -p 4566:4566 kibertoad/fauxqs
 ```
 
-Mount a volume at `/data` and set `FAUXQS_PERSISTENCE=true` to persist state across container restarts:
+To persist state across container restarts, mount a volume at `/data` and set `FAUXQS_PERSISTENCE=true`:
 
 ```bash
 docker run -p 4566:4566 -v fauxqs-data:/data -e FAUXQS_PERSISTENCE=true kibertoad/fauxqs
 ```
-
-Without `FAUXQS_PERSISTENCE=true`, the server runs in-memory even if a volume is mounted.
 
 With an init config file:
 
@@ -872,8 +870,6 @@ All mutations are written through to SQLite immediately (no batching or delayed 
 - S3 buckets (including directory bucket type), objects with metadata, and in-progress multipart uploads
 
 `reset()` and `purgeAll()` also write through to the database — `reset()` clears messages and objects, `purgeAll()` clears everything.
-
-To enable persistence, set `FAUXQS_PERSISTENCE=true` in addition to `FAUXQS_DATA_DIR`.
 
 ### Configurable queue URL host
 
