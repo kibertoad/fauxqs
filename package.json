@@ -1,6 +1,6 @@
 {
   "name": "fauxqs",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "SNS/SQS/S3 emulator",
   "type": "module",
   "scripts": {
@@ -43,6 +43,7 @@
     "valibot": "^1.2.0"
   },
   "devDependencies": {
+    "@aws-sdk/s3-presigned-post": "^3.997.0",
     "@aws-sdk/s3-request-presigner": "^3.993.0",
     "@message-queue-toolkit/s3-payload-store": "^3.0.0",
     "@types/node": "^25.2.3",

@@ -17,6 +17,7 @@ import { completeMultipartUpload } from "./actions/completeMultipartUpload.ts";
 import { abortMultipartUpload } from "./actions/abortMultipartUpload.ts";
 import { getObjectAttributes } from "./actions/getObjectAttributes.ts";
 import { renameObject } from "./actions/renameObject.ts";
+import { postObject, isPostObjectRequest } from "./actions/postObject.ts";
 
 export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
   const handleError = (err: unknown, reply: import("fastify").FastifyReply, isHead = false) => {
@@ -94,7 +95,11 @@ export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
 
   app.post("/:bucket", async (request, reply) => {
     try {
-      deleteObjects(request as any, reply, store);
+      if (isPostObjectRequest(request.headers["content-type"])) {
+        postObject(request as any, reply, store);
+      } else {
+        deleteObjects(request as any, reply, store);
+      }
     } catch (err) {
       handleError(err, reply);
     }
@@ -175,7 +180,11 @@ export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
     try {
       const key = getKey(request.params as Record<string, unknown>);
       if (!key) {
-        deleteObjects(request as any, reply, store);
+        if (isPostObjectRequest(request.headers["content-type"])) {
+          postObject(request as any, reply, store);
+        } else {
+          deleteObjects(request as any, reply, store);
+        }
         return;
       }
       const query = getQuery(request);

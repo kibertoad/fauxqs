@@ -629,7 +629,7 @@ The spy tracks events across all three services using a discriminated union on `
 - **`published`** — message was published to a topic (before fan-out to SQS subscriptions)
 
 **S3 events** (`service: 's3'`):
-- **`uploaded`** — object was put (PutObject or CompleteMultipartUpload)
+- **`uploaded`** — object was put (PutObject, PostObject, or CompleteMultipartUpload)
 - **`downloaded`** — object was retrieved (GetObject)
 - **`deleted`** — object was deleted (DeleteObject, only when key existed)
 - **`copied`** — object was copied (CopyObject; also emits `uploaded` for the destination)
@@ -995,6 +995,7 @@ Platform application, SMS, and phone number actions are not supported.
 | ListObjects | Yes |
 | ListObjectsV2 | Yes |
 | PutObject | Yes |
+| PostObject | Yes |
 | GetObject | Yes |
 | HeadObject | Yes |
 | DeleteObject | Yes |
@@ -1058,10 +1059,11 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 ## S3 Features
 
 - **Bucket management** — CreateBucket (idempotent), DeleteBucket (rejects non-empty), HeadBucket, ListBuckets, ListObjects (V1 and V2)
-- **Object operations** — PutObject, GetObject, DeleteObject, HeadObject, CopyObject with ETag, Content-Type, and Last-Modified headers
+- **Object operations** — PutObject, PostObject (presigned POST form uploads), GetObject, DeleteObject, HeadObject, CopyObject with ETag, Content-Type, and Last-Modified headers
 - **Multipart uploads** — CreateMultipartUpload, UploadPart, UploadPartCopy, CompleteMultipartUpload, AbortMultipartUpload with correct multipart ETag calculation (`MD5-of-part-digests-partCount`), metadata preservation, and part overwrite support
 - **ListObjects V2** — prefix filtering, delimiter-based virtual directories, MaxKeys, continuation tokens, StartAfter
 - **CopyObject** — same-bucket and cross-bucket copy via `x-amz-copy-source` header, with metadata preservation
+- **PostObject** — presigned POST form uploads (`multipart/form-data`). Supports `key` field with `${filename}` substitution, `Content-Type`, `success_action_status` (200/201/204), `success_action_redirect`, and user metadata via `x-amz-meta-*` fields. Policy signature validation is skipped (mock server).
 - **User metadata** — `x-amz-meta-*` headers are stored and returned on GetObject and HeadObject
 - **Bulk delete** — DeleteObjects for batch key deletion with proper XML entity handling
 - **Keys with slashes** — full support for slash-delimited keys (e.g., `path/to/file.txt`)
