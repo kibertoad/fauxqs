@@ -340,8 +340,8 @@ server.createQueue("eu-queue", { region: "eu-west-1" });
 server.createTopic("eu-topic", { region: "eu-west-1" });
 server.subscribe({ topic: "eu-topic", queue: "eu-queue", region: "eu-west-1" });
 
-// Or create everything at once
-server.setup({
+// Or create everything at once — returns metadata about each resource
+const result = server.setup({
   queues: [
     { name: "orders" },
     { name: "notifications", attributes: { DelaySeconds: "5" } },
@@ -354,6 +354,11 @@ server.setup({
   ],
   buckets: ["uploads", "exports"],
 });
+// result.queues[0] → { name: "orders", url: "...", arn: "...", created: true }
+// result.topics[0] → { name: "events", arn: "...", created: true }
+// result.subscriptions[0] → { topicName: "events", queueName: "orders", subscriptionArn: "...", created: true }
+// result.buckets[0] → { name: "uploads", created: true }
+// `created` is false when the resource already existed (idempotent skip)
 
 // Delete individual resources (uses defaultRegion; pass { region } to override)
 server.deleteQueue("my-queue");                          // no-op if queue doesn't exist

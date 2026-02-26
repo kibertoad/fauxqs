@@ -601,6 +601,128 @@ describe("programmatic API", () => {
     });
   });
 
+  describe("setup return value", () => {
+    it("returns metadata for all created resources", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const result = server.setup({
+        queues: [{ name: "sr-q1" }, { name: "sr-q2" }],
+        topics: [{ name: "sr-t1" }],
+        subscriptions: [{ topic: "sr-t1", queue: "sr-q1" }],
+        buckets: ["sr-b1", "sr-b2"],
+      });
+
+      expect(result.queues).toHaveLength(2);
+      expect(result.queues[0].name).toBe("sr-q1");
+      expect(result.queues[0].url).toContain("sr-q1");
+      expect(result.queues[0].arn).toMatch(/^arn:aws:sqs:.+:000000000000:sr-q1$/);
+      expect(result.queues[0].created).toBe(true);
+      expect(result.queues[1].name).toBe("sr-q2");
+      expect(result.queues[1].created).toBe(true);
+
+      expect(result.topics).toHaveLength(1);
+      expect(result.topics[0].name).toBe("sr-t1");
+      expect(result.topics[0].arn).toMatch(/^arn:aws:sns:.+:000000000000:sr-t1$/);
+      expect(result.topics[0].created).toBe(true);
+
+      expect(result.subscriptions).toHaveLength(1);
+      expect(result.subscriptions[0].topicName).toBe("sr-t1");
+      expect(result.subscriptions[0].queueName).toBe("sr-q1");
+      expect(result.subscriptions[0].subscriptionArn).toContain("sr-t1");
+      expect(result.subscriptions[0].created).toBe(true);
+
+      expect(result.buckets).toHaveLength(2);
+      expect(result.buckets[0].name).toBe("sr-b1");
+      expect(result.buckets[0].created).toBe(true);
+      expect(result.buckets[1].name).toBe("sr-b2");
+      expect(result.buckets[1].created).toBe(true);
+    });
+
+    it("returns empty arrays for empty config", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const result = server.setup({});
+
+      expect(result.queues).toEqual([]);
+      expect(result.topics).toEqual([]);
+      expect(result.subscriptions).toEqual([]);
+      expect(result.buckets).toEqual([]);
+    });
+
+    it("marks skipped queues as not created", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createQueue("existing-q");
+
+      const result = server.setup({
+        queues: [{ name: "existing-q" }, { name: "new-q" }],
+      });
+
+      expect(result.queues).toHaveLength(2);
+      expect(result.queues[0].name).toBe("existing-q");
+      expect(result.queues[0].created).toBe(false);
+      expect(result.queues[0].url).toContain("existing-q");
+      expect(result.queues[1].name).toBe("new-q");
+      expect(result.queues[1].created).toBe(true);
+    });
+
+    it("marks idempotent topics as not created", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createTopic("existing-t");
+
+      const result = server.setup({
+        topics: [{ name: "existing-t" }],
+      });
+
+      expect(result.topics).toHaveLength(1);
+      expect(result.topics[0].name).toBe("existing-t");
+      expect(result.topics[0].created).toBe(false);
+    });
+
+    it("marks idempotent subscriptions as not created", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createQueue("sub-exist-q");
+      server.createTopic("sub-exist-t");
+      server.subscribe({ topic: "sub-exist-t", queue: "sub-exist-q" });
+
+      const result = server.setup({
+        queues: [{ name: "sub-exist-q" }],
+        topics: [{ name: "sub-exist-t" }],
+        subscriptions: [{ topic: "sub-exist-t", queue: "sub-exist-q" }],
+      });
+
+      expect(result.subscriptions).toHaveLength(1);
+      expect(result.subscriptions[0].created).toBe(false);
+      expect(result.subscriptions[0].subscriptionArn).toBeDefined();
+    });
+
+    it("marks idempotent buckets as not created", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createBucket("existing-b");
+
+      const result = server.setup({
+        buckets: ["existing-b", "new-b"],
+      });
+
+      expect(result.buckets).toHaveLength(2);
+      expect(result.buckets[0].name).toBe("existing-b");
+      expect(result.buckets[0].created).toBe(false);
+      expect(result.buckets[1].name).toBe("new-b");
+      expect(result.buckets[1].created).toBe(true);
+    });
+
+    it("returns correct ARNs with custom region", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const result = server.setup({
+        region: "eu-west-1",
+        queues: [{ name: "eu-q" }],
+        topics: [{ name: "eu-t" }],
+        subscriptions: [{ topic: "eu-t", queue: "eu-q" }],
+      });
+
+      expect(result.queues[0].arn).toContain("eu-west-1");
+      expect(result.topics[0].arn).toContain("eu-west-1");
+      expect(result.subscriptions[0].subscriptionArn).toContain("eu-west-1");
+    });
+  });
+
   describe("reset", () => {
     it("clears messages but keeps queues", async () => {
       server = await startFauxqs({ port: 0, logger: false });

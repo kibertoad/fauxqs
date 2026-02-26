@@ -45,7 +45,14 @@ import { DEFAULT_REGION, SNS_MAX_MESSAGE_SIZE_BYTES } from "./common/types.ts";
 import { loadInitConfig, applyInitConfig } from "./initConfig.ts";
 import { MessageSpy, type MessageSpyReader } from "./spy.ts";
 import { PersistenceManager } from "./persistence.ts";
-export type { FauxqsInitConfig } from "./initConfig.ts";
+export type {
+  FauxqsInitConfig,
+  SetupResult,
+  SetupQueueResult,
+  SetupTopicResult,
+  SetupSubscriptionResult,
+  SetupBucketResult,
+} from "./initConfig.ts";
 export type { MessageAttributeValue } from "./sqs/sqsTypes.ts";
 export { createLocalhostHandler, interceptLocalhostDns } from "./localhost.ts";
 export type {
@@ -353,7 +360,7 @@ export interface FauxqsServer {
       region?: string;
     },
   ): { messageId: string };
-  setup(config: import("./initConfig.ts").FauxqsInitConfig): void;
+  setup(config: import("./initConfig.ts").FauxqsInitConfig): import("./initConfig.ts").SetupResult;
   /** Clear all messages from queues and all objects from buckets, but keep queues, topics, subscriptions, and buckets intact. Also clears the spy buffer. */
   reset(): void;
   purgeAll(): void;
@@ -669,7 +676,7 @@ export async function startFauxqs(options?: {
       return { messageId };
     },
     setup(config) {
-      applyInitConfig(config, sqsStore, snsStore, s3Store, {
+      return applyInitConfig(config, sqsStore, snsStore, s3Store, {
         port: actualPort,
         region,
       });
