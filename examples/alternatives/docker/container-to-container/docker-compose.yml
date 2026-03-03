@@ -6,8 +6,10 @@ services:
     environment:
       - FAUXQS_INIT=/app/init.json
       - FAUXQS_HOST=fauxqs
+      # - FAUXQS_S3_STORAGE_DIR=/s3data      # store S3 objects as files (see README)
     volumes:
       - ./init.json:/app/init.json
+      # - ./local-s3:/s3data                 # bind-mount for inspectable S3 files
     # The Docker image has a built-in HEALTHCHECK — no need to define one here.
 
   app:

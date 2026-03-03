@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { S3Error } from "../common/errors.ts";
 import type { MessageSpy } from "../spy.ts";
-import type { PersistenceManager } from "../persistence.ts";
+import type { S3PersistenceProvider } from "./s3Persistence.ts";
 import type { S3Object, MultipartUpload, ChecksumAlgorithm } from "./s3Types.ts";
 import { computeCompositeChecksum } from "./checksum.ts";
 
@@ -14,7 +14,7 @@ export class S3Store {
   private multipartUploads = new Map<string, MultipartUpload>();
   private multipartUploadsByBucket = new Map<string, Set<string>>();
   spy?: MessageSpy;
-  persistence?: PersistenceManager;
+  persistence?: S3PersistenceProvider;
   relaxedRules?: { disableMinCopySourceSize?: boolean };
 
   createBucket(name: string, type?: BucketType): void {
@@ -160,8 +160,14 @@ export class S3Store {
       }),
     };
 
-    objects.set(key, obj);
     this.persistence?.upsertObject(bucket, obj);
+
+    // When persistence is active, keep only metadata in memory — body is read on demand
+    if (this.persistence) {
+      objects.set(key, { ...obj, body: Buffer.alloc(0) });
+    } else {
+      objects.set(key, obj);
+    }
 
     if (this.spy) {
       this.spy.addMessage({
@@ -197,6 +203,12 @@ export class S3Store {
       });
     }
 
+    // On-demand body loading: when persistence is active and body is empty, read from persistence
+    if (this.persistence && obj.body.length === 0 && obj.contentLength > 0) {
+      const body = this.persistence.readBody(bucket, key);
+      return { ...obj, body };
+    }
+
     return obj;
   }
 
@@ -221,7 +233,17 @@ export class S3Store {
   }
 
   headObject(bucket: string, key: string): S3Object {
-    return this.getObject(bucket, key);
+    const objects = this.buckets.get(bucket);
+    if (!objects) {
+      throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
+    }
+
+    const obj = objects.get(key);
+    if (!obj) {
+      throw new S3Error("NoSuchKey", `The specified key does not exist.`, 404, `/${bucket}/${key}`);
+    }
+
+    return obj;
   }
 
   listObjects(
@@ -550,10 +572,16 @@ export class S3Store {
       ...checksumFields,
     };
 
-    objects.set(upload.key, obj);
+    this.persistence?.completeMultipartUpload(uploadId, upload.bucket, obj);
+
+    // When persistence is active, keep only metadata in memory — body is read on demand
+    if (this.persistence) {
+      objects.set(upload.key, { ...obj, body: Buffer.alloc(0) });
+    } else {
+      objects.set(upload.key, obj);
+    }
     this.multipartUploads.delete(uploadId);
     this.multipartUploadsByBucket.get(upload.bucket)?.delete(uploadId);
-    this.persistence?.completeMultipartUpload(uploadId, upload.bucket, obj);
 
     if (this.spy) {
       this.spy.addMessage({

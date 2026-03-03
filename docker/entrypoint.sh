@@ -14,6 +14,12 @@ if [ -n "$FAUXQS_DATA_DIR" ] && ! mountpoint -q "$FAUXQS_DATA_DIR" 2>/dev/null; 
   unset FAUXQS_DATA_DIR
 fi
 
+# Disable S3 file storage if directory is not a mounted volume
+if [ -n "$FAUXQS_S3_STORAGE_DIR" ] && ! mountpoint -q "$FAUXQS_S3_STORAGE_DIR" 2>/dev/null; then
+  echo "No volume mounted at $FAUXQS_S3_STORAGE_DIR — S3 file storage disabled"
+  unset FAUXQS_S3_STORAGE_DIR
+fi
+
 # Log persistence status
 if [ -z "$FAUXQS_DATA_DIR" ]; then
   echo "Persistence: OFF (no data directory)"
@@ -21,6 +27,13 @@ elif [ "$FAUXQS_PERSISTENCE" = "true" ]; then
   echo "Persistence: ON (dataDir=$FAUXQS_DATA_DIR)"
 else
   echo "Persistence: OFF (set FAUXQS_PERSISTENCE=true to enable)"
+fi
+
+# Log S3 file storage status
+if [ -n "$FAUXQS_S3_STORAGE_DIR" ]; then
+  echo "S3 file storage: ON (s3StorageDir=$FAUXQS_S3_STORAGE_DIR)"
+else
+  echo "S3 file storage: OFF"
 fi
 
 exec tini -- node dist/server.js

@@ -12,6 +12,7 @@
     "test:docker": "node docker-acceptance/docker-acceptance.ts",
     "test:docker:compose": "node docker-acceptance/docker-compose-acceptance.ts",
     "test:docker:persistence": "node docker-acceptance/docker-persistence-acceptance.ts",
+    "test:docker:s3-storage": "node docker-acceptance/docker-s3-storage-acceptance.ts",
     "bench": "node bench/getQueueByArn.bench.ts && node bench/createMessage.bench.ts && node bench/snsPublish.bench.ts",
     "lint": "oxlint && oxfmt src && tsc --noEmit",
     "lint:fix": "oxlint --fix && oxfmt --write src",

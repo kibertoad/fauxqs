@@ -9,7 +9,7 @@ export function getObjectAttributes(
   const bucket = request.params.bucket;
   const key = request.params["*"];
 
-  const obj = store.getObject(bucket, key);
+  const obj = store.headObject(bucket, key);
 
   const requestedAttrs = ((request.headers["x-amz-object-attributes"] as string) ?? "")
     .split(",")

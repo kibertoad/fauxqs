@@ -28,7 +28,7 @@ export function renameObject(
   }
 
   // Source conditionals (evaluated against source object)
-  const sourceObj = store.getObject(bucket, sourceKey);
+  const sourceObj = store.headObject(bucket, sourceKey);
 
   const srcIfMatch = request.headers["x-amz-rename-source-if-match"] as string | undefined;
   if (srcIfMatch && srcIfMatch !== sourceObj.etag) {
@@ -88,7 +88,7 @@ export function renameObject(
   const hasDestConditionals = !!(ifMatch || ifNoneMatch || ifModifiedSince || ifUnmodifiedSince);
 
   try {
-    const destObj = store.getObject(bucket, destKey);
+    const destObj = store.headObject(bucket, destKey);
 
     // Destination exists
     if (!hasDestConditionals) {

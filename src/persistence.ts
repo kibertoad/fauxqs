@@ -8,6 +8,7 @@ import type { SnsTopic, SnsSubscription } from "./sns/snsTypes.ts";
 import type { S3Store, BucketType } from "./s3/s3Store.ts";
 import type { S3Object, MultipartUpload, MultipartPart } from "./s3/s3Types.ts";
 import type { ChecksumAlgorithm } from "./s3/s3Types.ts";
+import type { S3PersistenceProvider } from "./s3/s3Persistence.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sqs_queues (
@@ -136,7 +137,7 @@ interface PreparedStatements {
   deleteObject: StatementSync;
   deleteObjectsByBucket: StatementSync;
   deleteAllObjects: StatementSync;
-  loadObjects: StatementSync;
+  loadObjectsMeta: StatementSync;
   insertMultipartUpload: StatementSync;
   deleteMultipartUpload: StatementSync;
   loadMultipartUploads: StatementSync;
@@ -145,9 +146,10 @@ interface PreparedStatements {
   loadMultipartParts: StatementSync;
   deleteAllMultipartParts: StatementSync;
   deleteAllMultipartUploads: StatementSync;
+  readBody: StatementSync;
 }
 
-export class PersistenceManager {
+export class PersistenceManager implements S3PersistenceProvider {
   private db: DatabaseSync;
   private stmts: PreparedStatements;
 
@@ -224,7 +226,9 @@ export class PersistenceManager {
       deleteObject: this.db.prepare("DELETE FROM s3_objects WHERE bucket = ? AND key = ?"),
       deleteObjectsByBucket: this.db.prepare("DELETE FROM s3_objects WHERE bucket = ?"),
       deleteAllObjects: this.db.prepare("DELETE FROM s3_objects"),
-      loadObjects: this.db.prepare("SELECT * FROM s3_objects"),
+      loadObjectsMeta: this.db.prepare(
+        "SELECT bucket, key, content_type, content_length, etag, last_modified, metadata, content_language, content_disposition, cache_control, content_encoding, parts, checksum_algorithm, checksum_value, checksum_type, part_checksums FROM s3_objects",
+      ),
       insertMultipartUpload: this.db.prepare(`
         INSERT OR REPLACE INTO s3_multipart_uploads (
           upload_id, bucket, key, content_type, metadata, initiated,
@@ -243,6 +247,7 @@ export class PersistenceManager {
       loadMultipartParts: this.db.prepare("SELECT * FROM s3_multipart_parts WHERE upload_id = ?"),
       deleteAllMultipartParts: this.db.prepare("DELETE FROM s3_multipart_parts"),
       deleteAllMultipartUploads: this.db.prepare("DELETE FROM s3_multipart_uploads"),
+      readBody: this.db.prepare("SELECT body FROM s3_objects WHERE bucket = ? AND key = ?"),
     };
   }
 
@@ -433,6 +438,14 @@ export class PersistenceManager {
     this.stmts.deleteAllObjects.run();
   }
 
+  readBody(bucket: string, key: string): Buffer {
+    const row = this.stmts.readBody.get(bucket, key) as { body: Uint8Array } | undefined;
+    if (!row) {
+      throw new Error(`Object not found in persistence: ${bucket}/${key}`);
+    }
+    return Buffer.from(row.body);
+  }
+
   renameObject(bucket: string, sourceKey: string, destKey: string): void {
     this.transaction(() => {
       const row = this.db
@@ -503,6 +516,13 @@ export class PersistenceManager {
     });
   }
 
+  deleteAllMultipartUploads(): void {
+    this.transaction(() => {
+      this.stmts.deleteAllMultipartParts.run();
+      this.stmts.deleteAllMultipartUploads.run();
+    });
+  }
+
   // ── Bulk operations ──
 
   clearMessagesAndObjects(): void {
@@ -530,9 +550,17 @@ export class PersistenceManager {
   // ── Load on startup ──
 
   load(sqsStore: SqsStore, snsStore: SnsStore, s3Store: S3Store): void {
+    this.loadSqsAndSns(sqsStore, snsStore);
+    this.loadS3(s3Store);
+  }
+
+  loadSqsAndSns(sqsStore: SqsStore, snsStore: SnsStore): void {
     this.loadSqsQueues(sqsStore);
     this.loadSnsTopics(snsStore);
     this.loadSnsSubscriptions(snsStore);
+  }
+
+  loadS3(s3Store: S3Store): void {
     this.loadS3Buckets(s3Store);
     this.loadS3Objects(s3Store);
     this.loadS3MultipartUploads(s3Store);
@@ -707,10 +735,10 @@ export class PersistenceManager {
   }
 
   private loadS3Objects(s3Store: S3Store): void {
-    const rows = this.stmts.loadObjects.all() as Array<{
+    // Load metadata only — bodies are read on demand via readBody()
+    const rows = this.stmts.loadObjectsMeta.all() as Array<{
       bucket: string;
       key: string;
-      body: Uint8Array;
       content_type: string;
       content_length: number;
       etag: string;
@@ -730,7 +758,7 @@ export class PersistenceManager {
     for (const row of rows) {
       const obj: S3Object = {
         key: row.key,
-        body: Buffer.from(row.body),
+        body: Buffer.alloc(0),
         contentType: row.content_type,
         contentLength: row.content_length,
         etag: row.etag,

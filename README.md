@@ -90,6 +90,7 @@ The server starts on port `4566` and handles SQS, SNS, and S3 on a single endpoi
 | `FAUXQS_INIT` | Path to a JSON init config file (see [Init config file](#init-config-file)) | (none) |
 | `FAUXQS_DATA_DIR` | Directory for SQLite persistence (see [Persistence](#persistence)). Omit to keep all state in-memory. | (none) |
 | `FAUXQS_PERSISTENCE` | Set to `true` to enable persistence when `FAUXQS_DATA_DIR` is set | `false` |
+| `FAUXQS_S3_STORAGE_DIR` | Directory for file-based S3 object storage (see [File-based S3 storage](#file-based-s3-storage)). Independent of `FAUXQS_DATA_DIR`. | (none) |
 | `FAUXQS_DNS_NAME` | Domain that dnsmasq resolves (including all subdomains) to the container IP. Only needed when the container hostname doesn't match the docker-compose service name — e.g., when using `container_name` or running with plain `docker run`. In docker-compose the hostname is set to the service name automatically, so this is rarely needed. (Docker only) | container hostname |
 | `FAUXQS_DNS_UPSTREAM` | Where dnsmasq forwards non-fauxqs DNS queries (e.g., `registry.npmjs.org`). Change this if you're in a corporate network with an internal DNS server, or if you prefer a different public resolver like `1.1.1.1`. (Docker only) | `8.8.8.8` |
 
@@ -139,6 +140,12 @@ To persist state across container restarts, mount a volume at `/data` and set `F
 docker run -p 4566:4566 -v fauxqs-data:/data -e FAUXQS_PERSISTENCE=true kibertoad/fauxqs
 ```
 
+To store S3 objects as files on a host directory (useful for inspecting uploads, sharing with other tools, or avoiding SQLite bloat from large files):
+
+```bash
+docker run -p 4566:4566 -v ./local-s3:/s3data -e FAUXQS_S3_STORAGE_DIR=/s3data kibertoad/fauxqs
+```
+
 With an init config file:
 
 ```bash
@@ -178,9 +185,11 @@ services:
       - "4566:4566"
     environment:
       - FAUXQS_INIT=/app/init.json
+      # - FAUXQS_S3_STORAGE_DIR=/s3data      # store S3 objects as files
     volumes:
       - ./scripts/fauxqs/init.json:/app/init.json
       - fauxqs-data:/data
+      # - ./local-s3:/s3data                 # bind-mount for inspectable S3 files
 
   app:
     # ...
@@ -875,6 +884,61 @@ All mutations are written through to SQLite immediately (no batching or delayed 
 - S3 buckets (including directory bucket type), objects with metadata, and in-progress multipart uploads
 
 `reset()` and `purgeAll()` also write through to the database — `reset()` clears messages and objects, `purgeAll()` clears everything.
+
+### File-based S3 storage
+
+As an alternative to SQLite, S3 objects can be stored as plain files on disk. This makes objects directly inspectable (open them in an editor, diff with `git`, serve with other tools) while keeping SQS/SNS persistence separate.
+
+Set `s3StorageDir` to enable:
+
+```typescript
+const server = await startFauxqs({ s3StorageDir: "./s3data" });
+```
+
+Or via environment variable:
+
+```bash
+FAUXQS_S3_STORAGE_DIR=./s3data npx fauxqs
+```
+
+**Docker:**
+
+```bash
+docker run -p 4566:4566 -v ./local-s3:/s3data -e FAUXQS_S3_STORAGE_DIR=/s3data kibertoad/fauxqs
+```
+
+`dataDir` and `s3StorageDir` are fully independent — you can use either, both, or neither:
+
+| `dataDir` | `s3StorageDir` | SQS/SNS | S3 |
+|---|---|---|---|
+| not set | not set | in-memory | in-memory |
+| set | not set | SQLite | SQLite |
+| not set | set | in-memory | files |
+| set | set | SQLite | files |
+
+When `s3StorageDir` is set, it fully replaces SQLite for S3. PersistenceManager only handles SQS/SNS.
+
+**When to prefer file-based S3 storage:** SQLite stores object bodies as inline blobs, which works well for small objects but can bloat the database and slow down queries when you upload many large files. If your workflow involves large or numerous S3 objects, `s3StorageDir` avoids this by writing bodies directly to the filesystem.
+
+**File layout on disk:**
+
+```
+<s3StorageDir>/
+  buckets/
+    <bucket-name>/
+      .bucket.json                          # { name, creationDate, type }
+      objects/
+        <key-as-path>.data                  # raw body bytes
+        <key-as-path>.meta.json             # metadata JSON
+  _multipart/
+    <uploadId>/
+      .upload.json                          # upload metadata
+      parts/
+        <partNumber>.data                   # part body
+        <partNumber>.meta.json              # part metadata
+```
+
+S3 key slashes become directory separators (key `photos/vacation.jpg` → `objects/photos/vacation.jpg.data`). Object bodies are loaded on demand — only metadata lives in memory.
 
 ### Configurable queue URL host
 

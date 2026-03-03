@@ -45,6 +45,8 @@ import { DEFAULT_REGION, SNS_MAX_MESSAGE_SIZE_BYTES } from "./common/types.ts";
 import { loadInitConfig, applyInitConfig } from "./initConfig.ts";
 import { MessageSpy, type MessageSpyReader } from "./spy.ts";
 import { PersistenceManager } from "./persistence.ts";
+import { FileS3Persistence } from "./s3/fileS3Persistence.ts";
+import type { S3PersistenceProvider } from "./s3/s3Persistence.ts";
 export type {
   FauxqsInitConfig,
   SetupResult,
@@ -380,6 +382,8 @@ export async function startFauxqs(options?: {
   relaxedRules?: RelaxedRules;
   /** Directory for SQLite persistence. When set, state survives restarts. No env var fallback — explicit opt-in only. */
   dataDir?: string;
+  /** Directory for file-based S3 object storage. When set, S3 objects are stored as inspectable files on disk instead of in SQLite. Independent of dataDir. */
+  s3StorageDir?: string;
 }): Promise<FauxqsServer> {
   const port = options?.port ?? parseInt(process.env.FAUXQS_PORT ?? "4566");
   const host = options?.host ?? process.env.FAUXQS_HOST;
@@ -392,19 +396,39 @@ export async function startFauxqs(options?: {
   const snsStore = new SnsStore();
   const s3Store = new S3Store();
 
-  // Persistence: create manager and wire into stores before any data is loaded
+  // Persistence: create managers and wire into stores before any data is loaded
   const persistenceManager = options?.dataDir ? new PersistenceManager(options.dataDir) : undefined;
-  if (persistenceManager) {
-    // Load persisted state BEFORE assigning persistence to stores.
-    // This avoids INSERT OR REPLACE triggering ON DELETE CASCADE during load.
+
+  // S3 persistence: s3StorageDir (files) takes priority over dataDir (SQLite)
+  const s3Persistence: S3PersistenceProvider | undefined = options?.s3StorageDir
+    ? new FileS3Persistence(options.s3StorageDir)
+    : persistenceManager;
+
+  // Load persisted state BEFORE assigning persistence to stores.
+  // This avoids INSERT OR REPLACE triggering ON DELETE CASCADE during load.
+  if (persistenceManager && s3Persistence === persistenceManager) {
+    // Single persistence backend for everything (existing behavior)
     persistenceManager.load(sqsStore, snsStore, s3Store);
+  } else {
+    // Separate backends: SQLite for SQS/SNS, file-based (or none) for S3
+    if (persistenceManager) {
+      persistenceManager.loadSqsAndSns(sqsStore, snsStore);
+    }
+    if (s3Persistence) {
+      s3Persistence.loadS3(s3Store);
+    }
+  }
+
+  if (persistenceManager) {
     sqsStore.persistence = persistenceManager;
     snsStore.persistence = persistenceManager;
-    s3Store.persistence = persistenceManager;
     // Wire persistence into queues created during load
     for (const queue of sqsStore.allQueues()) {
       queue.persistence = persistenceManager;
     }
+  }
+  if (s3Persistence) {
+    s3Store.persistence = s3Persistence;
   }
 
   const spyOption = options?.messageSpies;
@@ -428,6 +452,11 @@ export async function startFauxqs(options?: {
   if (persistenceManager) {
     app.addHook("preClose", () => {
       persistenceManager.close();
+    });
+  }
+  if (s3Persistence && s3Persistence !== persistenceManager) {
+    app.addHook("preClose", () => {
+      s3Persistence.close();
     });
   }
 
@@ -684,7 +713,15 @@ export async function startFauxqs(options?: {
     reset() {
       sqsStore.clearMessages();
       s3Store.clearObjects();
-      persistenceManager?.clearMessagesAndObjects();
+      if (s3Persistence && s3Persistence !== persistenceManager) {
+        // Separate S3 persistence — clear S3 files independently
+        s3Persistence.deleteAllObjects();
+        s3Persistence.deleteAllMultipartUploads();
+        persistenceManager?.clearMessagesAndObjects();
+      } else {
+        // Unified persistence — single call handles both SQS/SNS messages and S3
+        persistenceManager?.clearMessagesAndObjects();
+      }
       if (messageSpy) {
         messageSpy.clear();
       }
@@ -693,6 +730,10 @@ export async function startFauxqs(options?: {
       sqsStore.purgeAll();
       snsStore.purgeAll();
       s3Store.purgeAll();
+      if (s3Persistence && s3Persistence !== persistenceManager) {
+        // Separate file-based S3 persistence — purge everything
+        s3Persistence.purgeAll();
+      }
       persistenceManager?.purgeAll();
     },
   };
