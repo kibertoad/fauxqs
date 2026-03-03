@@ -36,3 +36,6 @@ jobs:
 
       - name: Run Docker persistence acceptance test
         run: npm run test:docker:persistence
+
+      - name: Run Docker S3 file storage acceptance test
+        run: npm run test:docker:s3-storage
