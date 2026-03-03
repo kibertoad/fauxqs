@@ -22,37 +22,36 @@ export class SnsStore {
 
     const existing = this.topics.get(arn);
     if (existing) {
-      // One-directional attribute check: only validate attributes provided in the request.
-      // AWS does not reject a CreateTopic call that omits attributes present on the existing topic —
-      // it only rejects when a provided attribute value conflicts with the existing value.
-      // This matches real AWS behaviour and allows different callers (e.g. consumer vs publisher in
-      // @message-queue-toolkit) to assertTopic with different attribute subsets without conflict.
+      // One-directional attribute check: only reject when a provided attribute value conflicts
+      // with an existing value. Missing attributes on the existing topic are not conflicts —
+      // they are merged in. This matches real AWS behaviour where CreateTopic is idempotent
+      // and allows different callers (e.g. consumer vs publisher in @message-queue-toolkit)
+      // to assertTopic with different attribute subsets without conflict.
       if (attributes) {
         for (const [key, value] of Object.entries(attributes)) {
-          if (existing.attributes[key] !== value) {
+          if (key in existing.attributes && existing.attributes[key] !== value) {
             throw new SnsError(
               "InvalidParameter",
               "Invalid parameter: Attributes Reason: Topic already exists with different attributes",
             );
           }
         }
+        Object.assign(existing.attributes, attributes);
       }
-      // Check for tag conflicts
+      // One-directional tag check: only reject when a provided tag conflicts with an existing
+      // tag value. New tags are merged into the existing topic.
       if (tags) {
         const newTags = new Map(Object.entries(tags));
-        if (existing.tags.size !== newTags.size) {
-          throw new SnsError(
-            "InvalidParameter",
-            "Invalid parameter: Tags Reason: Topic already exists with different tags",
-          );
-        }
         for (const [key, value] of newTags) {
-          if (existing.tags.get(key) !== value) {
+          if (existing.tags.has(key) && existing.tags.get(key) !== value) {
             throw new SnsError(
               "InvalidParameter",
               "Invalid parameter: Tags Reason: Topic already exists with different tags",
             );
           }
+        }
+        for (const [key, value] of newTags) {
+          existing.tags.set(key, value);
         }
       }
       return existing;

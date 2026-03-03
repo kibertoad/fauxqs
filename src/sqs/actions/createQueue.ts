@@ -55,14 +55,25 @@ export function createQueue(
   const arn = sqsQueueArn(queueName, region);
   const existing = store.getQueueByArn(arn);
   if (existing) {
-    // Idempotent: same name + same attributes = return existing
-    // Different attributes = error
+    // Idempotent: same name + compatible attributes = return existing.
+    // Only reject when a provided attribute explicitly conflicts with an existing value.
+    // Missing attributes on the existing queue are not conflicts — they are merged in.
     for (const key of Object.keys(attributes)) {
-      if (SETTABLE_ATTRIBUTES.has(key) && existing.attributes[key] !== attributes[key]) {
+      if (
+        SETTABLE_ATTRIBUTES.has(key) &&
+        key in existing.attributes &&
+        existing.attributes[key] !== attributes[key]
+      ) {
         throw new SqsError(
           "QueueNameExists",
           `A queue already exists with the same name and a different value for attribute ${key}`,
         );
+      }
+    }
+    // Merge new attributes into existing queue
+    for (const key of Object.keys(attributes)) {
+      if (SETTABLE_ATTRIBUTES.has(key) && !(key in existing.attributes)) {
+        existing.attributes[key] = attributes[key];
       }
     }
     return { QueueUrl: existing.url } satisfies CreateQueueResult;
