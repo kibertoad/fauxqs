@@ -235,7 +235,7 @@ function lifecycleConfigToXml(config: { Rules: LifecycleRule[] }): string {
       if (rule.Filter.Prefix !== undefined) {
         parts.push(`<Filter><Prefix>${escapeXml(rule.Filter.Prefix)}</Prefix></Filter>`);
       } else {
-        parts.push("<Filter></Filter>");
+        parts.push("<Filter><Prefix></Prefix></Filter>");
       }
     }
     parts.push(`<Status>${rule.Status}</Status>`);

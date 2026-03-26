@@ -60,7 +60,7 @@ describe("S3 Bucket Lifecycle Configuration", () => {
           Bucket: "no-lifecycle-bucket",
         }),
       ),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({ name: "NoSuchLifecycleConfiguration" });
   });
 
   it("deletes lifecycle configuration", async () => {
@@ -95,7 +95,7 @@ describe("S3 Bucket Lifecycle Configuration", () => {
           Bucket: "delete-lifecycle-bucket",
         }),
       ),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({ name: "NoSuchLifecycleConfiguration" });
   });
 
   it("lifecycle configuration is removed when bucket is deleted", async () => {
@@ -128,7 +128,7 @@ describe("S3 Bucket Lifecycle Configuration", () => {
           Bucket: "bucket-with-lifecycle",
         }),
       ),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({ name: "NoSuchLifecycleConfiguration" });
   });
 
   it("replaces existing lifecycle configuration", async () => {
