@@ -605,14 +605,27 @@ Example:
 
 ##### `buckets`
 
-Array of bucket name strings or objects. Use the object form to create directory buckets (S3 Express One Zone).
+Array of bucket name strings or objects. Use the object form to create directory buckets (S3 Express One Zone) or to attach a lifecycle configuration.
 
 ```json
 {
   "buckets": [
     "uploads",
     "exports",
-    { "name": "my-directory-bucket", "type": "directory" }
+    { "name": "my-directory-bucket", "type": "directory" },
+    {
+      "name": "temp-data",
+      "lifecycleConfiguration": {
+        "Rules": [
+          {
+            "ID": "DeleteOldObjects",
+            "Status": "Enabled",
+            "Filter": {},
+            "Expiration": { "Days": 1 }
+          }
+        ]
+      }
+    }
   ]
 }
 ```
@@ -621,6 +634,7 @@ Array of bucket name strings or objects. Use the object form to create directory
 |-------|------|----------|-------------|
 | `name` | `string` | Yes | Bucket name. |
 | `type` | `"general-purpose"` \| `"directory"` | No | Bucket type. Defaults to `"general-purpose"`. Directory buckets support `RenameObject`. |
+| `lifecycleConfiguration` | `{ Rules: LifecycleRule[] }` | No | Lifecycle configuration applied on creation. Rules support `ID`, `Status`, `Filter`, `Expiration`, `NoncurrentVersionExpiration`, and `AbortIncompleteMultipartUpload`. |
 
 #### Message spy
 
@@ -881,7 +895,7 @@ All mutations are written through to SQLite immediately (no batching or delayed 
 - SQS queues with attributes, tags, and messages (ready, delayed, and inflight with their visibility deadlines)
 - FIFO sequence counters (no duplicate sequence numbers after restart)
 - SNS topics with attributes and tags, subscriptions with attributes (fan-out works immediately after restart)
-- S3 buckets (including directory bucket type), objects with metadata, and in-progress multipart uploads
+- S3 buckets (including directory bucket type and lifecycle configurations), objects with metadata, and in-progress multipart uploads
 
 `reset()` and `purgeAll()` also write through to the database — `reset()` clears messages and objects, `purgeAll()` clears everything.
 
@@ -1130,7 +1144,7 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 
 ## S3 Features
 
-- **Bucket management** — CreateBucket (idempotent), DeleteBucket (rejects non-empty), HeadBucket, ListBuckets, ListObjects (V1 and V2)
+- **Bucket management** — CreateBucket (idempotent), DeleteBucket (rejects non-empty), HeadBucket, ListBuckets, ListObjects (V1 and V2), PutBucketLifecycleConfiguration, GetBucketLifecycleConfiguration, DeleteBucketLifecycle
 - **Object operations** — PutObject, PostObject (presigned POST form uploads), GetObject, DeleteObject, HeadObject, CopyObject with ETag, Content-Type, and Last-Modified headers
 - **Multipart uploads** — CreateMultipartUpload, UploadPart, UploadPartCopy, CompleteMultipartUpload, AbortMultipartUpload with correct multipart ETag calculation (`MD5-of-part-digests-partCount`), metadata preservation, and part overwrite support
 - **ListObjects V2** — prefix filtering, delimiter-based virtual directories, MaxKeys, continuation tokens, StartAfter
@@ -1143,7 +1157,8 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Checksums** — CRC32, SHA1, and SHA256 checksums are stored on upload (PutObject, UploadPart) and returned on download (GetObject, HeadObject with `x-amz-checksum-mode: ENABLED`). Multipart uploads compute composite checksums. GetObjectAttributes supports the `Checksum` attribute. CRC32C and CRC64NVME are silently ignored. Checksums are stored and returned as-is — no body validation is performed.
 - **GetObjectAttributes** — selective metadata retrieval via `x-amz-object-attributes` header: ETag, StorageClass, ObjectSize, ObjectParts (with pagination), and Checksum (including per-part checksums for multipart objects)
 - **RenameObject** — atomic rename within directory buckets (`PUT /:bucket/:key?renameObject`). Preserves all metadata, ETag, timestamps, and checksums. Rejects general-purpose buckets. Default no-overwrite (412 if destination exists unless `If-Match` is provided). Supports source and destination conditional headers.
-- **Directory buckets** — `CreateBucket` accepts `<Type>Directory</Type>` in the body. Programmatic API: `server.createBucket("name", { type: "directory" })`. Init config supports `{ name, type }` objects in the `buckets` array.
+- **Directory buckets** — `CreateBucket` accepts `<Type>Directory</Type>` in the body. Programmatic API: `server.createBucket("name", { type: "directory" })`. Init config supports `{ name, type, lifecycleConfiguration }` objects in the `buckets` array.
+- **Lifecycle configuration** — PutBucketLifecycleConfiguration, GetBucketLifecycleConfiguration, and DeleteBucketLifecycle. Lifecycle configs are stored and returned as-is (rules are not enforced — fauxqs is a mock). Persisted across restarts. Can also be set declaratively via init config.
 - **Path-style and virtual-hosted-style** — both S3 URL styles are supported (see below)
 
 ### S3 URL styles
