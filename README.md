@@ -1083,8 +1083,11 @@ Platform application, SMS, and phone number actions are not supported.
 | RenameObject | Yes |
 | ListMultipartUploads | No |
 | ListParts | No |
+| PutBucketLifecycleConfiguration | Yes |
+| GetBucketLifecycleConfiguration | Yes |
+| DeleteBucketLifecycleConfiguration | Yes |
 
-Bucket configuration (CORS, lifecycle, encryption, replication, logging, website, notifications, policy), ACLs, versioning, tagging, object lock, and public access block actions are not supported.
+Bucket configuration (CORS, encryption, replication, logging, website, notifications, policy), ACLs, versioning, tagging, object lock, and public access block actions are not supported.
 
 ### STS
 
