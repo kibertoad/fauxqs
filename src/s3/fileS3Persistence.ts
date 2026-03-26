@@ -104,6 +104,20 @@ export class FileS3Persistence implements S3PersistenceProvider {
     }
   }
 
+  saveBucketLifecycleConfiguration(bucket: string, config: string): void {
+    const lifecyclePath = join(this.bucketsDir, bucket, ".lifecycle.xml");
+    writeFileSync(lifecyclePath, config);
+  }
+
+  deleteBucketLifecycleConfiguration(bucket: string): void {
+    const lifecyclePath = join(this.bucketsDir, bucket, ".lifecycle.xml");
+    try {
+      unlinkSync(lifecyclePath);
+    } catch {
+      /* ignore if not present */
+    }
+  }
+
   // ── Object ops ──
 
   upsertObject(bucket: string, obj: S3Object): void {
@@ -283,6 +297,14 @@ export class FileS3Persistence implements S3PersistenceProvider {
       const meta: BucketMeta = JSON.parse(readFileSync(metaPath, "utf-8"));
       s3Store.createBucket(meta.name, meta.type);
       s3Store.setBucketCreationDate(meta.name, new Date(meta.creationDate));
+
+      const lifecyclePath = join(this.bucketsDir, bucketName, ".lifecycle.xml");
+      if (existsSync(lifecyclePath)) {
+        s3Store.restoreBucketLifecycleConfiguration(
+          meta.name,
+          readFileSync(lifecyclePath, "utf-8"),
+        );
+      }
     }
   }
 

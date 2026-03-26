@@ -13,7 +13,7 @@ export function getBucketLifecycleConfiguration(
   }
 
   const config = store.getBucketLifecycleConfiguration(bucket);
-  if (!config) {
+  if (config === undefined) {
     throw new S3Error(
       "NoSuchLifecycleConfiguration",
       "The lifecycle configuration does not exist",

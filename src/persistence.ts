@@ -63,6 +63,11 @@ CREATE TABLE IF NOT EXISTS s3_buckets (
   type TEXT NOT NULL DEFAULT 'general-purpose'
 );
 
+CREATE TABLE IF NOT EXISTS s3_bucket_lifecycle_configurations (
+  bucket TEXT PRIMARY KEY REFERENCES s3_buckets(name) ON DELETE CASCADE,
+  configuration TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS s3_objects (
   bucket TEXT NOT NULL,
   key TEXT NOT NULL,
@@ -133,6 +138,9 @@ interface PreparedStatements {
   insertBucket: StatementSync;
   deleteBucket: StatementSync;
   loadBuckets: StatementSync;
+  saveBucketLifecycleConfiguration: StatementSync;
+  deleteBucketLifecycleConfiguration: StatementSync;
+  loadBucketLifecycleConfigurations: StatementSync;
   upsertObject: StatementSync;
   deleteObject: StatementSync;
   deleteObjectsByBucket: StatementSync;
@@ -216,6 +224,15 @@ export class PersistenceManager implements S3PersistenceProvider {
       ),
       deleteBucket: this.db.prepare("DELETE FROM s3_buckets WHERE name = ?"),
       loadBuckets: this.db.prepare("SELECT * FROM s3_buckets"),
+      saveBucketLifecycleConfiguration: this.db.prepare(
+        "INSERT OR REPLACE INTO s3_bucket_lifecycle_configurations (bucket, configuration) VALUES (?, ?)",
+      ),
+      deleteBucketLifecycleConfiguration: this.db.prepare(
+        "DELETE FROM s3_bucket_lifecycle_configurations WHERE bucket = ?",
+      ),
+      loadBucketLifecycleConfigurations: this.db.prepare(
+        "SELECT * FROM s3_bucket_lifecycle_configurations",
+      ),
       upsertObject: this.db.prepare(`
         INSERT OR REPLACE INTO s3_objects (
           bucket, key, body, content_type, content_length, etag, last_modified, metadata,
@@ -402,6 +419,14 @@ export class PersistenceManager implements S3PersistenceProvider {
     this.stmts.deleteBucket.run(name);
   }
 
+  saveBucketLifecycleConfiguration(bucket: string, config: string): void {
+    this.stmts.saveBucketLifecycleConfiguration.run(bucket, config);
+  }
+
+  deleteBucketLifecycleConfiguration(bucket: string): void {
+    this.stmts.deleteBucketLifecycleConfiguration.run(bucket);
+  }
+
   // ── S3 Object write-through ──
 
   upsertObject(bucket: string, obj: S3Object): void {
@@ -562,6 +587,7 @@ export class PersistenceManager implements S3PersistenceProvider {
 
   loadS3(s3Store: S3Store): void {
     this.loadS3Buckets(s3Store);
+    this.loadS3BucketLifecycleConfigurations(s3Store);
     this.loadS3Objects(s3Store);
     this.loadS3MultipartUploads(s3Store);
   }
@@ -731,6 +757,17 @@ export class PersistenceManager implements S3PersistenceProvider {
     for (const row of rows) {
       s3Store.createBucket(row.name, row.type as BucketType);
       s3Store.setBucketCreationDate(row.name, new Date(row.creation_date));
+    }
+  }
+
+  private loadS3BucketLifecycleConfigurations(s3Store: S3Store): void {
+    const rows = this.stmts.loadBucketLifecycleConfigurations.all() as Array<{
+      bucket: string;
+      configuration: string;
+    }>;
+
+    for (const row of rows) {
+      s3Store.restoreBucketLifecycleConfiguration(row.bucket, row.configuration);
     }
   }
 

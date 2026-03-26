@@ -23,6 +23,7 @@ import {
   HeadBucketCommand,
   PutObjectCommand,
   GetObjectCommand,
+  GetBucketLifecycleConfigurationCommand,
 } from "@aws-sdk/client-s3";
 import { loadInitConfig, validateInitConfig } from "../src/initConfig.js";
 
@@ -537,5 +538,76 @@ describe("init config", () => {
     expect(buckets.Buckets![0].Name).toBe("file-bucket");
 
     cleanupTempConfig(configPath);
+  });
+
+  it("creates bucket with lifecycle configuration from init config", async () => {
+    const configPath = writeTempConfig({
+      buckets: [
+        {
+          name: "lifecycle-init-bucket",
+          lifecycleConfiguration: {
+            Rules: [
+              {
+                ID: "DeleteOldObjects",
+                Status: "Enabled",
+                Filter: {},
+                Expiration: { Days: 1 },
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    server = await startFauxqs({ port: 0, logger: false, init: configPath });
+    const s3 = createS3Client(server.port);
+
+    const result = await s3.send(
+      new GetBucketLifecycleConfigurationCommand({ Bucket: "lifecycle-init-bucket" }),
+    );
+    expect(result.Rules).toHaveLength(1);
+    expect(result.Rules![0].ID).toBe("DeleteOldObjects");
+    expect(result.Rules![0].Status).toBe("Enabled");
+    expect(result.Rules![0].Expiration?.Days).toBe(1);
+
+    s3.destroy();
+    cleanupTempConfig(configPath);
+  });
+
+  it("validates lifecycle configuration in init config schema", () => {
+    const config = validateInitConfig({
+      buckets: [
+        {
+          name: "bucket-with-lifecycle",
+          lifecycleConfiguration: {
+            Rules: [
+              {
+                ID: "Cleanup",
+                Status: "Enabled",
+                Filter: { Prefix: "logs/" },
+                Expiration: { Days: 30 },
+                AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    expect(config.buckets).toHaveLength(1);
+  });
+
+  it("rejects invalid lifecycle status in init config", () => {
+    expect(() =>
+      validateInitConfig({
+        buckets: [
+          {
+            name: "bad-lifecycle",
+            lifecycleConfiguration: {
+              Rules: [{ ID: "rule", Status: "Invalid" }],
+            },
+          },
+        ],
+      }),
+    ).toThrow();
   });
 });

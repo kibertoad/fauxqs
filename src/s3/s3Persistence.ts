@@ -5,6 +5,8 @@ export interface S3PersistenceProvider {
   // Bucket ops
   insertBucket(name: string, creationDate: Date, type: BucketType): void;
   deleteBucket(name: string): void;
+  saveBucketLifecycleConfiguration(bucket: string, config: string): void;
+  deleteBucketLifecycleConfiguration(bucket: string): void;
 
   // Object ops (write-through)
   upsertObject(bucket: string, obj: S3Object): void;

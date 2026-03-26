@@ -43,6 +43,8 @@ import {
   CreateMultipartUploadCommand,
   UploadPartCommand,
   CompleteMultipartUploadCommand,
+  PutBucketLifecycleConfigurationCommand,
+  GetBucketLifecycleConfigurationCommand,
 } from "@aws-sdk/client-s3";
 
 function createTempDir(): string {
@@ -1022,6 +1024,44 @@ describe("Persistence", () => {
       new ReceiveMessageCommand({ QueueUrl: newQueueUrl, MaxNumberOfMessages: 10 }),
     );
     expect(recv.Messages).toHaveLength(1); // FIFO: group locked after first receive
+
+    await server.stop();
+  });
+
+  it("S3: bucket lifecycle configuration survives restart", async () => {
+    let server = await startFauxqs({ port: 0, logger: false, dataDir });
+    let s3 = makeS3Client(server.port);
+
+    await s3.send(new CreateBucketCommand({ Bucket: "lifecycle-persist-bucket" }));
+    await s3.send(
+      new PutBucketLifecycleConfigurationCommand({
+        Bucket: "lifecycle-persist-bucket",
+        LifecycleConfiguration: {
+          Rules: [
+            {
+              ID: "DeleteOldObjects",
+              Status: "Enabled",
+              Filter: {},
+              Expiration: { Days: 1 },
+            },
+          ],
+        },
+      }),
+    );
+
+    await server.stop();
+
+    // Restart
+    server = await startFauxqs({ port: 0, logger: false, dataDir });
+    s3 = makeS3Client(server.port);
+
+    const result = await s3.send(
+      new GetBucketLifecycleConfigurationCommand({ Bucket: "lifecycle-persist-bucket" }),
+    );
+    expect(result.Rules).toHaveLength(1);
+    expect(result.Rules![0].ID).toBe("DeleteOldObjects");
+    expect(result.Rules![0].Status).toBe("Enabled");
+    expect(result.Rules![0].Expiration?.Days).toBe(1);
 
     await server.stop();
   });

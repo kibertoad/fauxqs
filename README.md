@@ -1085,7 +1085,7 @@ Platform application, SMS, and phone number actions are not supported.
 | ListParts | No |
 | PutBucketLifecycleConfiguration | Yes |
 | GetBucketLifecycleConfiguration | Yes |
-| DeleteBucketLifecycleConfiguration | Yes |
+| DeleteBucketLifecycle | Yes |
 
 Bucket configuration (CORS, encryption, replication, logging, website, notifications, policy), ACLs, versioning, tagging, object lock, and public access block actions are not supported.
 

@@ -30,11 +30,44 @@ const SubscriptionSchema = v.object({
   attributes: v.optional(StringRecordSchema),
 });
 
+const LifecycleRuleSchema = v.object({
+  ID: v.optional(v.string()),
+  Status: v.picklist(["Enabled", "Disabled"]),
+  Filter: v.optional(
+    v.object({
+      Prefix: v.optional(v.string()),
+    }),
+  ),
+  Expiration: v.optional(
+    v.object({
+      Days: v.optional(v.number()),
+      Date: v.optional(v.string()),
+      ExpiredObjectDeleteMarker: v.optional(v.boolean()),
+    }),
+  ),
+  NoncurrentVersionExpiration: v.optional(
+    v.object({
+      NoncurrentDays: v.optional(v.number()),
+      NewerNoncurrentVersions: v.optional(v.number()),
+    }),
+  ),
+  AbortIncompleteMultipartUpload: v.optional(
+    v.object({
+      DaysAfterInitiation: v.optional(v.number()),
+    }),
+  ),
+});
+
 const BucketSchema = v.union([
   v.string(),
   v.object({
     name: v.string(),
     type: v.optional(v.picklist(["general-purpose", "directory"])),
+    lifecycleConfiguration: v.optional(
+      v.object({
+        Rules: v.array(LifecycleRuleSchema),
+      }),
+    ),
   }),
 ]);
 
@@ -173,6 +206,12 @@ export function applyInitConfig(
         s3Store.createBucket(entry);
       } else {
         s3Store.createBucket(entry.name, entry.type);
+        if (entry.lifecycleConfiguration) {
+          s3Store.putBucketLifecycleConfiguration(
+            entry.name,
+            lifecycleConfigToXml(entry.lifecycleConfiguration),
+          );
+        }
       }
       bucketResults.push({ name, created: !existed });
     }
@@ -184,4 +223,68 @@ export function applyInitConfig(
     subscriptions: subscriptionResults,
     buckets: bucketResults,
   };
+}
+
+type LifecycleRule = v.InferOutput<typeof LifecycleRuleSchema>;
+
+function lifecycleConfigToXml(config: { Rules: LifecycleRule[] }): string {
+  const rules = config.Rules.map((rule) => {
+    const parts: string[] = [];
+    if (rule.ID) parts.push(`<ID>${escapeXml(rule.ID)}</ID>`);
+    if (rule.Filter) {
+      if (rule.Filter.Prefix !== undefined) {
+        parts.push(`<Filter><Prefix>${escapeXml(rule.Filter.Prefix)}</Prefix></Filter>`);
+      } else {
+        parts.push("<Filter></Filter>");
+      }
+    }
+    parts.push(`<Status>${rule.Status}</Status>`);
+    if (rule.Expiration) {
+      const exp: string[] = [];
+      if (rule.Expiration.Days !== undefined) exp.push(`<Days>${rule.Expiration.Days}</Days>`);
+      if (rule.Expiration.Date) exp.push(`<Date>${escapeXml(rule.Expiration.Date)}</Date>`);
+      if (rule.Expiration.ExpiredObjectDeleteMarker !== undefined) {
+        exp.push(
+          `<ExpiredObjectDeleteMarker>${rule.Expiration.ExpiredObjectDeleteMarker}</ExpiredObjectDeleteMarker>`,
+        );
+      }
+      parts.push(`<Expiration>${exp.join("")}</Expiration>`);
+    }
+    if (rule.NoncurrentVersionExpiration) {
+      const nve: string[] = [];
+      if (rule.NoncurrentVersionExpiration.NoncurrentDays !== undefined) {
+        nve.push(
+          `<NoncurrentDays>${rule.NoncurrentVersionExpiration.NoncurrentDays}</NoncurrentDays>`,
+        );
+      }
+      if (rule.NoncurrentVersionExpiration.NewerNoncurrentVersions !== undefined) {
+        nve.push(
+          `<NewerNoncurrentVersions>${rule.NoncurrentVersionExpiration.NewerNoncurrentVersions}</NewerNoncurrentVersions>`,
+        );
+      }
+      parts.push(`<NoncurrentVersionExpiration>${nve.join("")}</NoncurrentVersionExpiration>`);
+    }
+    if (rule.AbortIncompleteMultipartUpload) {
+      const aimu: string[] = [];
+      if (rule.AbortIncompleteMultipartUpload.DaysAfterInitiation !== undefined) {
+        aimu.push(
+          `<DaysAfterInitiation>${rule.AbortIncompleteMultipartUpload.DaysAfterInitiation}</DaysAfterInitiation>`,
+        );
+      }
+      parts.push(
+        `<AbortIncompleteMultipartUpload>${aimu.join("")}</AbortIncompleteMultipartUpload>`,
+      );
+    }
+    return `<Rule>${parts.join("")}</Rule>`;
+  });
+  return `<LifecycleConfiguration>${rules.join("")}</LifecycleConfiguration>`;
+}
+
+function escapeXml(str: string): string {
+  return str
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
 }

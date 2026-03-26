@@ -57,6 +57,7 @@ export class S3Store {
 
   putBucketLifecycleConfiguration(name: string, config: string): void {
     this.bucketLifecycleConfigurations.set(name, config);
+    this.persistence?.saveBucketLifecycleConfiguration(name, config);
   }
 
   getBucketLifecycleConfiguration(name: string): string | undefined {
@@ -65,6 +66,11 @@ export class S3Store {
 
   deleteBucketLifecycleConfiguration(name: string): void {
     this.bucketLifecycleConfigurations.delete(name);
+    this.persistence?.deleteBucketLifecycleConfiguration(name);
+  }
+
+  restoreBucketLifecycleConfiguration(name: string, config: string): void {
+    this.bucketLifecycleConfigurations.set(name, config);
   }
 
   private validateBucketName(name: string): void {

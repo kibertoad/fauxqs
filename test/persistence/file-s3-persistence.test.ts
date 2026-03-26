@@ -21,6 +21,8 @@ import {
   CreateMultipartUploadCommand,
   UploadPartCommand,
   CompleteMultipartUploadCommand,
+  PutBucketLifecycleConfigurationCommand,
+  GetBucketLifecycleConfigurationCommand,
 } from "@aws-sdk/client-s3";
 
 function createTempDir(): string {
@@ -584,6 +586,47 @@ describe("File-based S3 Persistence", () => {
     // The objects dir itself should still exist
     const objectsDir = join(s3StorageDir, "buckets", "cleanup-bucket", "objects");
     expect(existsSync(objectsDir)).toBe(true);
+
+    await server.stop();
+  });
+
+  it("bucket lifecycle configuration survives restart", async () => {
+    let server = await startFauxqs({ port: 0, logger: false, s3StorageDir });
+    let s3 = makeS3Client(server.port);
+
+    await s3.send(new CreateBucketCommand({ Bucket: "lifecycle-bucket" }));
+    await s3.send(
+      new PutBucketLifecycleConfigurationCommand({
+        Bucket: "lifecycle-bucket",
+        LifecycleConfiguration: {
+          Rules: [
+            {
+              ID: "Cleanup",
+              Status: "Enabled",
+              Filter: {},
+              Expiration: { Days: 7 },
+            },
+          ],
+        },
+      }),
+    );
+
+    // Verify file exists on disk
+    const lifecyclePath = join(s3StorageDir, "buckets", "lifecycle-bucket", ".lifecycle.xml");
+    expect(existsSync(lifecyclePath)).toBe(true);
+
+    await server.stop();
+
+    // Restart
+    server = await startFauxqs({ port: 0, logger: false, s3StorageDir });
+    s3 = makeS3Client(server.port);
+
+    const result = await s3.send(
+      new GetBucketLifecycleConfigurationCommand({ Bucket: "lifecycle-bucket" }),
+    );
+    expect(result.Rules).toHaveLength(1);
+    expect(result.Rules![0].ID).toBe("Cleanup");
+    expect(result.Rules![0].Expiration?.Days).toBe(7);
 
     await server.stop();
   });
