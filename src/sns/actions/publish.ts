@@ -269,11 +269,13 @@ export function fanOutToSubscriptions(params: {
   } = params;
 
   // Pre-compute envelope fields shared across subscriptions (only UnsubscribeURL varies)
+  // Real AWS omits Subject and MessageAttributes when not provided
+  const formattedAttributes = formatEnvelopeAttributes(messageAttributes);
   const envelopeBase = {
     Type: "Notification" as const,
     MessageId: messageId,
     TopicArn: topicArn,
-    Subject: subject ?? null,
+    ...(subject ? { Subject: subject } : {}),
     Message: message,
     Timestamp: new Date().toISOString(),
     SignatureVersion: "1" as const,
@@ -281,7 +283,9 @@ export function fanOutToSubscriptions(params: {
     SigningCertURL:
       "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-0000000000000000000000.pem" as const,
     UnsubscribeURL: "",
-    MessageAttributes: formatEnvelopeAttributes(messageAttributes),
+    ...(Object.keys(formattedAttributes).length > 0
+      ? { MessageAttributes: formattedAttributes }
+      : {}),
   };
 
   for (const subArn of topic.subscriptionArns) {
