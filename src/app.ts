@@ -386,6 +386,10 @@ export async function startFauxqs(options?: {
   dataDir?: string;
   /** Directory for file-based S3 object storage. When set, S3 objects are stored as inspectable files on disk instead of in SQLite. Independent of dataDir. */
   s3StorageDir?: string;
+  /** Persistence backend to use. Defaults to "sqlite". */
+  persistenceBackend?: "sqlite" | "postgresql";
+  /** PostgreSQL connection URL. Required when persistenceBackend is "postgresql". */
+  postgresqlUrl?: string;
 }): Promise<FauxqsServer> {
   const port = options?.port ?? parseInt(process.env.FAUXQS_PORT ?? "4566");
   const host = options?.host ?? process.env.FAUXQS_HOST;
@@ -399,7 +403,19 @@ export async function startFauxqs(options?: {
   const s3Store = new S3Store();
 
   // Persistence: create managers and wire into stores before any data is loaded
-  const persistenceManager = options?.dataDir ? new SqlitePersistence(options.dataDir) : undefined;
+  const backend = options?.persistenceBackend ?? "sqlite";
+  let persistenceManager:
+    | import("./persistence/persistenceProvider.ts").PersistenceProvider
+    | undefined;
+  if (backend === "postgresql" && options?.postgresqlUrl) {
+    const { createPersistence } = await import("./persistence/index.ts");
+    persistenceManager = await createPersistence({
+      type: "postgresql",
+      connectionString: options.postgresqlUrl,
+    });
+  } else if (options?.dataDir) {
+    persistenceManager = new SqlitePersistence(options.dataDir);
+  }
 
   // S3 persistence: s3StorageDir (files) takes priority over dataDir (SQLite)
   const s3Persistence: S3PersistenceProvider | undefined = options?.s3StorageDir
@@ -417,7 +433,7 @@ export async function startFauxqs(options?: {
       await persistenceManager.loadSqsAndSns(sqsStore, snsStore);
     }
     if (s3Persistence) {
-      s3Persistence.loadS3(s3Store);
+      await s3Persistence.loadS3(s3Store);
     }
   }
 
