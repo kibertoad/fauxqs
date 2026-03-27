@@ -18,7 +18,7 @@ export class S3Store {
   persistence?: S3PersistenceProvider;
   relaxedRules?: { disableMinCopySourceSize?: boolean };
 
-  createBucket(name: string, type?: BucketType): void {
+  async createBucket(name: string, type?: BucketType): Promise<void> {
     if (!this.buckets.has(name)) {
       this.validateBucketName(name);
       const creationDate = new Date();
@@ -26,7 +26,7 @@ export class S3Store {
       this.buckets.set(name, new Map());
       this.bucketCreationDates.set(name, creationDate);
       this.bucketTypes.set(name, bucketType);
-      this.persistence?.insertBucket(name, creationDate, bucketType);
+      await this.persistence?.insertBucket(name, creationDate, bucketType);
     }
   }
 
@@ -55,18 +55,18 @@ export class S3Store {
     return this.bucketTypes.get(name);
   }
 
-  putBucketLifecycleConfiguration(name: string, config: string): void {
+  async putBucketLifecycleConfiguration(name: string, config: string): Promise<void> {
     this.bucketLifecycleConfigurations.set(name, config);
-    this.persistence?.saveBucketLifecycleConfiguration(name, config);
+    await this.persistence?.saveBucketLifecycleConfiguration(name, config);
   }
 
   getBucketLifecycleConfiguration(name: string): string | undefined {
     return this.bucketLifecycleConfigurations.get(name);
   }
 
-  deleteBucketLifecycleConfiguration(name: string): void {
+  async deleteBucketLifecycleConfiguration(name: string): Promise<void> {
     this.bucketLifecycleConfigurations.delete(name);
-    this.persistence?.deleteBucketLifecycleConfiguration(name);
+    await this.persistence?.deleteBucketLifecycleConfiguration(name);
   }
 
   restoreBucketLifecycleConfiguration(name: string, config: string): void {
@@ -94,7 +94,7 @@ export class S3Store {
     }
   }
 
-  deleteBucket(name: string): void {
+  async deleteBucket(name: string): Promise<void> {
     const objects = this.buckets.get(name);
     if (!objects) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${name}`, 404);
@@ -115,7 +115,7 @@ export class S3Store {
     this.bucketCreationDates.delete(name);
     this.bucketTypes.delete(name);
     this.bucketLifecycleConfigurations.delete(name);
-    this.persistence?.deleteBucket(name);
+    await this.persistence?.deleteBucket(name);
   }
 
   hasBucket(name: string): boolean {
@@ -133,7 +133,7 @@ export class S3Store {
     return result.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  putObject(
+  async putObject(
     bucket: string,
     key: string,
     body: Buffer,
@@ -151,7 +151,7 @@ export class S3Store {
       type: "FULL_OBJECT" | "COMPOSITE";
       partChecksums?: string[];
     },
-  ): S3Object {
+  ): Promise<S3Object> {
     const objects = this.buckets.get(bucket);
     if (!objects) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
@@ -180,7 +180,7 @@ export class S3Store {
       }),
     };
 
-    this.persistence?.upsertObject(bucket, obj);
+    await this.persistence?.upsertObject(bucket, obj);
 
     // When persistence is active, keep only metadata in memory — body is read on demand
     if (this.persistence) {
@@ -202,7 +202,7 @@ export class S3Store {
     return obj;
   }
 
-  getObject(bucket: string, key: string): S3Object {
+  async getObject(bucket: string, key: string): Promise<S3Object> {
     const objects = this.buckets.get(bucket);
     if (!objects) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
@@ -225,14 +225,14 @@ export class S3Store {
 
     // On-demand body loading: when persistence is active and body is empty, read from persistence
     if (this.persistence && obj.body.length === 0 && obj.contentLength > 0) {
-      const body = this.persistence.readBody(bucket, key);
+      const body = await this.persistence.readBody(bucket, key);
       return { ...obj, body };
     }
 
     return obj;
   }
 
-  deleteObject(bucket: string, key: string): void {
+  async deleteObject(bucket: string, key: string): Promise<void> {
     const objects = this.buckets.get(bucket);
     if (!objects) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
@@ -249,7 +249,7 @@ export class S3Store {
     }
 
     objects.delete(key);
-    this.persistence?.deleteObject(bucket, key);
+    await this.persistence?.deleteObject(bucket, key);
   }
 
   headObject(bucket: string, key: string): S3Object {
@@ -333,7 +333,7 @@ export class S3Store {
     };
   }
 
-  renameObject(bucket: string, sourceKey: string, destKey: string): void {
+  async renameObject(bucket: string, sourceKey: string, destKey: string): Promise<void> {
     const objects = this.buckets.get(bucket);
     if (!objects) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
@@ -364,7 +364,7 @@ export class S3Store {
     if (sourceKey !== destKey) {
       objects.delete(sourceKey);
     }
-    this.persistence?.renameObject(bucket, sourceKey, destKey);
+    await this.persistence?.renameObject(bucket, sourceKey, destKey);
 
     if (this.spy) {
       this.spy.addMessage({
@@ -377,10 +377,10 @@ export class S3Store {
     }
   }
 
-  deleteObjects(bucket: string, keys: string[]): string[] {
+  async deleteObjects(bucket: string, keys: string[]): Promise<string[]> {
     const deleted: string[] = [];
     for (const key of keys) {
-      this.deleteObject(bucket, key);
+      await this.deleteObject(bucket, key);
       deleted.push(key);
     }
     return deleted;
@@ -388,7 +388,7 @@ export class S3Store {
 
   // --- Multipart Upload ---
 
-  createMultipartUpload(
+  async createMultipartUpload(
     bucket: string,
     key: string,
     contentType?: string,
@@ -400,7 +400,7 @@ export class S3Store {
       contentEncoding?: string;
     },
     checksumAlgorithm?: ChecksumAlgorithm,
-  ): string {
+  ): Promise<string> {
     if (!this.buckets.has(bucket)) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
     }
@@ -423,7 +423,7 @@ export class S3Store {
       ...(checksumAlgorithm && { checksumAlgorithm }),
     };
     this.multipartUploads.set(uploadId, upload);
-    this.persistence?.insertMultipartUpload(upload);
+    await this.persistence?.insertMultipartUpload(upload);
 
     let bucketUploads = this.multipartUploadsByBucket.get(bucket);
     if (!bucketUploads) {
@@ -435,12 +435,12 @@ export class S3Store {
     return uploadId;
   }
 
-  uploadPart(
+  async uploadPart(
     uploadId: string,
     partNumber: number,
     body: Buffer,
     checksumValue?: string,
-  ): { etag: string; checksumValue?: string } {
+  ): Promise<{ etag: string; checksumValue?: string }> {
     const upload = this.multipartUploads.get(uploadId);
     if (!upload) {
       throw new S3Error(
@@ -459,15 +459,15 @@ export class S3Store {
       ...(checksumValue && { checksumValue }),
     };
     upload.parts.set(partNumber, part);
-    this.persistence?.upsertMultipartPart(uploadId, part);
+    await this.persistence?.upsertMultipartPart(uploadId, part);
 
     return { etag, checksumValue };
   }
 
-  completeMultipartUpload(
+  async completeMultipartUpload(
     uploadId: string,
     partSpecs: { partNumber: number; etag: string }[],
-  ): S3Object {
+  ): Promise<S3Object> {
     const upload = this.multipartUploads.get(uploadId);
     if (!upload) {
       throw new S3Error(
@@ -592,7 +592,7 @@ export class S3Store {
       ...checksumFields,
     };
 
-    this.persistence?.completeMultipartUpload(uploadId, upload.bucket, obj);
+    await this.persistence?.completeMultipartUpload(uploadId, upload.bucket, obj);
 
     // When persistence is active, keep only metadata in memory — body is read on demand
     if (this.persistence) {
@@ -616,7 +616,7 @@ export class S3Store {
     return obj;
   }
 
-  abortMultipartUpload(uploadId: string): void {
+  async abortMultipartUpload(uploadId: string): Promise<void> {
     const upload = this.multipartUploads.get(uploadId);
     if (!upload) {
       throw new S3Error(
@@ -628,20 +628,20 @@ export class S3Store {
 
     this.multipartUploads.delete(uploadId);
     this.multipartUploadsByBucket.get(upload.bucket)?.delete(uploadId);
-    this.persistence?.deleteMultipartUpload(uploadId);
+    await this.persistence?.deleteMultipartUpload(uploadId);
   }
 
   /** Remove all objects from a single bucket and abort its multipart uploads. No-op if the bucket does not exist. */
-  emptyBucket(name: string): void {
+  async emptyBucket(name: string): Promise<void> {
     const objects = this.buckets.get(name);
     if (!objects) return;
     objects.clear();
-    this.persistence?.deleteObjectsByBucket(name);
+    await this.persistence?.deleteObjectsByBucket(name);
     const bucketUploads = this.multipartUploadsByBucket.get(name);
     if (bucketUploads) {
       for (const uploadId of bucketUploads) {
         this.multipartUploads.delete(uploadId);
-        this.persistence?.deleteMultipartUpload(uploadId);
+        await this.persistence?.deleteMultipartUpload(uploadId);
       }
       bucketUploads.clear();
     }

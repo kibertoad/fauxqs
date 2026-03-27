@@ -574,13 +574,13 @@ export class SqlitePersistence implements PersistenceProvider {
 
   // ── Load on startup ──
 
-  load(sqsStore: SqsStore, snsStore: SnsStore, s3Store: S3Store): void {
-    this.loadSqsAndSns(sqsStore, snsStore);
+  async load(sqsStore: SqsStore, snsStore: SnsStore, s3Store: S3Store): Promise<void> {
+    await this.loadSqsAndSns(sqsStore, snsStore);
     this.loadS3(s3Store);
   }
 
-  loadSqsAndSns(sqsStore: SqsStore, snsStore: SnsStore): void {
-    this.loadSqsQueues(sqsStore);
+  async loadSqsAndSns(sqsStore: SqsStore, snsStore: SnsStore): Promise<void> {
+    await this.loadSqsQueues(sqsStore);
     this.loadSnsTopics(snsStore);
     this.loadSnsSubscriptions(snsStore);
   }
@@ -592,7 +592,7 @@ export class SqlitePersistence implements PersistenceProvider {
     this.loadS3MultipartUploads(s3Store);
   }
 
-  private loadSqsQueues(sqsStore: SqsStore): void {
+  private async loadSqsQueues(sqsStore: SqsStore): Promise<void> {
     const rows = this.stmts.loadQueues.all() as Array<{
       name: string;
       url: string;
@@ -607,7 +607,7 @@ export class SqlitePersistence implements PersistenceProvider {
     for (const row of rows) {
       const attributes = JSON.parse(row.attributes);
       const tags = JSON.parse(row.tags);
-      const queue = sqsStore.createQueue(row.name, row.url, row.arn, attributes, tags);
+      const queue = await sqsStore.createQueue(row.name, row.url, row.arn, attributes, tags);
 
       // Restore timestamps and sequence counter (createQueue will have re-persisted,
       // so overwrite in-memory values without triggering another write)

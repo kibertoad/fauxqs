@@ -12,10 +12,10 @@ const VALID_SUBSCRIPTION_ATTRIBUTES = new Set([
   "SubscriptionRoleArn",
 ]);
 
-export function setSubscriptionAttributes(
+export async function setSubscriptionAttributes(
   params: Record<string, string>,
   snsStore: SnsStore,
-): string {
+): Promise<string> {
   const subscriptionArn = params.SubscriptionArn;
   if (!subscriptionArn) {
     throw new SnsError("InvalidParameter", "SubscriptionArn is required");
@@ -44,7 +44,10 @@ export function setSubscriptionAttributes(
     if (attributeName === "FilterPolicy" || attributeName === "FilterPolicyScope") {
       subscription.parsedFilterPolicy = undefined;
     }
-    snsStore.persistence?.updateSubscriptionAttributes(subscriptionArn, subscription.attributes);
+    await snsStore.persistence?.updateSubscriptionAttributes(
+      subscriptionArn,
+      subscription.attributes,
+    );
   }
 
   return snsSuccessResponse("SetSubscriptionAttributes", "");

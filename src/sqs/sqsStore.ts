@@ -118,17 +118,21 @@ export class SqsQueue {
     }
   }
 
-  setAttributes(attrs: Record<string, string>): void {
+  async setAttributes(attrs: Record<string, string>): Promise<void> {
     Object.assign(this.attributes, attrs);
     // Empty RedrivePolicy clears the DLQ association
     if (attrs.RedrivePolicy === "") {
       delete this.attributes.RedrivePolicy;
     }
     this.lastModifiedTimestamp = Math.floor(Date.now() / 1000);
-    this.persistence?.updateQueueAttributes(this.name, this.attributes, this.lastModifiedTimestamp);
+    await this.persistence?.updateQueueAttributes(
+      this.name,
+      this.attributes,
+      this.lastModifiedTimestamp,
+    );
   }
 
-  enqueue(msg: SqsMessage): void {
+  async enqueue(msg: SqsMessage): Promise<void> {
     if (this.spy) {
       this.spy.addMessage({
         service: "sqs",
@@ -141,7 +145,7 @@ export class SqsQueue {
       });
     }
 
-    this.persistence?.insertMessage(this.name, msg);
+    await this.persistence?.insertMessage(this.name, msg);
 
     if (this.isFifo()) {
       const groupId = msg.messageGroupId ?? DEFAULT_FIFO_GROUP_ID;
@@ -166,13 +170,13 @@ export class SqsQueue {
     }
   }
 
-  dequeue(
+  async dequeue(
     maxCount: number,
     visibilityTimeoutOverride?: number,
     dlqResolver?: (arn: string) => SqsQueue | undefined,
-  ): ReceivedMessage[] {
+  ): Promise<ReceivedMessage[]> {
     if (this.isFifo()) {
-      return this.dequeueFifo(maxCount, visibilityTimeoutOverride, dlqResolver);
+      return await this.dequeueFifo(maxCount, visibilityTimeoutOverride, dlqResolver);
     }
 
     this.processTimers();
@@ -222,8 +226,8 @@ export class SqsQueue {
             });
           }
           // Persistence: delete from this queue (dlq.enqueue will insert into DLQ)
-          this.persistence?.deleteMessage(msg.messageId);
-          dlq.enqueue(msg);
+          await this.persistence?.deleteMessage(msg.messageId);
+          await dlq.enqueue(msg);
           continue;
         }
       }
@@ -237,7 +241,7 @@ export class SqsQueue {
         visibilityDeadline,
       });
 
-      this.persistence?.updateMessageInflight(
+      await this.persistence?.updateMessageInflight(
         msg.messageId,
         receiptHandle,
         visibilityDeadline,
@@ -267,11 +271,11 @@ export class SqsQueue {
     return result;
   }
 
-  private dequeueFifo(
+  private async dequeueFifo(
     maxCount: number,
     visibilityTimeoutOverride?: number,
     dlqResolver?: (arn: string) => SqsQueue | undefined,
-  ): ReceivedMessage[] {
+  ): Promise<ReceivedMessage[]> {
     this.processTimers();
 
     const visibilityTimeout =
@@ -322,8 +326,8 @@ export class SqsQueue {
                 timestamp: Date.now(),
               });
             }
-            this.persistence?.deleteMessage(msg.messageId);
-            dlq.enqueue(msg);
+            await this.persistence?.deleteMessage(msg.messageId);
+            await dlq.enqueue(msg);
             continue;
           }
         }
@@ -337,7 +341,7 @@ export class SqsQueue {
           visibilityDeadline,
         });
 
-        this.persistence?.updateMessageInflight(
+        await this.persistence?.updateMessageInflight(
           msg.messageId,
           receiptHandle,
           visibilityDeadline,
@@ -376,10 +380,10 @@ export class SqsQueue {
     return result;
   }
 
-  deleteMessage(receiptHandle: string): boolean {
+  async deleteMessage(receiptHandle: string): Promise<boolean> {
     const entry = this.inflightMessages.get(receiptHandle);
     if (entry) {
-      this.persistence?.deleteMessage(entry.message.messageId);
+      await this.persistence?.deleteMessage(entry.message.messageId);
       if (this.spy) {
         this.spy.addMessage({
           service: "sqs",
@@ -409,7 +413,7 @@ export class SqsQueue {
     return this.inflightMessages.delete(receiptHandle);
   }
 
-  changeVisibility(receiptHandle: string, timeoutSeconds: number): void {
+  async changeVisibility(receiptHandle: string, timeoutSeconds: number): Promise<void> {
     const entry = this.inflightMessages.get(receiptHandle);
     if (!entry) {
       return;
@@ -417,7 +421,7 @@ export class SqsQueue {
 
     if (timeoutSeconds === 0) {
       this.inflightMessages.delete(receiptHandle);
-      this.persistence?.updateMessageReady(entry.message.messageId);
+      await this.persistence?.updateMessageReady(entry.message.messageId);
       if (this.isFifo() && entry.message.messageGroupId) {
         const groupId = entry.message.messageGroupId;
         // Decrement locked group count
@@ -436,7 +440,7 @@ export class SqsQueue {
       this.notifyWaiters();
     } else {
       entry.visibilityDeadline = Date.now() + timeoutSeconds * 1000;
-      this.persistence?.updateMessageInflight(
+      await this.persistence?.updateMessageInflight(
         entry.message.messageId,
         receiptHandle,
         entry.visibilityDeadline,
@@ -551,14 +555,14 @@ export class SqsQueue {
     }
   }
 
-  purge(): void {
+  async purge(): Promise<void> {
     this.messages = [];
     this.delayedMessages = [];
     this.inflightMessages.clear();
     this.fifoMessages.clear();
     this.fifoDelayed.clear();
     this.fifoLockedGroups.clear();
-    this.persistence?.deleteQueueMessages(this.name);
+    await this.persistence?.deleteQueueMessages(this.name);
   }
 
   /** Return a non-destructive snapshot of all messages in the queue, grouped by state. */
@@ -626,9 +630,9 @@ export class SqsQueue {
     this.deduplicationCache.set(dedupId, { messageId, sequenceNumber });
   }
 
-  nextSequenceNumber(): string {
+  async nextSequenceNumber(): Promise<string> {
     this.sequenceCounter++;
-    this.persistence?.updateQueueSequenceCounter(this.name, this.sequenceCounter);
+    await this.persistence?.updateQueueSequenceCounter(this.name, this.sequenceCounter);
     return String(this.sequenceCounter).padStart(20, "0");
   }
 
@@ -658,20 +662,20 @@ export class SqsStore {
   spy?: MessageSpy;
   persistence?: PersistenceProvider;
 
-  createQueue(
+  async createQueue(
     name: string,
     url: string,
     arn: string,
     attributes?: Record<string, string>,
     tags?: Record<string, string>,
-  ): SqsQueue {
+  ): Promise<SqsQueue> {
     const queue = new SqsQueue(name, url, arn, attributes, tags);
     if (this.spy) {
       queue.spy = this.spy;
     }
     if (this.persistence) {
       queue.persistence = this.persistence;
-      this.persistence.insertQueue(queue);
+      await this.persistence.insertQueue(queue);
     }
     this.queues.set(url, queue);
     this.queuesByName.set(name, queue);
@@ -679,11 +683,11 @@ export class SqsStore {
     return queue;
   }
 
-  deleteQueue(url: string): boolean {
+  async deleteQueue(url: string): Promise<boolean> {
     const queue = this.getQueue(url);
     if (!queue) return false;
     queue.cancelWaiters();
-    this.persistence?.deleteQueue(queue.name);
+    await this.persistence?.deleteQueue(queue.name);
     this.queues.delete(queue.url);
     this.queuesByName.delete(queue.name);
     this.queuesByArn.delete(queue.arn);

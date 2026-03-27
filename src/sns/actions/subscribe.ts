@@ -4,7 +4,10 @@ import { snsSuccessResponse, escapeXml } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
 import { validateFilterPolicyLimits } from "../filter.ts";
 
-export function subscribe(params: Record<string, string>, snsStore: SnsStore): string {
+export async function subscribe(
+  params: Record<string, string>,
+  snsStore: SnsStore,
+): Promise<string> {
   const topicArn = params.TopicArn;
   if (!topicArn) {
     throw new SnsError("InvalidParameter", "TopicArn is required");
@@ -65,7 +68,7 @@ export function subscribe(params: Record<string, string>, snsStore: SnsStore): s
     validateFilterPolicyLimits(resolvedAttributes.FilterPolicy);
   }
 
-  const subscription = snsStore.subscribe(
+  const subscription = await snsStore.subscribe(
     topicArn,
     protocol,
     endpoint,

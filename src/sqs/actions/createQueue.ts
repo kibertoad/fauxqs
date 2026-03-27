@@ -6,11 +6,11 @@ import { DEFAULT_REGION, regionFromAuth } from "../../common/types.ts";
 import type { SqsStore } from "../sqsStore.ts";
 import { SETTABLE_ATTRIBUTES, validateQueueAttributes } from "../sqsTypes.ts";
 
-export function createQueue(
+export async function createQueue(
   body: Record<string, unknown>,
   store: SqsStore,
   request: FastifyRequest,
-): CreateQueueResult {
+): Promise<CreateQueueResult> {
   const queueName = body.QueueName as string | undefined;
   if (!queueName) {
     throw new SqsError("InvalidParameterValue", "Queue name is required");
@@ -83,6 +83,6 @@ export function createQueue(
   const port = requestHost.includes(":") ? requestHost.split(":")[1] : "";
   const url = store.buildQueueUrl(queueName, port, requestHost, region);
 
-  const queue = store.createQueue(queueName, url, arn, attributes, tags);
+  const queue = await store.createQueue(queueName, url, arn, attributes, tags);
   return { QueueUrl: queue.url } satisfies CreateQueueResult;
 }

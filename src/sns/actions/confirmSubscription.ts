@@ -3,7 +3,10 @@ import { SnsError } from "../../common/errors.ts";
 import { snsSuccessResponse, escapeXml } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
 
-export function confirmSubscription(params: Record<string, string>, snsStore: SnsStore): string {
+export async function confirmSubscription(
+  params: Record<string, string>,
+  snsStore: SnsStore,
+): Promise<string> {
   const topicArn = params.TopicArn;
   if (!topicArn) {
     throw new SnsError("InvalidParameter", "TopicArn is required");
@@ -24,7 +27,7 @@ export function confirmSubscription(params: Record<string, string>, snsStore: Sn
 
   if (matchesTopic) {
     sub.confirmed = true;
-    snsStore.persistence?.insertSubscription(sub);
+    await snsStore.persistence?.insertSubscription(sub);
     const result = { SubscriptionArn: sub.arn } satisfies ConfirmSubscriptionResponse;
     return snsSuccessResponse(
       "ConfirmSubscription",

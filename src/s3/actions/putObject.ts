@@ -48,11 +48,11 @@ function extractSystemMetadata(headers: Record<string, string | string[] | undef
   return result;
 }
 
-export function putObject(
+export async function putObject(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
   reply: FastifyReply,
   store: S3Store,
-): void {
+): Promise<void> {
   const bucket = request.params.bucket;
   const key = request.params["*"];
   const contentType = request.headers["content-type"] ?? "application/octet-stream";
@@ -69,7 +69,7 @@ export function putObject(
     const srcBucket = decoded.substring(0, slashIdx);
     const srcKey = decoded.substring(slashIdx + 1);
 
-    const srcObj = store.getObject(srcBucket, srcKey);
+    const srcObj = await store.getObject(srcBucket, srcKey);
     const metadataDirective =
       (request.headers["x-amz-metadata-directive"] as string | undefined) ?? "COPY";
     const metadata =
@@ -106,7 +106,7 @@ export function putObject(
       };
     }
 
-    const obj = store.putObject(
+    const obj = await store.putObject(
       bucket,
       key,
       srcObj.body,
@@ -172,7 +172,15 @@ export function putObject(
     ? { algorithm: cksum.algorithm, value: cksum.value, type: "FULL_OBJECT" as const }
     : undefined;
 
-  const obj = store.putObject(bucket, key, body, contentType, metadata, systemMeta, checksumData);
+  const obj = await store.putObject(
+    bucket,
+    key,
+    body,
+    contentType,
+    metadata,
+    systemMeta,
+    checksumData,
+  );
 
   reply.header("etag", obj.etag);
   if (obj.checksumAlgorithm && obj.checksumValue) {

@@ -290,7 +290,7 @@ export interface FauxqsServer {
       attributes?: Record<string, string>;
       tags?: Record<string, string>;
     },
-  ): { queueUrl: string; queueArn: string; queueName: string };
+  ): Promise<{ queueUrl: string; queueArn: string; queueName: string }>;
   /** Non-destructive inspection of all messages in a queue. Returns undefined if queue doesn't exist. */
   inspectQueue(name: string):
     | {
@@ -316,21 +316,21 @@ export interface FauxqsServer {
       attributes?: Record<string, string>;
       tags?: Record<string, string>;
     },
-  ): { topicArn: string };
+  ): Promise<{ topicArn: string }>;
   subscribe(options: {
     topic: string;
     queue: string;
     region?: string;
     attributes?: Record<string, string>;
-  }): void;
+  }): Promise<void>;
   createBucket(
     name: string,
     options?: { type?: "general-purpose" | "directory" },
   ): { bucketName: string };
   /** Delete a queue by name. No-op if the queue does not exist. */
-  deleteQueue(name: string, options?: { region?: string }): void;
+  deleteQueue(name: string, options?: { region?: string }): Promise<void>;
   /** Delete a topic by name, including its subscriptions. No-op if the topic does not exist. */
-  deleteTopic(name: string, options?: { region?: string }): void;
+  deleteTopic(name: string, options?: { region?: string }): Promise<void>;
   /** Remove all objects from a bucket but keep the bucket itself. No-op if the bucket does not exist. */
   emptyBucket(name: string): void;
   /** Enqueue a message into an SQS queue by name. Supports messageAttributes, delaySeconds, and FIFO fields. Spy events emitted automatically. */
@@ -344,12 +344,12 @@ export interface FauxqsServer {
       messageDeduplicationId?: string;
       region?: string;
     },
-  ): {
+  ): Promise<{
     messageId: string;
     md5OfBody: string;
     md5OfMessageAttributes?: string;
     sequenceNumber?: string;
-  };
+  }>;
   /** Publish a message to an SNS topic by name, with full fan-out to SQS subscriptions (filter policies, raw delivery). Spy events emitted automatically. */
   publish(
     topicName: string,
@@ -361,8 +361,10 @@ export interface FauxqsServer {
       messageDeduplicationId?: string;
       region?: string;
     },
-  ): { messageId: string };
-  setup(config: import("./initConfig.ts").FauxqsInitConfig): import("./initConfig.ts").SetupResult;
+  ): Promise<{ messageId: string }>;
+  setup(
+    config: import("./initConfig.ts").FauxqsInitConfig,
+  ): Promise<import("./initConfig.ts").SetupResult>;
   /** Clear all messages from queues and all objects from buckets, but keep queues, topics, subscriptions, and buckets intact. Also clears the spy buffer. */
   reset(): void;
   purgeAll(): void;
@@ -408,11 +410,11 @@ export async function startFauxqs(options?: {
   // This avoids INSERT OR REPLACE triggering ON DELETE CASCADE during load.
   if (persistenceManager && s3Persistence === persistenceManager) {
     // Single persistence backend for everything (existing behavior)
-    persistenceManager.load(sqsStore, snsStore, s3Store);
+    await persistenceManager.load(sqsStore, snsStore, s3Store);
   } else {
     // Separate backends: SQLite for SQS/SNS, file-based (or none) for S3
     if (persistenceManager) {
-      persistenceManager.loadSqsAndSns(sqsStore, snsStore);
+      await persistenceManager.loadSqsAndSns(sqsStore, snsStore);
     }
     if (s3Persistence) {
       s3Persistence.loadS3(s3Store);
@@ -489,48 +491,48 @@ export async function startFauxqs(options?: {
     stop() {
       return app.close();
     },
-    createQueue(name, opts) {
+    async createQueue(name, opts) {
       const r = opts?.region ?? region;
       const arn = sqsQueueArn(name, r);
       const queueUrl = makeQueueUrl(name, r);
-      sqsStore.createQueue(name, queueUrl, arn, opts?.attributes, opts?.tags);
+      await sqsStore.createQueue(name, queueUrl, arn, opts?.attributes, opts?.tags);
       return { queueUrl, queueArn: arn, queueName: name };
     },
     inspectQueue(name) {
       return sqsStore.inspectQueue(name);
     },
-    createTopic(name, opts) {
+    async createTopic(name, opts) {
       const r = opts?.region ?? region;
-      snsStore.createTopic(name, opts?.attributes, opts?.tags, r);
+      await snsStore.createTopic(name, opts?.attributes, opts?.tags, r);
       return { topicArn: snsTopicArn(name, r) };
     },
-    subscribe(opts) {
+    async subscribe(opts) {
       const r = opts.region ?? region;
       const topicArn = snsTopicArn(opts.topic, r);
       const queueArn = sqsQueueArn(opts.queue, r);
-      snsStore.subscribe(topicArn, "sqs", queueArn, opts.attributes);
+      await snsStore.subscribe(topicArn, "sqs", queueArn, opts.attributes);
     },
     createBucket(name, options) {
       s3Store.createBucket(name, options?.type);
       return { bucketName: name };
     },
-    deleteQueue(name, opts) {
+    async deleteQueue(name, opts) {
       const r = opts?.region ?? region;
       const arn = sqsQueueArn(name, r);
       const queue = sqsStore.getQueueByArn(arn);
       if (queue) {
-        sqsStore.deleteQueue(queue.url);
+        await sqsStore.deleteQueue(queue.url);
       }
     },
-    deleteTopic(name, opts) {
+    async deleteTopic(name, opts) {
       const r = opts?.region ?? region;
       const arn = snsTopicArn(name, r);
-      snsStore.deleteTopic(arn);
+      await snsStore.deleteTopic(arn);
     },
     emptyBucket(name) {
       s3Store.emptyBucket(name);
     },
-    sendMessage(queueName, body, opts) {
+    async sendMessage(queueName, body, opts) {
       const r = opts?.region ?? region;
       const arn = sqsQueueArn(queueName, r);
       const queue = sqsStore.getQueueByArn(arn);
@@ -597,9 +599,9 @@ export async function startFauxqs(options?: {
           opts.messageGroupId,
           dedupId,
         );
-        msg.sequenceNumber = queue.nextSequenceNumber();
+        msg.sequenceNumber = await queue.nextSequenceNumber();
         queue.recordDeduplication(dedupId, msg.messageId, msg.sequenceNumber);
-        queue.enqueue(msg);
+        await queue.enqueue(msg);
         return {
           messageId: msg.messageId,
           md5OfBody: msg.md5OfBody,
@@ -617,7 +619,7 @@ export async function startFauxqs(options?: {
         messageAttributes,
         delaySeconds > 0 ? delaySeconds : undefined,
       );
-      queue.enqueue(msg);
+      await queue.enqueue(msg);
       return {
         messageId: msg.messageId,
         md5OfBody: msg.md5OfBody,
@@ -626,7 +628,7 @@ export async function startFauxqs(options?: {
           : {}),
       };
     },
-    publish(topicName, message, opts) {
+    async publish(topicName, message, opts) {
       const r = opts?.region ?? region;
       const topicArn = snsTopicArn(topicName, r);
       const topic = snsStore.getTopic(topicArn);
@@ -689,7 +691,7 @@ export async function startFauxqs(options?: {
         });
       }
 
-      fanOutToSubscriptions({
+      await fanOutToSubscriptions({
         topicArn,
         topic,
         messageId,
@@ -704,7 +706,7 @@ export async function startFauxqs(options?: {
 
       return { messageId };
     },
-    setup(config) {
+    async setup(config) {
       return applyInitConfig(config, sqsStore, snsStore, s3Store, {
         port: actualPort,
         region,
@@ -741,7 +743,7 @@ export async function startFauxqs(options?: {
   // Apply init config if provided
   if (init) {
     const config = typeof init === "string" ? loadInitConfig(init) : init;
-    server.setup(config);
+    await server.setup(config);
   }
 
   return server;

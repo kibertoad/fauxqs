@@ -12,11 +12,11 @@ function unescapeXml(str: string): string {
     .replaceAll("&apos;", "'");
 }
 
-export function deleteObjects(
+export async function deleteObjects(
   request: FastifyRequest<{ Params: { bucket: string } }>,
   reply: FastifyReply,
   store: S3Store,
-): void {
+): Promise<void> {
   const bucket = request.params.bucket;
   const body = Buffer.isBuffer(request.body)
     ? request.body.toString("utf-8")
@@ -34,7 +34,7 @@ export function deleteObjects(
     keys.push(unescapeXml(match[1]));
   }
 
-  const deleted = store.deleteObjects(bucket, keys);
+  const deleted = await store.deleteObjects(bucket, keys);
 
   let deletedXml = "";
   if (!quiet) {

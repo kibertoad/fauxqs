@@ -6,7 +6,10 @@ import { SqsStore as SqsStoreClass } from "../sqsStore.ts";
 import type { MessageAttributeValue } from "../sqsTypes.ts";
 import { INVALID_MESSAGE_BODY_CHAR, calculateMessageSize } from "../sqsTypes.ts";
 
-export function sendMessage(body: Record<string, unknown>, store: SqsStore): SendMessageResult {
+export async function sendMessage(
+  body: Record<string, unknown>,
+  store: SqsStore,
+): Promise<SendMessageResult> {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -41,7 +44,7 @@ export function sendMessage(body: Record<string, unknown>, store: SqsStore): Sen
   }
 
   if (queue.isFifo()) {
-    return sendFifoMessage(body, queue, messageBody, messageAttributes);
+    return await sendFifoMessage(body, queue, messageBody, messageAttributes);
   }
 
   // DelaySeconds: per-message override or queue default
@@ -54,7 +57,7 @@ export function sendMessage(body: Record<string, unknown>, store: SqsStore): Sen
     delaySeconds > 0 ? delaySeconds : undefined,
   );
 
-  queue.enqueue(msg);
+  await queue.enqueue(msg);
 
   return {
     MessageId: msg.messageId,
@@ -63,12 +66,12 @@ export function sendMessage(body: Record<string, unknown>, store: SqsStore): Sen
   } satisfies SendMessageResult;
 }
 
-function sendFifoMessage(
+async function sendFifoMessage(
   body: Record<string, unknown>,
   queue: import("../sqsStore.ts").SqsQueue,
   messageBody: string,
   messageAttributes: Record<string, MessageAttributeValue>,
-): SendMessageResult {
+): Promise<SendMessageResult> {
   const messageGroupId = body.MessageGroupId as string | undefined;
   if (!messageGroupId) {
     throw new SqsError(
@@ -122,9 +125,9 @@ function sendFifoMessage(
     messageDeduplicationId,
   );
 
-  msg.sequenceNumber = queue.nextSequenceNumber();
+  msg.sequenceNumber = await queue.nextSequenceNumber();
   queue.recordDeduplication(messageDeduplicationId, msg.messageId, msg.sequenceNumber);
-  queue.enqueue(msg);
+  await queue.enqueue(msg);
 
   return {
     MessageId: msg.messageId,

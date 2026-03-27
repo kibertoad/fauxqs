@@ -13,11 +13,11 @@ function unescapeXml(str: string): string {
     .replaceAll("&apos;", "'");
 }
 
-export function completeMultipartUpload(
+export async function completeMultipartUpload(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
   reply: FastifyReply,
   store: S3Store,
-): void {
+): Promise<void> {
   const bucket = request.params.bucket;
   const key = request.params["*"];
   const query = (request.query ?? {}) as Record<string, string>;
@@ -45,7 +45,7 @@ export function completeMultipartUpload(
     }
   }
 
-  const obj = store.completeMultipartUpload(uploadId, parts);
+  const obj = await store.completeMultipartUpload(uploadId, parts);
 
   const host = request.headers.host ?? "localhost";
   const location = `http://${host}/${bucket}/${key}`;
