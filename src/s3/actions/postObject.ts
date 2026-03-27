@@ -10,11 +10,11 @@ import type { S3Store } from "../s3Store.ts";
  * The "file" field MUST be the last field; any fields after it are ignored.
  * The object key is specified in the "key" form field, not in the URL.
  */
-export function postObject(
+export async function postObject(
   request: FastifyRequest<{ Params: { bucket: string } }>,
   reply: FastifyReply,
   store: S3Store,
-): void {
+): Promise<void> {
   const bucket = request.params.bucket;
   const contentType = request.headers["content-type"] ?? "";
   const boundaryMatch = /boundary=([^\s;]+)/i.exec(contentType);
@@ -66,7 +66,14 @@ export function postObject(
   if (fields["Cache-Control"]) systemMetadata.cacheControl = fields["Cache-Control"];
   if (fields["Content-Encoding"]) systemMetadata.contentEncoding = fields["Content-Encoding"];
 
-  const obj = store.putObject(bucket, key, fileBody, objectContentType, metadata, systemMetadata);
+  const obj = await store.putObject(
+    bucket,
+    key,
+    fileBody,
+    objectContentType,
+    metadata,
+    systemMetadata,
+  );
 
   if (store.spy) {
     store.spy.addMessage({

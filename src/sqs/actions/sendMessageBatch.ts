@@ -24,10 +24,10 @@ interface BatchEntry {
   MessageDeduplicationId?: string;
 }
 
-export function sendMessageBatch(
+export async function sendMessageBatch(
   body: Record<string, unknown>,
   store: SqsStore,
-): SendMessageBatchResult {
+): Promise<SendMessageBatchResult> {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -173,9 +173,9 @@ export function sendMessageBatch(
         dedupId,
       );
 
-      msg.sequenceNumber = queue.nextSequenceNumber();
+      msg.sequenceNumber = await queue.nextSequenceNumber();
       queue.recordDeduplication(dedupId, msg.messageId, msg.sequenceNumber);
-      queue.enqueue(msg);
+      await queue.enqueue(msg);
 
       const result: (typeof successful)[number] = {
         Id: entry.Id,
@@ -199,7 +199,7 @@ export function sendMessageBatch(
         delaySeconds > 0 ? delaySeconds : undefined,
       );
 
-      queue.enqueue(msg);
+      await queue.enqueue(msg);
 
       const result: (typeof successful)[number] = {
         Id: entry.Id,

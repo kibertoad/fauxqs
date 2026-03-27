@@ -44,8 +44,8 @@ describe("S3 RenameObject", () => {
     await server.stop();
   });
 
-  beforeEach(() => {
-    server.reset();
+  beforeEach(async () => {
+    await server.reset();
   });
 
   describe("basic rename", () => {

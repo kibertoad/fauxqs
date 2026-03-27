@@ -1,7 +1,7 @@
 import { SqsError, QueueDoesNotExistError } from "../../common/errors.ts";
 import type { SqsStore } from "../sqsStore.ts";
 
-export function purgeQueue(body: Record<string, unknown>, store: SqsStore): unknown {
+export async function purgeQueue(body: Record<string, unknown>, store: SqsStore): Promise<unknown> {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -12,6 +12,6 @@ export function purgeQueue(body: Record<string, unknown>, store: SqsStore): unkn
     throw new QueueDoesNotExistError();
   }
 
-  queue.purge();
+  await queue.purge();
   return {};
 }

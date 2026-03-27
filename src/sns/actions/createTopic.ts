@@ -6,12 +6,12 @@ import { snsSuccessResponse } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
 import type { SqsStore } from "../../sqs/sqsStore.ts";
 
-export function createTopic(
+export async function createTopic(
   params: Record<string, string>,
   snsStore: SnsStore,
   _sqsStore: SqsStore,
   request: FastifyRequest,
-): string {
+): Promise<string> {
   const name = params.Name;
   if (!name) {
     throw new SnsError("InvalidParameter", "Topic name is required");
@@ -100,7 +100,7 @@ export function createTopic(
   }
 
   const region = regionFromAuth(request.headers.authorization) ?? snsStore.region ?? DEFAULT_REGION;
-  const topic = snsStore.createTopic(
+  const topic = await snsStore.createTopic(
     name,
     Object.keys(resolvedAttributes).length > 0 ? resolvedAttributes : undefined,
     Object.keys(resolvedTags).length > 0 ? resolvedTags : undefined,

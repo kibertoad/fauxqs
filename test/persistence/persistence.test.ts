@@ -359,7 +359,7 @@ describe("Persistence", () => {
     const queueUrl = `http://sqs.us-east-1.localhost:${server.port}/000000000000/reset-q`;
     await sqs.send(new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: "clear-me" }));
 
-    server.reset();
+    await server.reset();
     await server.stop();
 
     // Restart — queue should exist but be empty

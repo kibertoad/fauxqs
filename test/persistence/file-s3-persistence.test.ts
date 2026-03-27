@@ -363,7 +363,7 @@ describe("File-based S3 Persistence", () => {
       new PutObjectCommand({ Bucket: "reset-file-bucket", Key: "clear.txt", Body: "reset me" }),
     );
 
-    server.reset();
+    await server.reset();
     await server.stop();
 
     // Restart — bucket should exist but object should be gone

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { snsTopicArn, snsSubscriptionArn, parseArn } from "../common/arnHelper.ts";
 import { SnsError } from "../common/errors.ts";
 import type { MessageSpy } from "../spy.ts";
-import type { PersistenceManager } from "../persistence.ts";
+import type { PersistenceProvider } from "../persistence/index.ts";
 import type { SnsTopic, SnsSubscription } from "./snsTypes.ts";
 
 export class SnsStore {
@@ -10,14 +10,14 @@ export class SnsStore {
   subscriptions = new Map<string, SnsSubscription>();
   region?: string;
   spy?: MessageSpy;
-  persistence?: PersistenceManager;
+  persistence?: PersistenceProvider;
 
-  createTopic(
+  async createTopic(
     name: string,
     attributes: Record<string, string> | undefined,
     tags: Record<string, string> | undefined,
     region: string,
-  ): SnsTopic {
+  ): Promise<SnsTopic> {
     const arn = snsTopicArn(name, region);
 
     const existing = this.topics.get(arn);
@@ -65,22 +65,22 @@ export class SnsStore {
       subscriptionArns: [],
     };
     this.topics.set(arn, topic);
-    this.persistence?.insertTopic(topic);
+    await this.persistence?.insertTopic(topic);
     return topic;
   }
 
-  deleteTopic(arn: string): boolean {
+  async deleteTopic(arn: string): Promise<boolean> {
     const topic = this.topics.get(arn);
     if (!topic) return false;
 
     // Remove associated subscriptions
     for (const subArn of topic.subscriptionArns) {
       this.subscriptions.delete(subArn);
-      this.persistence?.deleteSubscription(subArn);
+      await this.persistence?.deleteSubscription(subArn);
     }
 
     this.topics.delete(arn);
-    this.persistence?.deleteTopic(arn);
+    await this.persistence?.deleteTopic(arn);
     return true;
   }
 
@@ -100,12 +100,12 @@ export class SnsStore {
     return { topics };
   }
 
-  subscribe(
+  async subscribe(
     topicArn: string,
     protocol: string,
     endpoint: string,
     attributes?: Record<string, string>,
-  ): SnsSubscription | undefined {
+  ): Promise<SnsSubscription | undefined> {
     const topic = this.topics.get(topicArn);
     if (!topic) return undefined;
 
@@ -149,23 +149,23 @@ export class SnsStore {
 
     this.subscriptions.set(arn, subscription);
     topic.subscriptionArns.push(arn);
-    this.persistence?.insertSubscription(subscription);
-    this.persistence?.updateTopicSubscriptionArns(topicArn, topic.subscriptionArns);
+    await this.persistence?.insertSubscription(subscription);
+    await this.persistence?.updateTopicSubscriptionArns(topicArn, topic.subscriptionArns);
     return subscription;
   }
 
-  unsubscribe(arn: string): boolean {
+  async unsubscribe(arn: string): Promise<boolean> {
     const sub = this.subscriptions.get(arn);
     if (!sub) return false;
 
     const topic = this.topics.get(sub.topicArn);
     if (topic) {
       topic.subscriptionArns = topic.subscriptionArns.filter((s) => s !== arn);
-      this.persistence?.updateTopicSubscriptionArns(sub.topicArn, topic.subscriptionArns);
+      await this.persistence?.updateTopicSubscriptionArns(sub.topicArn, topic.subscriptionArns);
     }
 
     this.subscriptions.delete(arn);
-    this.persistence?.deleteSubscription(arn);
+    await this.persistence?.deleteSubscription(arn);
     return true;
   }
 

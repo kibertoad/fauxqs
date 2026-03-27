@@ -118,13 +118,13 @@ export function loadInitConfig(path: string): FauxqsInitConfig {
   return validateInitConfig(JSON.parse(content));
 }
 
-export function applyInitConfig(
+export async function applyInitConfig(
   config: FauxqsInitConfig,
   sqsStore: SqsStore,
   snsStore: SnsStore,
   s3Store: S3Store,
   context: { port: number; region: string },
-): SetupResult {
+): Promise<SetupResult> {
   const { port } = context;
   // Top-level init.json region overrides the context default, but individual
   // resources can further override with their own region field.
@@ -152,7 +152,7 @@ export function applyInitConfig(
         queueResults.push({ name: q.name, url: existing.url, arn: existing.arn, created: false });
         continue;
       }
-      sqsStore.createQueue(q.name, url, arn, q.attributes, q.tags);
+      await sqsStore.createQueue(q.name, url, arn, q.attributes, q.tags);
       queueResults.push({ name: q.name, url, arn, created: true });
     }
   }
@@ -163,7 +163,7 @@ export function applyInitConfig(
       const region = t.region ?? defaultRegion;
       const arn = snsTopicArn(t.name, region);
       const existed = !!snsStore.getTopic(arn);
-      snsStore.createTopic(t.name, t.attributes, t.tags, region);
+      await snsStore.createTopic(t.name, t.attributes, t.tags, region);
       topicResults.push({ name: t.name, arn, created: !existed });
     }
   }
@@ -181,7 +181,7 @@ export function applyInitConfig(
         );
       }
       const countBefore = topic.subscriptionArns.length;
-      const sub = snsStore.subscribe(topicArn, "sqs", queueArn, s.attributes);
+      const sub = await snsStore.subscribe(topicArn, "sqs", queueArn, s.attributes);
       if (!sub) {
         throw new Error(
           `Init config: cannot create subscription — topic "${s.topic}" does not exist`,

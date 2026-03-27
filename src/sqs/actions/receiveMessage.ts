@@ -46,12 +46,12 @@ export async function receiveMessage(
 
   const dlqResolver = (arn: string) => store.getQueueByArn(arn);
 
-  let messages = queue.dequeue(maxNumberOfMessages, visibilityTimeout, dlqResolver);
+  let messages = await queue.dequeue(maxNumberOfMessages, visibilityTimeout, dlqResolver);
 
   // Long polling: if no messages and WaitTimeSeconds > 0, wait
   if (messages.length === 0 && waitTimeSeconds > 0) {
     await queue.waitForMessages(waitTimeSeconds);
-    messages = queue.dequeue(maxNumberOfMessages, visibilityTimeout, dlqResolver);
+    messages = await queue.dequeue(maxNumberOfMessages, visibilityTimeout, dlqResolver);
   }
 
   // Add system attributes if requested (merge both legacy and modern parameter names)

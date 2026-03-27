@@ -23,7 +23,7 @@ describe("programmatic API", () => {
 
   it("createQueue makes queue visible via SDK and returns metadata", async () => {
     server = await startFauxqs({ port: 0, logger: false });
-    const { queueUrl, queueArn, queueName } = server.createQueue("prog-queue");
+    const { queueUrl, queueArn, queueName } = await server.createQueue("prog-queue");
 
     expect(queueUrl).toContain("prog-queue");
     expect(queueArn).toMatch(/^arn:aws:sqs:.+:000000000000:prog-queue$/);
@@ -37,7 +37,7 @@ describe("programmatic API", () => {
 
   it("createQueue with attributes and tags returns metadata", async () => {
     server = await startFauxqs({ port: 0, logger: false });
-    const { queueUrl, queueArn } = server.createQueue("prog-queue-attrs", {
+    const { queueUrl, queueArn } = await server.createQueue("prog-queue-attrs", {
       attributes: { VisibilityTimeout: "120" },
       tags: { team: "platform" },
     });
@@ -52,7 +52,7 @@ describe("programmatic API", () => {
 
   it("createTopic makes topic visible via SDK and returns topicArn", async () => {
     server = await startFauxqs({ port: 0, logger: false });
-    const { topicArn } = server.createTopic("prog-topic");
+    const { topicArn } = await server.createTopic("prog-topic");
 
     expect(topicArn).toMatch(/^arn:aws:sns:.+:000000000000:prog-topic$/);
 
@@ -64,7 +64,7 @@ describe("programmatic API", () => {
 
   it("createTopic with attributes and tags returns topicArn", async () => {
     server = await startFauxqs({ port: 0, logger: false });
-    const { topicArn } = server.createTopic("prog-topic-attrs", {
+    const { topicArn } = await server.createTopic("prog-topic-attrs", {
       attributes: { DisplayName: "My Topic" },
       tags: { team: "platform" },
     });
@@ -78,9 +78,9 @@ describe("programmatic API", () => {
 
   it("subscribe wires topic to queue", async () => {
     server = await startFauxqs({ port: 0, logger: false });
-    server.createQueue("sub-q");
-    server.createTopic("sub-t");
-    server.subscribe({ topic: "sub-t", queue: "sub-q" });
+    await server.createQueue("sub-q");
+    await server.createTopic("sub-t");
+    await server.subscribe({ topic: "sub-t", queue: "sub-q" });
 
     const sns = createSnsClient(server.port);
     const subs = await sns.send(new ListSubscriptionsCommand({}));
@@ -122,7 +122,7 @@ describe("programmatic API", () => {
 
   it("setup creates all resources from config", async () => {
     server = await startFauxqs({ port: 0, logger: false });
-    server.setup({
+    await server.setup({
       queues: [{ name: "setup-q1" }, { name: "setup-q2" }],
       topics: [{ name: "setup-t1" }],
       subscriptions: [{ topic: "setup-t1", queue: "setup-q1" }],
@@ -148,8 +148,8 @@ describe("programmatic API", () => {
 
   it("purgeAll clears all resources", async () => {
     server = await startFauxqs({ port: 0, logger: false });
-    server.createQueue("purge-q");
-    server.createTopic("purge-t");
+    await server.createQueue("purge-q");
+    await server.createTopic("purge-t");
     server.createBucket("purge-b");
 
     server.purgeAll();
@@ -170,9 +170,9 @@ describe("programmatic API", () => {
 
   it("purgeAll then recreate works", async () => {
     server = await startFauxqs({ port: 0, logger: false });
-    server.createQueue("first-q");
+    await server.createQueue("first-q");
     server.purgeAll();
-    server.createQueue("second-q");
+    await server.createQueue("second-q");
 
     const sqs = createSqsClient(server.port);
     const queues = await sqs.send(new ListQueuesCommand({}));
@@ -183,13 +183,13 @@ describe("programmatic API", () => {
   describe("deleteQueue", () => {
     it("removes queue so it is no longer visible via SDK", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createQueue("del-q");
+      await server.createQueue("del-q");
 
       const sqs = createSqsClient(server.port);
       const before = await sqs.send(new ListQueuesCommand({}));
       expect(before.QueueUrls).toHaveLength(1);
 
-      server.deleteQueue("del-q");
+      await server.deleteQueue("del-q");
 
       const after = await sqs.send(new ListQueuesCommand({}));
       expect(after.QueueUrls ?? []).toHaveLength(0);
@@ -197,14 +197,14 @@ describe("programmatic API", () => {
 
     it("is a no-op for non-existent queue", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      expect(() => server.deleteQueue("no-such-queue")).not.toThrow();
+      await expect(server.deleteQueue("no-such-queue")).resolves.not.toThrow();
     });
 
     it("allows recreating deleted queue with different attributes", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createQueue("reconfig-q", { attributes: { VisibilityTimeout: "30" } });
-      server.deleteQueue("reconfig-q");
-      server.createQueue("reconfig-q", { attributes: { VisibilityTimeout: "120" } });
+      await server.createQueue("reconfig-q", { attributes: { VisibilityTimeout: "30" } });
+      await server.deleteQueue("reconfig-q");
+      await server.createQueue("reconfig-q", { attributes: { VisibilityTimeout: "120" } });
 
       const sqs = createSqsClient(server.port);
       const queues = await sqs.send(new ListQueuesCommand({}));
@@ -215,13 +215,13 @@ describe("programmatic API", () => {
   describe("deleteTopic", () => {
     it("removes topic so it is no longer visible via SDK", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createTopic("del-t");
+      await server.createTopic("del-t");
 
       const sns = createSnsClient(server.port);
       const before = await sns.send(new ListTopicsCommand({}));
       expect(before.Topics).toHaveLength(1);
 
-      server.deleteTopic("del-t");
+      await server.deleteTopic("del-t");
 
       const after = await sns.send(new ListTopicsCommand({}));
       expect(after.Topics ?? []).toHaveLength(0);
@@ -229,11 +229,11 @@ describe("programmatic API", () => {
 
     it("removes associated subscriptions", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createQueue("del-sub-q");
-      server.createTopic("del-sub-t");
-      server.subscribe({ topic: "del-sub-t", queue: "del-sub-q" });
+      await server.createQueue("del-sub-q");
+      await server.createTopic("del-sub-t");
+      await server.subscribe({ topic: "del-sub-t", queue: "del-sub-q" });
 
-      server.deleteTopic("del-sub-t");
+      await server.deleteTopic("del-sub-t");
 
       const sns = createSnsClient(server.port);
       const subs = await sns.send(new ListSubscriptionsCommand({}));
@@ -242,7 +242,7 @@ describe("programmatic API", () => {
 
     it("is a no-op for non-existent topic", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      expect(() => server.deleteTopic("no-such-topic")).not.toThrow();
+      await expect(server.deleteTopic("no-such-topic")).resolves.not.toThrow();
     });
 
     it("deletes topic created via SDK in a non-default region", async () => {
@@ -253,7 +253,7 @@ describe("programmatic API", () => {
       const before = await sns.send(new ListTopicsCommand({}));
       expect(before.Topics).toHaveLength(1);
 
-      server.deleteTopic("eu-topic", { region: "eu-west-1" });
+      await server.deleteTopic("eu-topic", { region: "eu-west-1" });
 
       const after = await sns.send(new ListTopicsCommand({}));
       expect(after.Topics ?? []).toHaveLength(0);
@@ -261,10 +261,10 @@ describe("programmatic API", () => {
 
     it("does not delete topic in different region", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createTopic("region-t", { region: "eu-west-1" });
-      server.createTopic("region-t", { region: "us-east-1" });
+      await server.createTopic("region-t", { region: "eu-west-1" });
+      await server.createTopic("region-t", { region: "us-east-1" });
 
-      server.deleteTopic("region-t", { region: "eu-west-1" });
+      await server.deleteTopic("region-t", { region: "eu-west-1" });
 
       const sns = createSnsClient(server.port);
       const after = await sns.send(new ListTopicsCommand({}));
@@ -303,9 +303,9 @@ describe("programmatic API", () => {
   describe("sendMessage", () => {
     it("enqueues message receivable via SDK", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      const { queueUrl } = server.createQueue("send-q");
+      const { queueUrl } = await server.createQueue("send-q");
 
-      const result = server.sendMessage("send-q", "hello programmatic");
+      const result = await server.sendMessage("send-q", "hello programmatic");
       expect(result.messageId).toBeDefined();
       expect(result.md5OfBody).toBeDefined();
 
@@ -320,9 +320,9 @@ describe("programmatic API", () => {
 
     it("sends with messageAttributes", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      const { queueUrl } = server.createQueue("send-attr-q");
+      const { queueUrl } = await server.createQueue("send-attr-q");
 
-      server.sendMessage("send-attr-q", "with attrs", {
+      await server.sendMessage("send-attr-q", "with attrs", {
         messageAttributes: {
           color: { DataType: "String", StringValue: "blue" },
         },
@@ -342,9 +342,9 @@ describe("programmatic API", () => {
 
     it("sends with delaySeconds", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      const { queueUrl } = server.createQueue("send-delay-q");
+      const { queueUrl } = await server.createQueue("send-delay-q");
 
-      server.sendMessage("send-delay-q", "delayed", { delaySeconds: 1 });
+      await server.sendMessage("send-delay-q", "delayed", { delaySeconds: 1 });
 
       // Not immediately visible
       const sqs = createSqsClient(server.port);
@@ -363,12 +363,12 @@ describe("programmatic API", () => {
 
     it("sends to FIFO queue and returns sequenceNumber", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      const { queueUrl } = server.createQueue("send-fifo-q.fifo", {
+      const { queueUrl } = await server.createQueue("send-fifo-q.fifo", {
         attributes: { FifoQueue: "true", ContentBasedDeduplication: "true" },
       });
 
-      const r1 = server.sendMessage("send-fifo-q.fifo", "msg1", { messageGroupId: "g1" });
-      const r2 = server.sendMessage("send-fifo-q.fifo", "msg2", { messageGroupId: "g1" });
+      const r1 = await server.sendMessage("send-fifo-q.fifo", "msg1", { messageGroupId: "g1" });
+      const r2 = await server.sendMessage("send-fifo-q.fifo", "msg2", { messageGroupId: "g1" });
 
       expect(r1.sequenceNumber).toBeDefined();
       expect(r2.sequenceNumber).toBeDefined();
@@ -392,14 +392,14 @@ describe("programmatic API", () => {
 
     it("throws for non-existent queue", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      expect(() => server.sendMessage("no-such-queue", "hello")).toThrow("not found");
+      await expect(server.sendMessage("no-such-queue", "hello")).rejects.toThrow("not found");
     });
 
     it("is visible in inspectQueue", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createQueue("inspect-send-q");
+      await server.createQueue("inspect-send-q");
 
-      server.sendMessage("inspect-send-q", "inspectable");
+      await server.sendMessage("inspect-send-q", "inspectable");
 
       const state = server.inspectQueue("inspect-send-q");
       expect(state).toBeDefined();
@@ -409,11 +409,11 @@ describe("programmatic API", () => {
 
     it("applies queue-level DelaySeconds default", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      const { queueUrl } = server.createQueue("queue-delay-q", {
+      const { queueUrl } = await server.createQueue("queue-delay-q", {
         attributes: { DelaySeconds: "1" },
       });
 
-      server.sendMessage("queue-delay-q", "default-delayed");
+      await server.sendMessage("queue-delay-q", "default-delayed");
 
       // Not immediately visible (queue default delay = 1s)
       const sqs = createSqsClient(server.port);
@@ -432,30 +432,30 @@ describe("programmatic API", () => {
 
     it("rejects invalid message body characters", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createQueue("invalid-char-q");
+      await server.createQueue("invalid-char-q");
 
-      expect(() => server.sendMessage("invalid-char-q", "bad\x00char")).toThrow(
+      await expect(server.sendMessage("invalid-char-q", "bad\x00char")).rejects.toThrow(
         "Invalid characters",
       );
     });
 
     it("rejects messages exceeding MaximumMessageSize", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createQueue("small-q", {
+      await server.createQueue("small-q", {
         attributes: { MaximumMessageSize: "1024" },
       });
 
       const bigBody = "x".repeat(2000);
-      expect(() => server.sendMessage("small-q", bigBody)).toThrow(
+      await expect(server.sendMessage("small-q", bigBody)).rejects.toThrow(
         "shorter than 1024 bytes",
       );
     });
 
     it("returns md5OfMessageAttributes when attributes are provided", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createQueue("md5-attr-q");
+      await server.createQueue("md5-attr-q");
 
-      const result = server.sendMessage("md5-attr-q", "body", {
+      const result = await server.sendMessage("md5-attr-q", "body", {
         messageAttributes: {
           color: { DataType: "String", StringValue: "blue" },
         },
@@ -464,33 +464,33 @@ describe("programmatic API", () => {
       expect(result.md5OfMessageAttributes).toMatch(/^[a-f0-9]{32}$/);
 
       // Without attributes, md5OfMessageAttributes should be absent
-      const result2 = server.sendMessage("md5-attr-q", "body2");
+      const result2 = await server.sendMessage("md5-attr-q", "body2");
       expect(result2.md5OfMessageAttributes).toBeUndefined();
     });
 
     it("rejects per-message DelaySeconds on FIFO queues", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createQueue("fifo-nodelay.fifo", {
+      await server.createQueue("fifo-nodelay.fifo", {
         attributes: { FifoQueue: "true", ContentBasedDeduplication: "true" },
       });
 
-      expect(() =>
+      await expect(
         server.sendMessage("fifo-nodelay.fifo", "msg", {
           messageGroupId: "g1",
           delaySeconds: 5,
         }),
-      ).toThrow("not valid for this queue type");
+      ).rejects.toThrow("not valid for this queue type");
     });
   });
 
   describe("publish", () => {
     it("fans out to subscribed queue", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      const { queueUrl } = server.createQueue("pub-q");
-      server.createTopic("pub-t");
-      server.subscribe({ topic: "pub-t", queue: "pub-q" });
+      const { queueUrl } = await server.createQueue("pub-q");
+      await server.createTopic("pub-t");
+      await server.subscribe({ topic: "pub-t", queue: "pub-q" });
 
-      const result = server.publish("pub-t", "published message");
+      const result = await server.publish("pub-t", "published message");
       expect(result.messageId).toBeDefined();
 
       const sqs = createSqsClient(server.port);
@@ -503,9 +503,9 @@ describe("programmatic API", () => {
 
     it("applies filter policy", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      const { queueUrl } = server.createQueue("filter-q");
-      server.createTopic("filter-t");
-      server.subscribe({
+      const { queueUrl } = await server.createQueue("filter-q");
+      await server.createTopic("filter-t");
+      await server.subscribe({
         topic: "filter-t",
         queue: "filter-q",
         attributes: {
@@ -514,14 +514,14 @@ describe("programmatic API", () => {
       });
 
       // Non-matching message — should be filtered
-      server.publish("filter-t", "red msg", {
+      await server.publish("filter-t", "red msg", {
         messageAttributes: {
           color: { DataType: "String", StringValue: "red" },
         },
       });
 
       // Matching message
-      server.publish("filter-t", "blue msg", {
+      await server.publish("filter-t", "blue msg", {
         messageAttributes: {
           color: { DataType: "String", StringValue: "blue" },
         },
@@ -539,15 +539,15 @@ describe("programmatic API", () => {
 
     it("delivers raw when RawMessageDelivery is true", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      const { queueUrl } = server.createQueue("raw-q");
-      server.createTopic("raw-t");
-      server.subscribe({
+      const { queueUrl } = await server.createQueue("raw-q");
+      await server.createTopic("raw-t");
+      await server.subscribe({
         topic: "raw-t",
         queue: "raw-q",
         attributes: { RawMessageDelivery: "true" },
       });
 
-      server.publish("raw-t", "raw body");
+      await server.publish("raw-t", "raw body");
 
       const sqs = createSqsClient(server.port);
       const msgs = await sqs.send(
@@ -559,12 +559,12 @@ describe("programmatic API", () => {
 
     it("preserves message body containing special strings in envelope", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      const { queueUrl } = server.createQueue("special-q");
-      server.createTopic("special-t");
-      server.subscribe({ topic: "special-t", queue: "special-q" });
+      const { queueUrl } = await server.createQueue("special-q");
+      await server.createTopic("special-t");
+      await server.subscribe({ topic: "special-t", queue: "special-q" });
 
       const tricky = "message with __UNSUB_ARN_PLACEHOLDER__ in it";
-      server.publish("special-t", tricky);
+      await server.publish("special-t", tricky);
 
       const sqs = createSqsClient(server.port);
       const msgs = await sqs.send(
@@ -579,16 +579,16 @@ describe("programmatic API", () => {
 
     it("throws for non-existent topic", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      expect(() => server.publish("no-such-topic", "hello")).toThrow("not found");
+      await expect(server.publish("no-such-topic", "hello")).rejects.toThrow("not found");
     });
 
     it("emits spy events", async () => {
       server = await startFauxqs({ port: 0, logger: false, messageSpies: true });
-      server.createQueue("spy-pub-q");
-      server.createTopic("spy-pub-t");
-      server.subscribe({ topic: "spy-pub-t", queue: "spy-pub-q" });
+      await server.createQueue("spy-pub-q");
+      await server.createTopic("spy-pub-t");
+      await server.subscribe({ topic: "spy-pub-t", queue: "spy-pub-q" });
 
-      server.publish("spy-pub-t", "spy message");
+      await server.publish("spy-pub-t", "spy message");
 
       const messages = server.spy.getAllMessages();
       // Should have SNS published event + SQS published event (fan-out)
@@ -604,7 +604,7 @@ describe("programmatic API", () => {
   describe("setup return value", () => {
     it("returns metadata for all created resources", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      const result = server.setup({
+      const result = await server.setup({
         queues: [{ name: "sr-q1" }, { name: "sr-q2" }],
         topics: [{ name: "sr-t1" }],
         subscriptions: [{ topic: "sr-t1", queue: "sr-q1" }],
@@ -639,7 +639,7 @@ describe("programmatic API", () => {
 
     it("returns empty arrays for empty config", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      const result = server.setup({});
+      const result = await server.setup({});
 
       expect(result.queues).toEqual([]);
       expect(result.topics).toEqual([]);
@@ -649,9 +649,9 @@ describe("programmatic API", () => {
 
     it("marks skipped queues as not created", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createQueue("existing-q");
+      await server.createQueue("existing-q");
 
-      const result = server.setup({
+      const result = await server.setup({
         queues: [{ name: "existing-q" }, { name: "new-q" }],
       });
 
@@ -665,9 +665,9 @@ describe("programmatic API", () => {
 
     it("marks idempotent topics as not created", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createTopic("existing-t");
+      await server.createTopic("existing-t");
 
-      const result = server.setup({
+      const result = await server.setup({
         topics: [{ name: "existing-t" }],
       });
 
@@ -678,11 +678,11 @@ describe("programmatic API", () => {
 
     it("marks idempotent subscriptions as not created", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createQueue("sub-exist-q");
-      server.createTopic("sub-exist-t");
-      server.subscribe({ topic: "sub-exist-t", queue: "sub-exist-q" });
+      await server.createQueue("sub-exist-q");
+      await server.createTopic("sub-exist-t");
+      await server.subscribe({ topic: "sub-exist-t", queue: "sub-exist-q" });
 
-      const result = server.setup({
+      const result = await server.setup({
         queues: [{ name: "sub-exist-q" }],
         topics: [{ name: "sub-exist-t" }],
         subscriptions: [{ topic: "sub-exist-t", queue: "sub-exist-q" }],
@@ -697,7 +697,7 @@ describe("programmatic API", () => {
       server = await startFauxqs({ port: 0, logger: false });
       server.createBucket("existing-b");
 
-      const result = server.setup({
+      const result = await server.setup({
         buckets: ["existing-b", "new-b"],
       });
 
@@ -710,7 +710,7 @@ describe("programmatic API", () => {
 
     it("returns correct ARNs with custom region", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      const result = server.setup({
+      const result = await server.setup({
         region: "eu-west-1",
         queues: [{ name: "eu-q" }],
         topics: [{ name: "eu-t" }],
@@ -726,7 +726,7 @@ describe("programmatic API", () => {
   describe("reset", () => {
     it("clears messages but keeps queues", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createQueue("reset-q");
+      await server.createQueue("reset-q");
 
       const sqs = createSqsClient(server.port);
       const queues = await sqs.send(new ListQueuesCommand({}));
@@ -735,7 +735,7 @@ describe("programmatic API", () => {
         MessageBody: "hello",
       }));
 
-      server.reset();
+      await server.reset();
 
       // Queue still exists
       const afterQueues = await sqs.send(new ListQueuesCommand({}));
@@ -761,7 +761,7 @@ describe("programmatic API", () => {
         Body: "hello",
       }));
 
-      server.reset();
+      await server.reset();
 
       // Bucket still exists
       const buckets = await s3.send(new ListBucketsCommand({}));
@@ -775,11 +775,11 @@ describe("programmatic API", () => {
 
     it("keeps topics and subscriptions intact", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createQueue("reset-sub-q");
-      server.createTopic("reset-topic");
-      server.subscribe({ topic: "reset-topic", queue: "reset-sub-q" });
+      await server.createQueue("reset-sub-q");
+      await server.createTopic("reset-topic");
+      await server.subscribe({ topic: "reset-topic", queue: "reset-sub-q" });
 
-      server.reset();
+      await server.reset();
 
       const sns = createSnsClient(server.port);
       const topics = await sns.send(new ListTopicsCommand({}));
@@ -791,7 +791,7 @@ describe("programmatic API", () => {
 
     it("clears spy buffer", async () => {
       server = await startFauxqs({ port: 0, logger: false, messageSpies: true });
-      server.createQueue("spy-reset-q");
+      await server.createQueue("spy-reset-q");
 
       const sqs = createSqsClient(server.port);
       const queues = await sqs.send(new ListQueuesCommand({}));
@@ -803,7 +803,7 @@ describe("programmatic API", () => {
       // Spy has the message
       expect(server.spy.getAllMessages()).toHaveLength(1);
 
-      server.reset();
+      await server.reset();
 
       // Spy buffer is cleared
       expect(server.spy.getAllMessages()).toHaveLength(0);
@@ -811,7 +811,7 @@ describe("programmatic API", () => {
 
     it("allows sending new messages after reset", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createQueue("reset-reuse-q");
+      await server.createQueue("reset-reuse-q");
 
       const sqs = createSqsClient(server.port);
       const queues = await sqs.send(new ListQueuesCommand({}));
@@ -820,7 +820,7 @@ describe("programmatic API", () => {
         MessageBody: "before",
       }));
 
-      server.reset();
+      await server.reset();
 
       await sqs.send(new SendMessageCommand({
         QueueUrl: queues.QueueUrls![0],

@@ -9,11 +9,11 @@ import type { MessageAttributeValue } from "../../sqs/sqsTypes.ts";
 import { SNS_MAX_MESSAGE_SIZE_BYTES } from "../../common/types.ts";
 import { matchesFilterPolicy, matchesFilterPolicyOnBody } from "../filter.ts";
 
-export function publish(
+export async function publish(
   params: Record<string, string>,
   snsStore: SnsStore,
   sqsStore: SqsStore,
-): string {
+): Promise<string> {
   const topicArn = params.TopicArn;
   if (!topicArn) {
     throw new SnsError("InvalidParameter", "TopicArn is required");
@@ -92,7 +92,7 @@ export function publish(
   }
 
   // Fan out to subscriptions
-  fanOutToSubscriptions({
+  await fanOutToSubscriptions({
     topicArn,
     topic,
     messageId,
@@ -109,11 +109,11 @@ export function publish(
   return snsSuccessResponse("Publish", `<MessageId>${result.MessageId}</MessageId>`);
 }
 
-export function publishBatch(
+export async function publishBatch(
   params: Record<string, string>,
   snsStore: SnsStore,
   sqsStore: SqsStore,
-): string {
+): Promise<string> {
   const topicArn = params.TopicArn;
   if (!topicArn) {
     throw new SnsError("InvalidParameter", "TopicArn is required");
@@ -221,7 +221,7 @@ export function publishBatch(
     }
 
     // Fan out each entry
-    fanOutToSubscriptions({
+    await fanOutToSubscriptions({
       topicArn,
       topic,
       messageId,
@@ -243,7 +243,7 @@ export function publishBatch(
   );
 }
 
-export function fanOutToSubscriptions(params: {
+export async function fanOutToSubscriptions(params: {
   topicArn: string;
   topic: { subscriptionArns: string[] };
   messageId: string;
@@ -254,7 +254,7 @@ export function fanOutToSubscriptions(params: {
   messageDeduplicationId?: string;
   snsStore: SnsStore;
   sqsStore: SqsStore;
-}): void {
+}): Promise<void> {
   const {
     topicArn,
     topic,
@@ -337,11 +337,11 @@ export function fanOutToSubscriptions(params: {
     if (queue.isFifo() && messageDeduplicationId) {
       const dedupResult = queue.checkDeduplication(messageDeduplicationId);
       if (dedupResult.isDuplicate) continue;
-      sqsMsg.sequenceNumber = queue.nextSequenceNumber();
+      sqsMsg.sequenceNumber = await queue.nextSequenceNumber();
       queue.recordDeduplication(messageDeduplicationId, sqsMsg.messageId);
     }
 
-    queue.enqueue(sqsMsg);
+    await queue.enqueue(sqsMsg);
   }
 }
 

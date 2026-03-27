@@ -4,11 +4,11 @@ import type { S3Store } from "../s3Store.ts";
 import { decodeAwsChunked } from "../chunkedEncoding.ts";
 import { extractChecksumFromHeaders, checksumHeaderName } from "../checksum.ts";
 
-export function uploadPart(
+export async function uploadPart(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
   reply: FastifyReply,
   store: S3Store,
-): void {
+): Promise<void> {
   const query = (request.query ?? {}) as Record<string, string>;
   const uploadId = query["uploadId"];
   const partNumber = parseInt(query["partNumber"], 10);
@@ -24,7 +24,7 @@ export function uploadPart(
     }
     const srcBucket = decoded.substring(0, slashIdx);
     const srcKey = decoded.substring(slashIdx + 1);
-    const srcObj = store.getObject(srcBucket, srcKey);
+    const srcObj = await store.getObject(srcBucket, srcKey);
 
     let partBody: Buffer;
     const copyRange = request.headers["x-amz-copy-source-range"] as string | undefined;
@@ -58,7 +58,7 @@ export function uploadPart(
       partBody = srcObj.body;
     }
 
-    const result = store.uploadPart(uploadId, partNumber, partBody);
+    const result = await store.uploadPart(uploadId, partNumber, partBody);
 
     const xml = [
       `<?xml version="1.0" encoding="UTF-8"?>`,
@@ -89,7 +89,7 @@ export function uploadPart(
     extractChecksumFromHeaders(trailers) ??
     extractChecksumFromHeaders(request.headers as Record<string, string | string[] | undefined>);
 
-  const result = store.uploadPart(uploadId, partNumber, body, cksum?.value);
+  const result = await store.uploadPart(uploadId, partNumber, body, cksum?.value);
 
   reply.header("etag", result.etag);
   if (cksum && result.checksumValue) {

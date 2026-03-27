@@ -41,11 +41,11 @@ function extractSystemMetadata(headers: Record<string, string | string[] | undef
   return result;
 }
 
-export function createMultipartUpload(
+export async function createMultipartUpload(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
   reply: FastifyReply,
   store: S3Store,
-): void {
+): Promise<void> {
   const bucket = request.params.bucket;
   const key = request.params["*"];
   const contentType = request.headers["content-type"] ?? "application/octet-stream";
@@ -63,7 +63,7 @@ export function createMultipartUpload(
     checksumAlgoHeader && SUPPORTED_CHECKSUM_ALGORITHMS.has(checksumAlgoHeader)
       ? (checksumAlgoHeader as ChecksumAlgorithm)
       : undefined;
-  const uploadId = store.createMultipartUpload(
+  const uploadId = await store.createMultipartUpload(
     bucket,
     key,
     contentType,
