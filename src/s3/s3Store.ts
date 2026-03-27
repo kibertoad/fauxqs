@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { S3Error } from "../common/errors.ts";
 import type { MessageSpy } from "../spy.ts";
+import type { UsageTracker } from "../tenant/usageTracker.ts";
 import type { S3PersistenceProvider } from "./s3Persistence.ts";
 import type { S3Object, MultipartUpload, ChecksumAlgorithm } from "./s3Types.ts";
 import { computeCompositeChecksum } from "./checksum.ts";
@@ -17,6 +18,7 @@ export class S3Store {
   spy?: MessageSpy;
   persistence?: S3PersistenceProvider;
   relaxedRules?: { disableMinCopySourceSize?: boolean };
+  usageTracker?: UsageTracker;
 
   createBucket(name: string, type?: BucketType): void {
     if (!this.buckets.has(name)) {
@@ -156,6 +158,7 @@ export class S3Store {
     if (!objects) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
     }
+    this.usageTracker?.touch(bucket);
 
     const etag = `"${createHash("md5").update(body).digest("hex")}"`;
     const obj: S3Object = {
@@ -207,6 +210,7 @@ export class S3Store {
     if (!objects) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
     }
+    this.usageTracker?.touch(bucket);
 
     const obj = objects.get(key);
     if (!obj) {
@@ -237,6 +241,7 @@ export class S3Store {
     if (!objects) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
     }
+    this.usageTracker?.touch(bucket);
 
     if (this.spy && objects.has(key)) {
       this.spy.addMessage({
@@ -257,6 +262,7 @@ export class S3Store {
     if (!objects) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
     }
+    this.usageTracker?.touch(bucket);
 
     const obj = objects.get(key);
     if (!obj) {
@@ -280,6 +286,7 @@ export class S3Store {
     if (!objectsMap) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
     }
+    this.usageTracker?.touch(bucket);
 
     const prefix = options?.prefix ?? "";
     const delimiter = options?.delimiter;
@@ -338,6 +345,7 @@ export class S3Store {
     if (!objects) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
     }
+    this.usageTracker?.touch(bucket);
 
     const bucketType = this.bucketTypes.get(bucket);
     if (bucketType !== "directory") {
@@ -404,6 +412,7 @@ export class S3Store {
     if (!this.buckets.has(bucket)) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
     }
+    this.usageTracker?.touch(bucket);
 
     const uploadId = randomUUID();
     const upload: MultipartUpload = {
@@ -449,6 +458,7 @@ export class S3Store {
         404,
       );
     }
+    this.usageTracker?.touch(upload.bucket);
 
     const etag = `"${createHash("md5").update(body).digest("hex")}"`;
     const part = {
@@ -476,6 +486,7 @@ export class S3Store {
         404,
       );
     }
+    this.usageTracker?.touch(upload.bucket);
 
     const objects = this.buckets.get(upload.bucket);
     if (!objects) {

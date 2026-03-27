@@ -3,6 +3,7 @@ import { snsTopicArn, snsSubscriptionArn, parseArn } from "../common/arnHelper.t
 import { SnsError } from "../common/errors.ts";
 import type { MessageSpy } from "../spy.ts";
 import type { PersistenceManager } from "../persistence.ts";
+import type { UsageTracker } from "../tenant/usageTracker.ts";
 import type { SnsTopic, SnsSubscription } from "./snsTypes.ts";
 
 export class SnsStore {
@@ -11,6 +12,7 @@ export class SnsStore {
   region?: string;
   spy?: MessageSpy;
   persistence?: PersistenceManager;
+  usageTracker?: UsageTracker;
 
   createTopic(
     name: string,
@@ -85,7 +87,9 @@ export class SnsStore {
   }
 
   getTopic(arn: string): SnsTopic | undefined {
-    return this.topics.get(arn);
+    const topic = this.topics.get(arn);
+    if (topic) this.usageTracker?.touch(topic.name);
+    return topic;
   }
 
   listTopics(nextToken?: string): { topics: SnsTopic[]; nextToken?: string } {

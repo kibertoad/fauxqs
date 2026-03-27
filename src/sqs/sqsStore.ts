@@ -5,6 +5,7 @@ import { md5, md5OfMessageAttributes } from "../common/md5.ts";
 import { DEFAULT_ACCOUNT_ID } from "../common/types.ts";
 import type { MessageSpy } from "../spy.ts";
 import type { PersistenceManager } from "../persistence.ts";
+import type { UsageTracker } from "../tenant/usageTracker.ts";
 import type {
   SqsMessage,
   InflightEntry,
@@ -657,6 +658,7 @@ export class SqsStore {
   region?: string;
   spy?: MessageSpy;
   persistence?: PersistenceManager;
+  usageTracker?: UsageTracker;
 
   createQueue(
     name: string,
@@ -709,10 +711,11 @@ export class SqsStore {
     // Parse region + name from URL, ignore host/port/scheme.
     // This matches LocalStack's approach and makes lookups port-agnostic.
     const { region, name } = SqsStore.parseQueueUrl(url);
-    if (region) {
-      return this.queuesByArn.get(`arn:aws:sqs:${region}:${DEFAULT_ACCOUNT_ID}:${name}`);
-    }
-    return this.queuesByName.get(name);
+    const queue = region
+      ? this.queuesByArn.get(`arn:aws:sqs:${region}:${DEFAULT_ACCOUNT_ID}:${name}`)
+      : this.queuesByName.get(name);
+    if (queue) this.usageTracker?.touch(queue.name);
+    return queue;
   }
 
   allQueues(): Iterable<SqsQueue> {
@@ -720,7 +723,9 @@ export class SqsStore {
   }
 
   getQueueByName(name: string): SqsQueue | undefined {
-    return this.queuesByName.get(name);
+    const queue = this.queuesByName.get(name);
+    if (queue) this.usageTracker?.touch(queue.name);
+    return queue;
   }
 
   listQueues(
@@ -748,7 +753,9 @@ export class SqsStore {
   }
 
   getQueueByArn(arn: string): SqsQueue | undefined {
-    return this.queuesByArn.get(arn);
+    const queue = this.queuesByArn.get(arn);
+    if (queue) this.usageTracker?.touch(queue.name);
+    return queue;
   }
 
   inspectQueue(name: string):

@@ -47,6 +47,8 @@ import { MessageSpy, type MessageSpyReader } from "./spy.ts";
 import { PersistenceManager } from "./persistence.ts";
 import { FileS3Persistence } from "./s3/fileS3Persistence.ts";
 import type { S3PersistenceProvider } from "./s3/s3Persistence.ts";
+import { TenantManager } from "./tenant/tenantManager.ts";
+import type { TenantConfig } from "./tenant/tenantTypes.ts";
 export type {
   FauxqsInitConfig,
   SetupResult,
@@ -56,6 +58,7 @@ export type {
   SetupBucketResult,
 } from "./initConfig.ts";
 export type { MessageAttributeValue } from "./sqs/sqsTypes.ts";
+export type { TenantConfig } from "./tenant/tenantTypes.ts";
 export { createLocalhostHandler, interceptLocalhostDns } from "./localhost.ts";
 export type {
   MessageSpyReader,
@@ -84,6 +87,7 @@ export interface BuildAppOptions {
   defaultRegion?: string;
   stores?: { sqsStore: SqsStore; snsStore: SnsStore; s3Store: S3Store };
   relaxedRules?: RelaxedRules;
+  tenantManager?: TenantManager;
 }
 
 export function buildApp(options?: BuildAppOptions) {
@@ -254,6 +258,30 @@ export function buildApp(options?: BuildAppOptions) {
     },
   );
 
+  // Tenant management endpoints — only registered when TenantManager is active
+  const tenantManager = options?.tenantManager;
+  if (tenantManager) {
+    app.get("/_fauxqs/tenants", async () => {
+      return tenantManager.listTenants();
+    });
+
+    app.post<{ Params: { prefix: string } }>(
+      "/_fauxqs/tenants/:prefix",
+      async (request) => {
+        const result = tenantManager.instantiateTemplate(request.params.prefix);
+        return { prefix: request.params.prefix, ...result };
+      },
+    );
+
+    app.delete<{ Params: { prefix: string } }>(
+      "/_fauxqs/tenants/:prefix",
+      async (request, reply) => {
+        tenantManager.deleteTenant(request.params.prefix);
+        reply.status(204);
+      },
+    );
+  }
+
   app.post("/", async (request, reply) => {
     const contentType = request.headers["content-type"] ?? "";
 
@@ -366,6 +394,13 @@ export interface FauxqsServer {
   /** Clear all messages from queues and all objects from buckets, but keep queues, topics, subscriptions, and buckets intact. Also clears the spy buffer. */
   reset(): void;
   purgeAll(): void;
+
+  /** Instantiate the template with the given prefix. Throws if tenant management is not enabled. */
+  instantiateTemplate(prefix: string): import("./initConfig.ts").SetupResult;
+  /** List all instantiated tenant prefixes and their last-used timestamps. Throws if tenant management is not enabled. */
+  listTenants(): Array<{ prefix: string; lastUsedMs: number }>;
+  /** Force-delete a tenant prefix and all its resources. Throws if tenant management is not enabled. */
+  deleteTenant(prefix: string): void;
 }
 
 export async function startFauxqs(options?: {
@@ -384,6 +419,8 @@ export async function startFauxqs(options?: {
   dataDir?: string;
   /** Directory for file-based S3 object storage. When set, S3 objects are stored as inspectable files on disk instead of in SQLite. Independent of dataDir. */
   s3StorageDir?: string;
+  /** Multi-tenant configuration. When set, enables auto-cleanup, templated creation, and permanent prefix management. */
+  tenant?: TenantConfig;
 }): Promise<FauxqsServer> {
   const port = options?.port ?? parseInt(process.env.FAUXQS_PORT ?? "4566");
   const host = options?.host ?? process.env.FAUXQS_HOST;
@@ -441,12 +478,39 @@ export async function startFauxqs(options?: {
     s3Store.spy = messageSpy;
   }
 
+  // Tenant management: create manager and wire usage tracker into stores
+  // We need the init config to use as a template, so resolve it here but defer application
+  const initConfig = init
+    ? typeof init === "string"
+      ? loadInitConfig(init)
+      : init
+    : undefined;
+
+  let tenantManager: TenantManager | undefined;
+  if (options?.tenant) {
+    // We don't know the actual port yet (it's resolved after listen), so the TenantManager
+    // will be started after listen. For now, create it with port 0 — we'll set the real
+    // context once we know the port.
+    tenantManager = new TenantManager(
+      options.tenant,
+      sqsStore,
+      snsStore,
+      s3Store,
+      { region: defaultRegion ?? DEFAULT_REGION, port: 0 }, // port updated after listen
+      initConfig,
+    );
+    sqsStore.usageTracker = tenantManager.usageTracker;
+    snsStore.usageTracker = tenantManager.usageTracker;
+    s3Store.usageTracker = tenantManager.usageTracker;
+  }
+
   const app = buildApp({
     logger,
     host,
     defaultRegion,
     stores: { sqsStore, snsStore, s3Store },
     relaxedRules: options?.relaxedRules,
+    tenantManager,
   });
 
   if (persistenceManager) {
@@ -457,6 +521,11 @@ export async function startFauxqs(options?: {
   if (s3Persistence && s3Persistence !== persistenceManager) {
     app.addHook("preClose", () => {
       s3Persistence.close();
+    });
+  }
+  if (tenantManager) {
+    app.addHook("preClose", () => {
+      tenantManager!.shutdown();
     });
   }
 
@@ -735,13 +804,45 @@ export async function startFauxqs(options?: {
         s3Persistence.purgeAll();
       }
       persistenceManager?.purgeAll();
+      if (tenantManager) {
+        tenantManager.reset();
+      }
+    },
+    instantiateTemplate(prefix) {
+      if (!tenantManager) {
+        throw new Error(
+          "Tenant management is not enabled. Pass { tenant: { ttlMs: ... } } to startFauxqs() to enable.",
+        );
+      }
+      return tenantManager.instantiateTemplate(prefix);
+    },
+    listTenants() {
+      if (!tenantManager) {
+        throw new Error(
+          "Tenant management is not enabled. Pass { tenant: { ttlMs: ... } } to startFauxqs() to enable.",
+        );
+      }
+      return tenantManager.listTenants();
+    },
+    deleteTenant(prefix) {
+      if (!tenantManager) {
+        throw new Error(
+          "Tenant management is not enabled. Pass { tenant: { ttlMs: ... } } to startFauxqs() to enable.",
+        );
+      }
+      tenantManager.deleteTenant(prefix);
     },
   };
 
   // Apply init config if provided
-  if (init) {
-    const config = typeof init === "string" ? loadInitConfig(init) : init;
-    server.setup(config);
+  if (initConfig) {
+    server.setup(initConfig);
+  }
+
+  // Start tenant manager after server is listening and init config is applied
+  if (tenantManager) {
+    tenantManager.setPort(actualPort);
+    tenantManager.start();
   }
 
   return server;
