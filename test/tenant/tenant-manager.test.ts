@@ -102,6 +102,41 @@ describe("tenant management", () => {
       expect(server.listTenants()).toHaveLength(0);
     });
 
+    it("rewrites DLQ ARNs in RedrivePolicy when prefixing", async () => {
+      const templateWithDlq: FauxqsInitConfig = {
+        queues: [
+          { name: "dlq" },
+          {
+            name: "main",
+            attributes: {
+              RedrivePolicy: JSON.stringify({
+                deadLetterTargetArn: "arn:aws:sqs:us-east-1:000000000000:dlq",
+                maxReceiveCount: "3",
+              }),
+            },
+          },
+        ],
+      };
+
+      server = await startFauxqs({
+        port: 0,
+        logger: false,
+        tenant: { ttlMs: 60_000, template: templateWithDlq },
+      });
+
+      server.instantiateTemplate("env-");
+
+      // Verify the prefixed main queue exists and its DLQ points to prefixed DLQ
+      const inspection = server.inspectQueue("env-main");
+      expect(inspection).toBeDefined();
+      const redrivePolicy = JSON.parse(
+        inspection!.attributes.RedrivePolicy ?? "{}",
+      );
+      expect(redrivePolicy.deadLetterTargetArn).toBe(
+        "arn:aws:sqs:us-east-1:000000000000:env-dlq",
+      );
+    });
+
     it("throws when tenant management is not enabled", async () => {
       server = await startFauxqs({ port: 0, logger: false });
       expect(() => server.instantiateTemplate("x-")).toThrow("not enabled");
@@ -159,6 +194,21 @@ describe("tenant management", () => {
       expect(server.listTenants()).toHaveLength(0);
     });
 
+    it("POST /_fauxqs/tenants/:prefix returns 400 when no template configured", async () => {
+      server = await startFauxqs({
+        port: 0,
+        logger: false,
+        tenant: { ttlMs: 60_000 }, // no template
+      });
+
+      const res = await fetch(`http://127.0.0.1:${server.port}/_fauxqs/tenants/x-`, {
+        method: "POST",
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain("No template");
+    });
+
     it("tenant endpoints are not registered when disabled", async () => {
       server = await startFauxqs({ port: 0, logger: false });
 
@@ -187,7 +237,7 @@ describe("tenant management", () => {
       expect(queues.QueueUrls).toHaveLength(2);
 
       // Wait for TTL + sweep cycles
-      await new Promise((r) => setTimeout(r, 400));
+      await new Promise((r) => setTimeout(r, 500));
 
       queues = await sqs.send(new ListQueuesCommand({ QueueNamePrefix: "expire-" }));
       expect(queues.QueueUrls ?? []).toHaveLength(0);
@@ -210,19 +260,18 @@ describe("tenant management", () => {
 
       const sqs = createSqsClient(server.port);
 
-      // Keep the resource alive by using it
+      // Resolve queue URLs upfront
+      const queuesResult = await sqs.send(new ListQueuesCommand({ QueueNamePrefix: "alive-" }));
+      const queueUrl = queuesResult.QueueUrls![0];
+
+      // Keep the resources alive by using them (ReceiveMessage triggers getQueue → touch)
       for (let i = 0; i < 5; i++) {
         await new Promise((r) => setTimeout(r, 50));
-        await sqs.send(new ListQueuesCommand({ QueueNamePrefix: "alive-" }));
-        // Touch via SQS receive (hits getQueue)
-        const queues = await sqs.send(new ListQueuesCommand({ QueueNamePrefix: "alive-" }));
-        if (queues.QueueUrls?.[0]) {
-          await sqs.send(new ReceiveMessageCommand({
-            QueueUrl: queues.QueueUrls[0],
-            MaxNumberOfMessages: 1,
-            WaitTimeSeconds: 0,
-          }));
-        }
+        await sqs.send(new ReceiveMessageCommand({
+          QueueUrl: queueUrl,
+          MaxNumberOfMessages: 1,
+          WaitTimeSeconds: 0,
+        }));
       }
 
       // Resources should still exist

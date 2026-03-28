@@ -1,5 +1,4 @@
-import { sqsQueueArn } from "../common/arnHelper.ts";
-import { snsTopicArn } from "../common/arnHelper.ts";
+import { sqsQueueArn, snsTopicArn } from "../common/arnHelper.ts";
 import { applyInitConfig } from "../initConfig.ts";
 import type { FauxqsInitConfig, SetupResult } from "../initConfig.ts";
 import type { SqsStore } from "../sqs/sqsStore.ts";
@@ -11,7 +10,7 @@ import type { TenantConfig, TemplateRequest } from "./tenantTypes.ts";
 const DEFAULT_ADMIN_QUEUE_NAME = "_fauxqs-admin";
 const DEFAULT_SWEEP_BUDGET = 50;
 const ADMIN_POLL_INTERVAL_MS = 500;
-const MIN_SWEEP_INTERVAL_MS = 1000;
+const MIN_SWEEP_INTERVAL_MS = 50;
 
 export class TenantManager {
   readonly usageTracker = new UsageTracker();
@@ -86,6 +85,10 @@ export class TenantManager {
     this.instantiatedPrefixes.clear();
     this.pendingExpired.clear();
     this.sweepCursor = undefined;
+    // Recreate admin queue if it was enabled (purgeAll wipes all queues)
+    if (this.adminQueueName) {
+      this.createAdminQueue();
+    }
   }
 
   /** Stop all timers. */
@@ -152,7 +155,7 @@ export class TenantManager {
 
   // --- Private: Sweep ---
 
-  sweepTick(): void {
+  private sweepTick(): void {
     const cutoff = Date.now() - this.config.ttlMs;
     const { visited, nextCursor, wrapped } = this.usageTracker.scan(
       this.sweepCursor,
@@ -168,7 +171,7 @@ export class TenantManager {
       }
 
       // Check permanent status
-      if (this.isResourcePermanent(entry.prefix)) continue;
+      if (this.isResourcePermanent(name, entry.prefix)) continue;
 
       // Add to pending expired
       let pending = this.pendingExpired.get(entry.prefix);
@@ -186,29 +189,42 @@ export class TenantManager {
   }
 
   private processPendingDeletions(): void {
+    const toDelete: Array<string | null> = [];
+    let didDelete = false;
+
     for (const [prefix, pendingNames] of this.pendingExpired) {
-      // Only delete managed prefix groups (not null-prefix resources)
       if (prefix === null) {
-        // Individual null-prefix resources: delete them one by one
         for (const name of pendingNames) {
           this.deleteIndividualResource(name);
         }
-        this.pendingExpired.delete(prefix);
+        toDelete.push(prefix);
+        didDelete = true;
         continue;
       }
 
-      // For managed prefixes: only delete if ALL template resources are expired
       const expectedNames = this.getResourceNamesForPrefix(prefix);
       const allExpired = expectedNames.every((n) => pendingNames.has(n));
       if (allExpired) {
         this.deleteResourceSet(prefix);
         this.instantiatedPrefixes.delete(prefix);
-        this.pendingExpired.delete(prefix);
+        toDelete.push(prefix);
+        didDelete = true;
       }
+    }
+
+    for (const prefix of toDelete) {
+      this.pendingExpired.delete(prefix);
+    }
+
+    // Reset cursor if entries were deleted — the cursor may point to a removed entry
+    if (didDelete) {
+      this.sweepCursor = undefined;
     }
   }
 
-  private isResourcePermanent(prefix: string | null): boolean {
+  private isResourcePermanent(name: string, prefix: string | null): boolean {
+    // Admin queue is always permanent
+    if (this.adminQueueName && name === this.adminQueueName) return true;
     if (prefix === null) {
       return this.permanentPrefixes.has("");
     }
@@ -244,7 +260,11 @@ export class TenantManager {
       for (const t of this.template.topics) {
         const fullName = prefix + t.name;
         const arn = snsTopicArn(fullName, this.region);
-        this.snsStore.deleteTopic(arn);
+        try {
+          this.snsStore.deleteTopic(arn);
+        } catch {
+          // Topic may already be deleted
+        }
         this.usageTracker.delete(fullName);
       }
     }
@@ -253,10 +273,14 @@ export class TenantManager {
     if (this.template.queues) {
       for (const q of this.template.queues) {
         const fullName = prefix + q.name;
-        const queue = this.sqsStore.getQueueByName(fullName);
-        if (queue) {
-          queue.cancelWaiters();
-          this.sqsStore.deleteQueue(queue.url);
+        try {
+          const queue = this.sqsStore.getQueueByName(fullName);
+          if (queue) {
+            queue.cancelWaiters();
+            this.sqsStore.deleteQueue(queue.url);
+          }
+        } catch {
+          // Queue may already be deleted
         }
         this.usageTracker.delete(fullName);
       }
@@ -324,7 +348,11 @@ export class TenantManager {
   private prefixConfig(config: FauxqsInitConfig, prefix: string): FauxqsInitConfig {
     return {
       region: config.region,
-      queues: config.queues?.map((q) => ({ ...q, name: prefix + q.name })),
+      queues: config.queues?.map((q) => ({
+        ...q,
+        name: prefix + q.name,
+        attributes: q.attributes ? this.prefixQueueAttributes(q.attributes, prefix) : undefined,
+      })),
       topics: config.topics?.map((t) => ({ ...t, name: prefix + t.name })),
       subscriptions: config.subscriptions?.map((s) => ({
         ...s,
@@ -335,6 +363,28 @@ export class TenantManager {
         typeof b === "string" ? prefix + b : { ...b, name: prefix + b.name },
       ),
     };
+  }
+
+  /** Rewrite ARNs inside RedrivePolicy so DLQ references point to the prefixed queue. */
+  private prefixQueueAttributes(
+    attrs: Record<string, string>,
+    prefix: string,
+  ): Record<string, string> {
+    if (!attrs.RedrivePolicy) return attrs;
+    try {
+      const policy = JSON.parse(attrs.RedrivePolicy);
+      if (typeof policy.deadLetterTargetArn === "string") {
+        // ARN format: arn:aws:sqs:region:account:queueName — prefix the queue name portion
+        const parts = policy.deadLetterTargetArn.split(":");
+        if (parts.length === 6) {
+          parts[5] = prefix + parts[5];
+          policy.deadLetterTargetArn = parts.join(":");
+        }
+      }
+      return { ...attrs, RedrivePolicy: JSON.stringify(policy) };
+    } catch {
+      return attrs;
+    }
   }
 
   private registerTemplateResources(prefix: string): void {
@@ -391,8 +441,7 @@ export class TenantManager {
       this.region,
     );
     this.sqsStore.createQueue(this.adminQueueName, url, arn);
-    // Register admin queue as non-tenant-managed (null prefix) — it will be permanent
-    // because "" should be in permanentPrefixes, or it's treated specially
+    // Register as non-tenant-managed; always exempt from cleanup via isResourcePermanent()
     this.usageTracker.register(this.adminQueueName, null);
   }
 

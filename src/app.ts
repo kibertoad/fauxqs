@@ -267,9 +267,14 @@ export function buildApp(options?: BuildAppOptions) {
 
     app.post<{ Params: { prefix: string } }>(
       "/_fauxqs/tenants/:prefix",
-      async (request) => {
-        const result = tenantManager.instantiateTemplate(request.params.prefix);
-        return { prefix: request.params.prefix, ...result };
+      async (request, reply) => {
+        try {
+          const result = tenantManager.instantiateTemplate(request.params.prefix);
+          return { prefix: request.params.prefix, ...result };
+        } catch (err) {
+          reply.status(400);
+          return { error: (err as Error).message };
+        }
       },
     );
 

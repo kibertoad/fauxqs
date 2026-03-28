@@ -18,14 +18,20 @@ if (tenantTtlEnv) {
   const templateEnv = process.env.FAUXQS_TENANT_TEMPLATE;
   const adminQueueEnv = process.env.FAUXQS_TENANT_ADMIN_QUEUE;
 
+  // Resolve template: "init" means reuse FAUXQS_INIT, a path loads a separate file.
+  // When "init" is specified, the template comes from the init config automatically
+  // (TenantManager falls back to init config when no explicit template is set).
+  let templateConfig: object | undefined;
+  if (templateEnv && templateEnv !== "init") {
+    templateConfig = JSON.parse(readFileSync(templateEnv, "utf-8"));
+  }
+
   tenant = {
     ttlMs,
     ...(sweepIntervalEnv ? { sweepIntervalMs: parseInt(sweepIntervalEnv, 10) * 1000 } : {}),
     ...(sweepBudgetEnv ? { sweepBudget: parseInt(sweepBudgetEnv, 10) } : {}),
     ...(permanentPrefixesEnv ? { permanentPrefixes: permanentPrefixesEnv.split(",") } : {}),
-    ...(templateEnv && templateEnv !== "init"
-      ? { template: JSON.parse(readFileSync(templateEnv, "utf-8")) }
-      : {}),
+    ...(templateConfig ? { template: templateConfig as any } : {}),
     ...(adminQueueEnv
       ? { adminQueue: adminQueueEnv === "true" ? true : adminQueueEnv }
       : {}),

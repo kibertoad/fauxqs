@@ -3,7 +3,7 @@ import type { FauxqsInitConfig } from "../initConfig.ts";
 export interface TenantConfig {
   /** TTL in milliseconds. Resources unused for longer than this are candidates for deletion. */
   ttlMs: number;
-  /** How often to run the cleanup sweep, in milliseconds. Defaults to ttlMs / 10 (min 1000ms). */
+  /** How often to run the cleanup sweep, in milliseconds. Defaults to ttlMs / 10 (min 50ms). */
   sweepIntervalMs?: number;
   /** Max number of resources inspected per sweep tick. Defaults to 50. */
   sweepBudget?: number;
