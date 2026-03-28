@@ -48,6 +48,8 @@ import { PersistenceManager } from "./persistence.ts";
 import { FileS3Persistence } from "./s3/fileS3Persistence.ts";
 import type { S3PersistenceProvider } from "./s3/s3Persistence.ts";
 import { TenantManager } from "./tenant/tenantManager.ts";
+import { UsageTracker } from "./tenant/usageTracker.ts";
+import { TrackedSqsStore, TrackedSnsStore, TrackedS3Store } from "./tenant/trackedStores.ts";
 import type { TenantConfig } from "./tenant/tenantTypes.ts";
 export type {
   FauxqsInitConfig,
@@ -265,18 +267,15 @@ export function buildApp(options?: BuildAppOptions) {
       return tenantManager.listTenants();
     });
 
-    app.post<{ Params: { prefix: string } }>(
-      "/_fauxqs/tenants/:prefix",
-      async (request, reply) => {
-        try {
-          const result = tenantManager.instantiateTemplate(request.params.prefix);
-          return { prefix: request.params.prefix, ...result };
-        } catch (err) {
-          reply.status(400);
-          return { error: (err as Error).message };
-        }
-      },
-    );
+    app.post<{ Params: { prefix: string } }>("/_fauxqs/tenants/:prefix", async (request, reply) => {
+      try {
+        const result = tenantManager.instantiateTemplate(request.params.prefix);
+        return { prefix: request.params.prefix, ...result };
+      } catch (err) {
+        reply.status(400);
+        return { error: (err as Error).message };
+      }
+    });
 
     app.delete<{ Params: { prefix: string } }>(
       "/_fauxqs/tenants/:prefix",
@@ -434,9 +433,12 @@ export async function startFauxqs(options?: {
   const logger = options?.logger ?? (loggerEnv !== undefined ? loggerEnv !== "false" : true);
   const init = options?.init ?? process.env.FAUXQS_INIT;
 
-  const sqsStore = new SqsStore();
-  const snsStore = new SnsStore();
-  const s3Store = new S3Store();
+  // When tenant management is enabled, use tracked store subclasses that record
+  // usage timestamps on every lookup. When disabled, plain stores — zero overhead.
+  const usageTracker = options?.tenant ? new UsageTracker() : undefined;
+  const sqsStore = usageTracker ? new TrackedSqsStore(usageTracker) : new SqsStore();
+  const snsStore = usageTracker ? new TrackedSnsStore(usageTracker) : new SnsStore();
+  const s3Store = usageTracker ? new TrackedS3Store(usageTracker) : new S3Store();
 
   // Persistence: create managers and wire into stores before any data is loaded
   const persistenceManager = options?.dataDir ? new PersistenceManager(options.dataDir) : undefined;
@@ -485,11 +487,7 @@ export async function startFauxqs(options?: {
 
   // Tenant management: create manager and wire usage tracker into stores
   // We need the init config to use as a template, so resolve it here but defer application
-  const initConfig = init
-    ? typeof init === "string"
-      ? loadInitConfig(init)
-      : init
-    : undefined;
+  const initConfig = init ? (typeof init === "string" ? loadInitConfig(init) : init) : undefined;
 
   let tenantManager: TenantManager | undefined;
   if (options?.tenant) {
@@ -501,12 +499,10 @@ export async function startFauxqs(options?: {
       sqsStore,
       snsStore,
       s3Store,
+      usageTracker!,
       { region: defaultRegion ?? DEFAULT_REGION, port: 0 }, // port updated after listen
       initConfig,
     );
-    sqsStore.usageTracker = tenantManager.usageTracker;
-    snsStore.usageTracker = tenantManager.usageTracker;
-    s3Store.usageTracker = tenantManager.usageTracker;
   }
 
   const app = buildApp({

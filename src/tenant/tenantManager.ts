@@ -13,7 +13,7 @@ const ADMIN_POLL_INTERVAL_MS = 500;
 const MIN_SWEEP_INTERVAL_MS = 50;
 
 export class TenantManager {
-  readonly usageTracker = new UsageTracker();
+  readonly usageTracker: UsageTracker;
 
   private readonly config: TenantConfig;
   private readonly sqsStore: SqsStore;
@@ -29,7 +29,9 @@ export class TenantManager {
   private readonly instantiatedPrefixes = new Set<string>();
   private sweepCursor: string | undefined;
   private pendingExpired = new Map<string | null, Set<string>>();
-  private sweepTimer?: ReturnType<typeof setInterval>;
+  private sweepTimer?: ReturnType<typeof setTimeout>;
+  private sweepIntervalMs = 0;
+  private sweepRunning = false;
   private adminPollTimer?: ReturnType<typeof setInterval>;
 
   constructor(
@@ -37,6 +39,7 @@ export class TenantManager {
     sqsStore: SqsStore,
     snsStore: SnsStore,
     s3Store: S3Store,
+    usageTracker: UsageTracker,
     context: { region: string; port: number },
     template?: FauxqsInitConfig,
   ) {
@@ -44,6 +47,7 @@ export class TenantManager {
     this.sqsStore = sqsStore;
     this.snsStore = snsStore;
     this.s3Store = s3Store;
+    this.usageTracker = usageTracker;
     this.region = context.region;
     this.port = context.port;
     this.template = config.template ?? template;
@@ -65,12 +69,14 @@ export class TenantManager {
 
   /** Start sweep timer and admin queue polling (if enabled). */
   start(): void {
-    // Start sweep timer
-    const sweepInterval = Math.max(
+    // Start sweep timer — uses setTimeout chain instead of setInterval so the next
+    // tick only starts after the previous one finishes (backpressure).
+    this.sweepIntervalMs = Math.max(
       this.config.sweepIntervalMs ?? Math.floor(this.config.ttlMs / 10),
       MIN_SWEEP_INTERVAL_MS,
     );
-    this.sweepTimer = setInterval(() => this.sweepTick(), sweepInterval);
+    this.sweepRunning = true;
+    this.scheduleSweep();
 
     // Create and start polling the admin queue if enabled
     if (this.adminQueueName) {
@@ -93,8 +99,9 @@ export class TenantManager {
 
   /** Stop all timers. */
   shutdown(): void {
+    this.sweepRunning = false;
     if (this.sweepTimer) {
-      clearInterval(this.sweepTimer);
+      clearTimeout(this.sweepTimer);
       this.sweepTimer = undefined;
     }
     if (this.adminPollTimer) {
@@ -155,6 +162,14 @@ export class TenantManager {
 
   // --- Private: Sweep ---
 
+  private scheduleSweep(): void {
+    if (!this.sweepRunning) return;
+    this.sweepTimer = setTimeout(() => {
+      this.sweepTick();
+      this.scheduleSweep();
+    }, this.sweepIntervalMs);
+  }
+
   private sweepTick(): void {
     const cutoff = Date.now() - this.config.ttlMs;
     const { visited, nextCursor, wrapped } = this.usageTracker.scan(
@@ -190,15 +205,15 @@ export class TenantManager {
 
   private processPendingDeletions(): void {
     const toDelete: Array<string | null> = [];
-    let didDelete = false;
+    const deletedNames = new Set<string>();
 
     for (const [prefix, pendingNames] of this.pendingExpired) {
       if (prefix === null) {
         for (const name of pendingNames) {
           this.deleteIndividualResource(name);
+          deletedNames.add(name);
         }
         toDelete.push(prefix);
-        didDelete = true;
         continue;
       }
 
@@ -207,8 +222,8 @@ export class TenantManager {
       if (allExpired) {
         this.deleteResourceSet(prefix);
         this.instantiatedPrefixes.delete(prefix);
+        for (const name of pendingNames) deletedNames.add(name);
         toDelete.push(prefix);
-        didDelete = true;
       }
     }
 
@@ -216,8 +231,9 @@ export class TenantManager {
       this.pendingExpired.delete(prefix);
     }
 
-    // Reset cursor if entries were deleted — the cursor may point to a removed entry
-    if (didDelete) {
+    // Only reset cursor if it pointed to a deleted entry — avoids restarting
+    // the scan from the beginning when unrelated prefixes were cleaned up.
+    if (this.sweepCursor && deletedNames.has(this.sweepCursor)) {
       this.sweepCursor = undefined;
     }
   }
@@ -303,7 +319,9 @@ export class TenantManager {
   }
 
   private deleteIndividualResource(name: string): void {
-    // Try to find and delete the resource by name across all stores
+    // Try to find and delete the resource by name across all stores.
+    // Queue and bucket lookups are O(1). Topic uses ARN construction
+    // with the known region to avoid O(n) scan over all topics.
     const queue = this.sqsStore.getQueueByName(name);
     if (queue) {
       queue.cancelWaiters();
@@ -312,16 +330,13 @@ export class TenantManager {
       return;
     }
 
-    // Check if it's a topic
-    for (const [arn, topic] of this.snsStore.topics) {
-      if (topic.name === name) {
-        this.snsStore.deleteTopic(arn);
-        this.usageTracker.delete(name);
-        return;
-      }
+    const topicArn = snsTopicArn(name, this.region);
+    if (this.snsStore.getTopic(topicArn)) {
+      this.snsStore.deleteTopic(topicArn);
+      this.usageTracker.delete(name);
+      return;
     }
 
-    // Check if it's a bucket
     if (this.s3Store.hasBucket(name)) {
       this.s3Store.emptyBucket(name);
       try {

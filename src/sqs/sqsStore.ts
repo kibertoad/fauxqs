@@ -5,7 +5,6 @@ import { md5, md5OfMessageAttributes } from "../common/md5.ts";
 import { DEFAULT_ACCOUNT_ID } from "../common/types.ts";
 import type { MessageSpy } from "../spy.ts";
 import type { PersistenceManager } from "../persistence.ts";
-import type { UsageTracker } from "../tenant/usageTracker.ts";
 import type {
   SqsMessage,
   InflightEntry,
@@ -650,6 +649,9 @@ export class SqsQueue {
   }
 }
 
+// NOTE: When adding new public methods that look up a queue (by URL, name, or ARN),
+// also override them in src/tenant/trackedStores.ts → TrackedSqsStore so that
+// tenant usage tracking stays accurate.
 export class SqsStore {
   private queues = new Map<string, SqsQueue>();
   private queuesByName = new Map<string, SqsQueue>();
@@ -658,7 +660,6 @@ export class SqsStore {
   region?: string;
   spy?: MessageSpy;
   persistence?: PersistenceManager;
-  usageTracker?: UsageTracker;
 
   createQueue(
     name: string,
@@ -711,11 +712,10 @@ export class SqsStore {
     // Parse region + name from URL, ignore host/port/scheme.
     // This matches LocalStack's approach and makes lookups port-agnostic.
     const { region, name } = SqsStore.parseQueueUrl(url);
-    const queue = region
-      ? this.queuesByArn.get(`arn:aws:sqs:${region}:${DEFAULT_ACCOUNT_ID}:${name}`)
-      : this.queuesByName.get(name);
-    if (queue) this.usageTracker?.touch(queue.name);
-    return queue;
+    if (region) {
+      return this.queuesByArn.get(`arn:aws:sqs:${region}:${DEFAULT_ACCOUNT_ID}:${name}`);
+    }
+    return this.queuesByName.get(name);
   }
 
   allQueues(): Iterable<SqsQueue> {
@@ -723,9 +723,7 @@ export class SqsStore {
   }
 
   getQueueByName(name: string): SqsQueue | undefined {
-    const queue = this.queuesByName.get(name);
-    if (queue) this.usageTracker?.touch(queue.name);
-    return queue;
+    return this.queuesByName.get(name);
   }
 
   listQueues(
@@ -753,9 +751,7 @@ export class SqsStore {
   }
 
   getQueueByArn(arn: string): SqsQueue | undefined {
-    const queue = this.queuesByArn.get(arn);
-    if (queue) this.usageTracker?.touch(queue.name);
-    return queue;
+    return this.queuesByArn.get(arn);
   }
 
   inspectQueue(name: string):

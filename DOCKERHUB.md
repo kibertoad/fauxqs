@@ -99,6 +99,28 @@ Alternatively, use `forcePathStyle: true` on the S3 client if you prefer path-st
 | `FAUXQS_LOGGER` | Enable request logging | `true` |
 | `FAUXQS_INIT` | Path to JSON init config file | (none) |
 
+## Multi-Tenant Management
+
+Enable auto-cleanup and templated resource creation for shared environments:
+
+```bash
+docker run -p 4566:4566 \
+  -v ./init.json:/app/init.json \
+  -e FAUXQS_INIT=/app/init.json \
+  -e FAUXQS_TENANT_TTL=300 \
+  -e FAUXQS_TENANT_TEMPLATE=init \
+  -e FAUXQS_TENANT_PERMANENT_PREFIXES=,staging- \
+  kibertoad/fauxqs
+```
+
+Create isolated resource sets via REST:
+
+```bash
+curl -X POST http://localhost:4566/_fauxqs/tenants/feature-123-
+```
+
+See [full documentation](https://github.com/kibertoad/fauxqs#multi-tenant-management) for details.
+
 ## Supported Services
 
 **SQS** — CreateQueue, DeleteQueue, SendMessage, ReceiveMessage, DeleteMessage, batch operations, long polling, visibility timeout, delay queues, dead letter queues, FIFO queues, message attributes, tags

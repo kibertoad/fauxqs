@@ -32,9 +32,7 @@ if (tenantTtlEnv) {
     ...(sweepBudgetEnv ? { sweepBudget: parseInt(sweepBudgetEnv, 10) } : {}),
     ...(permanentPrefixesEnv ? { permanentPrefixes: permanentPrefixesEnv.split(",") } : {}),
     ...(templateConfig ? { template: templateConfig as any } : {}),
-    ...(adminQueueEnv
-      ? { adminQueue: adminQueueEnv === "true" ? true : adminQueueEnv }
-      : {}),
+    ...(adminQueueEnv ? { adminQueue: adminQueueEnv === "true" ? true : adminQueueEnv } : {}),
   };
 }
 

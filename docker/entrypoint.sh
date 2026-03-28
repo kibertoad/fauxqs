@@ -36,4 +36,11 @@ else
   echo "S3 file storage: OFF"
 fi
 
+# Log tenant management status
+if [ -n "$FAUXQS_TENANT_TTL" ]; then
+  echo "Tenant management: ON (ttl=${FAUXQS_TENANT_TTL}s)"
+else
+  echo "Tenant management: OFF"
+fi
+
 exec tini -- node dist/server.js
