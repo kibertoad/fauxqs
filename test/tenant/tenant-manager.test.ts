@@ -420,9 +420,9 @@ describe("tenant management", () => {
 
       server.purgeAll();
 
-      // The usage tracker is cleared, but instantiatedPrefixes in TenantManager persists
-      // This is expected — purgeAll clears resources, not tenant bookkeeping
-      // A new instantiation after purge should work
+      // purgeAll() calls TenantManager.reset(), which calls
+      // instantiatedPrefixes.clear() — both resources and tracking state are
+      // cleared, so instantiateTemplate creates fresh resources
       const result = server.instantiateTemplate("purge-");
       expect(result.queues).toHaveLength(2);
     });
