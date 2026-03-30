@@ -12,6 +12,8 @@ jobs:
   publish:
     if: github.event.pull_request.merged == true && (contains(github.event.pull_request.labels.*.name, 'patch') || contains(github.event.pull_request.labels.*.name, 'minor') || contains(github.event.pull_request.labels.*.name, 'major'))
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
 
     permissions:
       contents: write
@@ -53,8 +55,10 @@ jobs:
           fi
 
       - name: Bump version
+        id: bump
         run: |
           npm version ${{ steps.version.outputs.bump }} -m "chore: release v%s"
+          echo "tag=v$(node -p 'require("./package.json").version')" >> $GITHUB_OUTPUT
           git push
           git push --tags
 
@@ -64,4 +68,6 @@ jobs:
   docker:
     needs: publish
     uses: ./.github/workflows/docker-publish.yml
+    with:
+      ref: ${{ needs.publish.outputs.tag }}
     secrets: inherit
