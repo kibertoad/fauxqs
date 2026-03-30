@@ -60,3 +60,8 @@ jobs:
 
       - name: Publish to npm
         run: npm publish --provenance --access public
+
+  docker:
+    needs: publish
+    uses: ./.github/workflows/docker-publish.yml
+    secrets: inherit

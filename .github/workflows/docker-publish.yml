@@ -5,6 +5,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_call:
 
 jobs:
   docker:
@@ -20,9 +21,14 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Extract version from tag
+      - name: Extract version
         id: meta
-        run: echo "version=${GITHUB_REF_TAG#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ -n "$GITHUB_REF_TAG" ] && echo "$GITHUB_REF_TAG" | grep -q '^v'; then
+            echo "version=${GITHUB_REF_TAG#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
+          fi
         env:
           GITHUB_REF_TAG: ${{ github.ref_name }}
 
