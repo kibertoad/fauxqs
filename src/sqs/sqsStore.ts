@@ -649,6 +649,9 @@ export class SqsQueue {
   }
 }
 
+// NOTE: When adding new public methods that look up a queue (by URL, name, or ARN),
+// also override them in src/tenant/trackedStores.ts → TrackedSqsStore so that
+// tenant usage tracking stays accurate.
 export class SqsStore {
   private queues = new Map<string, SqsQueue>();
   private queuesByName = new Map<string, SqsQueue>();

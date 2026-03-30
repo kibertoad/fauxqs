@@ -26,6 +26,7 @@ All state is in-memory by default. Optional SQLite-based persistence is availabl
     - [Init config schema reference](#init-config-schema-reference)
     - [Message spy](#message-spy)
     - [Queue inspection](#queue-inspection)
+    - [Multi-tenant management](#multi-tenant-management)
   - [Persistence](#persistence)
   - [Configurable queue URL host](#configurable-queue-url-host)
   - [Region](#region)
@@ -863,6 +864,134 @@ curl http://localhost:4566/_fauxqs/queues/my-queue
 ```
 
 Returns 404 for non-existent queues. Inspection never modifies queue state — messages remain exactly where they are.
+
+#### Multi-tenant management
+
+When running fauxqs as centralized infra shared by multiple ephemeral environments, you can enable tenant management to automatically create and clean up isolated resource sets.
+
+All tenant features are opt-in. When disabled (the default), there is zero runtime overhead — the base stores have no tenant-related code.
+
+##### Programmatic API
+
+```typescript
+const server = await startFauxqs({
+  port: 4566,
+  logger: false,
+  init: {
+    queues: [{ name: "orders" }, { name: "notifications" }],
+    topics: [{ name: "events" }],
+    subscriptions: [{ topic: "events", queue: "notifications" }],
+    buckets: ["assets"],
+  },
+  tenant: {
+    ttlMs: 300_000,                    // 5 minutes — resources unused for longer are deleted
+    sweepIntervalMs: 30_000,           // check every 30s (default: ttlMs / 10)
+    sweepBudget: 50,                   // inspect up to 50 resources per sweep tick (default: 50)
+    permanentPrefixes: ["", "prod-"],  // "" = resources without a prefix are permanent
+    // template defaults to the init config above; pass explicitly to use a different one
+    // adminQueue: true,               // create an SQS queue for template requests (default: disabled)
+  },
+});
+
+// Create a full set of prefixed resources from the template
+const result = server.instantiateTemplate("feature-123-");
+// Creates: feature-123-orders, feature-123-notifications, feature-123-events,
+//          feature-123-assets, plus the subscription between topic and queue.
+
+// Idempotent — calling again just bumps the "last used" timestamp
+server.instantiateTemplate("feature-123-");
+
+// List active tenants
+server.listTenants();
+// [{ prefix: "feature-123-", lastUsedMs: 1711550000000 }]
+
+// Force-delete a tenant's resources immediately
+server.deleteTenant("feature-123-");
+```
+
+##### Auto-cleanup
+
+When a tenant is enabled with `ttlMs`, fauxqs tracks the last time each resource was accessed (via SQS receive/send, SNS publish, S3 get/put, etc.). Resources belonging to a prefix that haven't been used within the TTL are automatically deleted.
+
+The sweep uses a fixed-budget cursor: each tick inspects at most `sweepBudget` resources, so the cost per tick is bounded regardless of how many tenants exist. A prefix is only deleted when **all** its resources are expired.
+
+Resources matching a `permanentPrefixes` entry are never cleaned up. Include `""` (empty string) to make non-tenant-managed resources (those created directly, not via a template) permanent.
+
+##### REST endpoints
+
+When tenant management is enabled, fauxqs registers additional HTTP endpoints:
+
+```bash
+# List all tenant prefixes with last-used timestamps
+curl http://localhost:4566/_fauxqs/tenants
+
+# Instantiate a resource set with a prefix (idempotent)
+curl -X POST http://localhost:4566/_fauxqs/tenants/feature-123-
+
+# Force-delete a tenant's resources
+curl -X DELETE http://localhost:4566/_fauxqs/tenants/feature-123-
+```
+
+These endpoints are not registered when tenant management is disabled.
+
+##### Admin SQS queue
+
+Optionally, you can enable an admin SQS queue that accepts template instantiation requests as messages. This is useful when environments need to self-provision via the same SQS protocol they already use:
+
+```typescript
+tenant: {
+  ttlMs: 300_000,
+  adminQueue: true,              // creates "_fauxqs-admin" queue
+  // adminQueue: "my-admin",     // or use a custom name
+}
+```
+
+Send a message to the admin queue to instantiate a template:
+
+```json
+{ "action": "instantiate", "prefix": "feature-456-" }
+```
+
+The admin queue is always exempt from auto-cleanup. When `adminQueue` is not set, no queue is created and no polling runs.
+
+##### Docker environment variables
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `FAUXQS_TENANT_TTL` | TTL in seconds. Setting this enables tenant management. | `300` |
+| `FAUXQS_TENANT_SWEEP_INTERVAL` | Sweep interval in seconds | `30` |
+| `FAUXQS_TENANT_SWEEP_BUDGET` | Max resources inspected per sweep tick | `50` |
+| `FAUXQS_TENANT_PERMANENT_PREFIXES` | Comma-separated prefixes exempt from cleanup | `"",prod-` |
+| `FAUXQS_TENANT_TEMPLATE` | `"init"` to reuse `FAUXQS_INIT`, or path to a separate template JSON | `init` |
+| `FAUXQS_TENANT_ADMIN_QUEUE` | `"true"` for default name, or a custom queue name | `true` |
+
+```yaml
+# docker-compose.yml
+services:
+  fauxqs:
+    image: kibertoad/fauxqs:latest
+    ports:
+      - "4566:4566"
+    environment:
+      - FAUXQS_INIT=/app/init.json
+      - FAUXQS_TENANT_TTL=300
+      - FAUXQS_TENANT_PERMANENT_PREFIXES=,staging-
+      - FAUXQS_TENANT_TEMPLATE=init
+      - FAUXQS_TENANT_ADMIN_QUEUE=true
+    volumes:
+      - ./init.json:/app/init.json
+```
+
+##### `startFauxqs` tenant option reference
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `ttlMs` | `number` | (required) | Resources unused for longer than this are deleted |
+| `sweepIntervalMs` | `number` | `ttlMs / 10` | How often the cleanup sweep runs |
+| `sweepBudget` | `number` | `50` | Max resources inspected per sweep tick |
+| `permanentPrefixes` | `string[]` | `[]` | Prefixes exempt from cleanup. `""` = unprefixed resources |
+| `template` | `FauxqsInitConfig` | init config | Template for prefixed instantiation |
+| `adminQueue` | `boolean \| string` | (disabled) | `true` = enable with name `_fauxqs-admin`, string = custom name |
 
 ### Persistence
 

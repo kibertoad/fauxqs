@@ -7,12 +7,15 @@ import { computeCompositeChecksum } from "./checksum.ts";
 
 export type BucketType = "general-purpose" | "directory";
 
+// NOTE: When adding new public methods that operate on a bucket,
+// also override them in src/tenant/trackedStores.ts → TrackedS3Store so that
+// tenant usage tracking stays accurate.
 export class S3Store {
   private buckets = new Map<string, Map<string, S3Object>>();
   private bucketCreationDates = new Map<string, Date>();
   private bucketTypes = new Map<string, BucketType>();
   private bucketLifecycleConfigurations = new Map<string, string>();
-  private multipartUploads = new Map<string, MultipartUpload>();
+  protected multipartUploads = new Map<string, MultipartUpload>();
   private multipartUploadsByBucket = new Map<string, Set<string>>();
   spy?: MessageSpy;
   persistence?: S3PersistenceProvider;
@@ -449,7 +452,6 @@ export class S3Store {
         404,
       );
     }
-
     const etag = `"${createHash("md5").update(body).digest("hex")}"`;
     const part = {
       partNumber,
@@ -476,7 +478,6 @@ export class S3Store {
         404,
       );
     }
-
     const objects = this.buckets.get(upload.bucket);
     if (!objects) {
       throw new S3Error(

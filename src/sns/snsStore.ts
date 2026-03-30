@@ -5,6 +5,9 @@ import type { MessageSpy } from "../spy.ts";
 import type { PersistenceManager } from "../persistence.ts";
 import type { SnsTopic, SnsSubscription } from "./snsTypes.ts";
 
+// NOTE: When adding new public methods that look up a topic by ARN,
+// also override them in src/tenant/trackedStores.ts → TrackedSnsStore so that
+// tenant usage tracking stays accurate.
 export class SnsStore {
   topics = new Map<string, SnsTopic>();
   subscriptions = new Map<string, SnsSubscription>();
@@ -86,6 +89,10 @@ export class SnsStore {
 
   getTopic(arn: string): SnsTopic | undefined {
     return this.topics.get(arn);
+  }
+
+  allTopics(): Iterable<SnsTopic> {
+    return this.topics.values();
   }
 
   listTopics(nextToken?: string): { topics: SnsTopic[]; nextToken?: string } {
