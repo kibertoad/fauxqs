@@ -105,4 +105,25 @@ describe("UsageTracker", () => {
       expect(result.wrapped).toBe(true);
     });
   });
+
+  describe("nextAfter", () => {
+    it("returns next key after given name", () => {
+      tracker.register("a", "p-");
+      tracker.register("b", "p-");
+      tracker.register("c", "p-");
+      expect(tracker.nextAfter("a")).toBe("b");
+      expect(tracker.nextAfter("b")).toBe("c");
+    });
+
+    it("returns undefined when name is last entry", () => {
+      tracker.register("a", "p-");
+      tracker.register("b", "p-");
+      expect(tracker.nextAfter("b")).toBeUndefined();
+    });
+
+    it("returns undefined when name is not found", () => {
+      tracker.register("a", "p-");
+      expect(tracker.nextAfter("missing")).toBeUndefined();
+    });
+  });
 });

@@ -5,7 +5,8 @@ import type { SqsStore } from "../sqs/sqsStore.ts";
 import type { SnsStore } from "../sns/snsStore.ts";
 import type { S3Store } from "../s3/s3Store.ts";
 import { UsageTracker } from "./usageTracker.ts";
-import type { TenantConfig, TemplateRequest } from "./tenantTypes.ts";
+import type { TenantConfig, TemplateRequest, TenantLogger } from "./tenantTypes.ts";
+import { defaultTenantLogger } from "./tenantTypes.ts";
 
 const DEFAULT_ADMIN_QUEUE_NAME = "_fauxqs-admin";
 const DEFAULT_SWEEP_BUDGET = 50;
@@ -25,6 +26,7 @@ export class TenantManager {
   private readonly permanentPrefixes: Set<string>;
   private readonly sweepBudget: number;
   private readonly adminQueueName: string | undefined;
+  private readonly logger: TenantLogger;
 
   private readonly instantiatedPrefixes = new Set<string>();
   private sweepCursor: string | undefined;
@@ -42,6 +44,7 @@ export class TenantManager {
     usageTracker: UsageTracker,
     context: { region: string; port: number },
     template?: FauxqsInitConfig,
+    logger?: TenantLogger,
   ) {
     this.config = config;
     this.sqsStore = sqsStore;
@@ -50,9 +53,14 @@ export class TenantManager {
     this.usageTracker = usageTracker;
     this.region = context.region;
     this.port = context.port;
+    this.logger = logger ?? defaultTenantLogger;
     this.template = config.template ?? template;
     this.permanentPrefixes = new Set(config.permanentPrefixes ?? []);
-    this.sweepBudget = config.sweepBudget ?? DEFAULT_SWEEP_BUDGET;
+    const budget = config.sweepBudget ?? DEFAULT_SWEEP_BUDGET;
+    if (budget <= 0) {
+      throw new Error(`sweepBudget must be a positive integer (got ${budget})`);
+    }
+    this.sweepBudget = budget;
 
     // Resolve admin queue name
     if (config.adminQueue === true) {
@@ -69,6 +77,12 @@ export class TenantManager {
 
   /** Start sweep timer and admin queue polling (if enabled). */
   start(): void {
+    // Seed the usage tracker from existing store state so that resources loaded
+    // from persistence (or created via init config before start()) begin with a
+    // fresh "just used" timestamp instead of being absent from the tracker and
+    // therefore invisible to the sweep.
+    this.seedFromStores();
+
     // Start sweep timer — uses setTimeout chain instead of setInterval so the next
     // tick only starts after the previous one finishes (backpressure).
     this.sweepIntervalMs = Math.max(
@@ -204,15 +218,25 @@ export class TenantManager {
   }
 
   private processPendingDeletions(): void {
+    const cutoff = Date.now() - this.config.ttlMs;
     const toDelete: Array<string | null> = [];
     const deletedNames = new Set<string>();
 
     for (const [prefix, pendingNames] of this.pendingExpired) {
-      if (prefix === null) {
-        for (const name of pendingNames) {
-          this.deleteIndividualResource(name);
-          deletedNames.add(name);
+      // Re-verify: remove any resources that were touched since being marked pending
+      for (const name of pendingNames) {
+        const entry = this.usageTracker.get(name);
+        if (!entry || entry.lastUsedMs >= cutoff) {
+          pendingNames.delete(name);
         }
+      }
+      if (pendingNames.size === 0) {
+        toDelete.push(prefix);
+        continue;
+      }
+
+      if (prefix === null) {
+        for (const name of pendingNames) deletedNames.add(name);
         toDelete.push(prefix);
         continue;
       }
@@ -220,21 +244,32 @@ export class TenantManager {
       const expectedNames = this.getResourceNamesForPrefix(prefix);
       const allExpired = expectedNames.every((n) => pendingNames.has(n));
       if (allExpired) {
-        this.deleteResourceSet(prefix);
-        this.instantiatedPrefixes.delete(prefix);
         for (const name of pendingNames) deletedNames.add(name);
         toDelete.push(prefix);
       }
     }
 
-    for (const prefix of toDelete) {
-      this.pendingExpired.delete(prefix);
+    // Advance cursor past any about-to-be-deleted entry BEFORE performing
+    // deletions — the entries still exist in the tracker at this point.
+    if (this.sweepCursor && deletedNames.has(this.sweepCursor)) {
+      this.sweepCursor = this.usageTracker.nextAfter(this.sweepCursor);
     }
 
-    // Only reset cursor if it pointed to a deleted entry — avoids restarting
-    // the scan from the beginning when unrelated prefixes were cleaned up.
-    if (this.sweepCursor && deletedNames.has(this.sweepCursor)) {
-      this.sweepCursor = undefined;
+    // Now perform the actual deletions
+    for (const [prefix, pendingNames] of this.pendingExpired) {
+      if (!toDelete.includes(prefix)) continue;
+      if (prefix === null) {
+        for (const name of pendingNames) {
+          this.deleteIndividualResource(name);
+        }
+      } else {
+        this.deleteResourceSet(prefix);
+        this.instantiatedPrefixes.delete(prefix);
+      }
+    }
+
+    for (const prefix of toDelete) {
+      this.pendingExpired.delete(prefix);
     }
   }
 
@@ -349,12 +384,16 @@ export class TenantManager {
   }
 
   private removeSubscription(topicArn: string, queueArn: string): void {
-    // Find the subscription matching this topic+queue pair
+    // Find and remove all subscriptions matching this topic+queue pair.
+    // Collect ARNs first to avoid mutating the map during iteration.
+    const toRemove: string[] = [];
     for (const [subArn, sub] of this.snsStore.subscriptions) {
       if (sub.topicArn === topicArn && sub.endpoint === queueArn) {
-        this.snsStore.unsubscribe(subArn);
-        return;
+        toRemove.push(subArn);
       }
+    }
+    for (const subArn of toRemove) {
+      this.snsStore.unsubscribe(subArn);
     }
   }
 
@@ -397,9 +436,81 @@ export class TenantManager {
         }
       }
       return { ...attrs, RedrivePolicy: JSON.stringify(policy) };
-    } catch {
-      return attrs;
+    } catch (err) {
+      throw new Error(
+        `Failed to prefix RedrivePolicy for tenant: ${err instanceof Error ? err.message : err}`,
+      );
     }
+  }
+
+  /**
+   * Seed the usage tracker from current store contents. Infers tenant prefixes
+   * from template resource names so that resources loaded from persistence start
+   * with a "just used" timestamp rather than being absent (and thus invisible to
+   * the sweep until they are accessed).
+   */
+  private seedFromStores(): void {
+    // Collect all template base names for prefix inference
+    const templateQueueNames = new Set(this.template?.queues?.map((q) => q.name) ?? []);
+    const templateTopicNames = new Set(this.template?.topics?.map((t) => t.name) ?? []);
+    const templateBucketNames = new Set(
+      this.template?.buckets?.map((b) => (typeof b === "string" ? b : b.name)) ?? [],
+    );
+
+    // Scan queues
+    for (const queue of this.sqsStore.allQueues()) {
+      if (this.usageTracker.get(queue.name)) continue; // already registered
+      const prefix = this.inferPrefix(queue.name, templateQueueNames);
+      if (prefix !== undefined) {
+        this.usageTracker.register(queue.name, prefix);
+        if (prefix !== null) this.instantiatedPrefixes.add(prefix);
+      } else {
+        // Non-template resource — register with null prefix
+        this.usageTracker.register(queue.name, null);
+      }
+    }
+
+    // Scan topics
+    for (const topic of this.snsStore.allTopics()) {
+      if (this.usageTracker.get(topic.name)) continue;
+      const prefix = this.inferPrefix(topic.name, templateTopicNames);
+      if (prefix !== undefined) {
+        this.usageTracker.register(topic.name, prefix);
+        if (prefix !== null) this.instantiatedPrefixes.add(prefix);
+      } else {
+        this.usageTracker.register(topic.name, null);
+      }
+    }
+
+    // Scan buckets
+    for (const { name } of this.s3Store.listBuckets()) {
+      if (this.usageTracker.get(name)) continue;
+      const prefix = this.inferPrefix(name, templateBucketNames);
+      if (prefix !== undefined) {
+        this.usageTracker.register(name, prefix);
+        if (prefix !== null) this.instantiatedPrefixes.add(prefix);
+      } else {
+        this.usageTracker.register(name, null);
+      }
+    }
+  }
+
+  /**
+   * Given a resource name and a set of template base names, return the prefix
+   * if the name matches (e.g. "tenant1-orders" with base "orders" → "tenant1-"),
+   * or null if the name exactly matches a base name (no prefix), or undefined
+   * if the name doesn't match any template base name.
+   */
+  private inferPrefix(name: string, templateBaseNames: Set<string>): string | null | undefined {
+    // Exact match → non-prefixed template resource
+    if (templateBaseNames.has(name)) return null;
+    // Try to match as prefixed
+    for (const base of templateBaseNames) {
+      if (name.endsWith(base) && name.length > base.length) {
+        return name.slice(0, name.length - base.length);
+      }
+    }
+    return undefined;
   }
 
   private registerTemplateResources(prefix: string): void {
@@ -471,9 +582,13 @@ export class TenantManager {
         const request = JSON.parse(msg.Body) as TemplateRequest;
         if (request.action === "instantiate" && typeof request.prefix === "string") {
           this.instantiateTemplate(request.prefix);
+        } else {
+          this.logger.warn(`Admin queue: ignoring message with unrecognized payload: ${msg.Body}`);
         }
-      } catch {
-        // Invalid message — consume and discard
+      } catch (err) {
+        this.logger.warn(
+          `Admin queue: discarding invalid message: ${err instanceof Error ? err.message : err}`,
+        );
       }
       // Always delete the message (acknowledge)
       queue.inflightMessages.delete(msg.ReceiptHandle);

@@ -47,6 +47,18 @@ export class TrackedSqsStore extends SqsStore {
     if (queue) this.tracker.touch(queue.name);
     return queue;
   }
+
+  override listQueues(
+    prefix?: string,
+    maxResults?: number,
+    nextToken?: string,
+  ): { queues: SqsQueue[]; nextToken?: string } {
+    const result = super.listQueues(prefix, maxResults, nextToken);
+    for (const queue of result.queues) {
+      this.tracker.touch(queue.name);
+    }
+    return result;
+  }
 }
 
 /**
@@ -64,6 +76,14 @@ export class TrackedSnsStore extends SnsStore {
     const topic = super.getTopic(arn);
     if (topic) this.tracker.touch(topic.name);
     return topic;
+  }
+
+  override listTopics(nextToken?: string): { topics: SnsTopic[]; nextToken?: string } {
+    const result = super.listTopics(nextToken);
+    for (const topic of result.topics) {
+      this.tracker.touch(topic.name);
+    }
+    return result;
   }
 }
 
@@ -162,7 +182,12 @@ export class TrackedS3Store extends S3Store {
     );
   }
 
-  // completeMultipartUpload is not overridden — the bucket was already touched
-  // by createMultipartUpload, and the upload object (which holds the bucket name)
-  // is in a private field of the base class.
+  override completeMultipartUpload(
+    uploadId: string,
+    partSpecs: { partNumber: number; etag: string }[],
+  ): S3Object {
+    const upload = this.multipartUploads.get(uploadId);
+    if (upload) this.tracker.touch(upload.bucket);
+    return super.completeMultipartUpload(uploadId, partSpecs);
+  }
 }

@@ -64,7 +64,14 @@ if (tenantTtlEnv) {
     ttlMs,
     ...(sweepIntervalMs !== undefined ? { sweepIntervalMs } : {}),
     ...(sweepBudget !== undefined ? { sweepBudget } : {}),
-    ...(permanentPrefixesEnv ? { permanentPrefixes: permanentPrefixesEnv.split(",") } : {}),
+    ...(permanentPrefixesEnv
+      ? {
+          permanentPrefixes: permanentPrefixesEnv
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
+        }
+      : {}),
     ...(templateConfig ? { template: templateConfig } : {}),
     ...(adminQueueEnv ? { adminQueue: adminQueueEnv === "true" ? true : adminQueueEnv } : {}),
   };

@@ -91,6 +91,10 @@ export class SnsStore {
     return this.topics.get(arn);
   }
 
+  allTopics(): Iterable<SnsTopic> {
+    return this.topics.values();
+  }
+
   listTopics(nextToken?: string): { topics: SnsTopic[]; nextToken?: string } {
     let topics = Array.from(this.topics.values()).sort((a, b) => a.arn.localeCompare(b.arn));
     if (nextToken) {

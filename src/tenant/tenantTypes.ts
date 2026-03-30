@@ -20,3 +20,14 @@ export interface TemplateRequest {
   action: "instantiate";
   prefix: string;
 }
+
+/** Minimal logger interface for tenant internals. Console-backed by default. */
+export interface TenantLogger {
+  warn(message: string): void;
+}
+
+export const defaultTenantLogger: TenantLogger = {
+  warn(message: string) {
+    console.warn(`[fauxqs:tenant] ${message}`);
+  },
+};

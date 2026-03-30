@@ -15,7 +15,7 @@ export class S3Store {
   private bucketCreationDates = new Map<string, Date>();
   private bucketTypes = new Map<string, BucketType>();
   private bucketLifecycleConfigurations = new Map<string, string>();
-  private multipartUploads = new Map<string, MultipartUpload>();
+  protected multipartUploads = new Map<string, MultipartUpload>();
   private multipartUploadsByBucket = new Map<string, Set<string>>();
   spy?: MessageSpy;
   persistence?: S3PersistenceProvider;

@@ -86,6 +86,16 @@ export class UsageTracker {
     return this.entries;
   }
 
+  /** Return the next key after `name` in insertion order, or undefined if at end. */
+  nextAfter(name: string): string | undefined {
+    let found = false;
+    for (const key of this.entries.keys()) {
+      if (found) return key;
+      if (key === name) found = true;
+    }
+    return undefined;
+  }
+
   /** Clear all entries. */
   clear(): void {
     this.entries.clear();

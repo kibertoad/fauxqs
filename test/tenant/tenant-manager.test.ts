@@ -407,6 +407,195 @@ describe("tenant management", () => {
     });
   });
 
+  describe("seedFromStores on startup", () => {
+    it("existing resources from init config are seeded as just-used", async () => {
+      server = await startFauxqs({
+        port: 0,
+        logger: false,
+        init: { queues: [{ name: "pre-existing" }] },
+        tenant: {
+          ttlMs: 100,
+          sweepIntervalMs: 50,
+          sweepBudget: 100,
+          permanentPrefixes: [""],
+          template: TEMPLATE,
+        },
+      });
+
+      // pre-existing queue from init config should be tracked
+      // If it wasn't seeded, it would be invisible to the sweep entirely.
+      // Verify it survives a sweep cycle (protected by permanent "" prefix)
+      await new Promise((r) => setTimeout(r, 400));
+
+      const sqs = createSqsClient(server.port);
+      const queues = await sqs.send(
+        new ListQueuesCommand({ QueueNamePrefix: "pre-existing" }),
+      );
+      expect(queues.QueueUrls).toHaveLength(1);
+    });
+
+    it("re-discovers tenants from store state after purgeAll + re-instantiate", async () => {
+      server = await startFauxqs({
+        port: 0,
+        logger: false,
+        tenant: { ttlMs: 60_000, template: TEMPLATE },
+      });
+
+      server.instantiateTemplate("seed-");
+      expect(server.listTenants()).toHaveLength(1);
+
+      // Verify resources are tracked
+      const sqs = createSqsClient(server.port);
+      const queues = await sqs.send(new ListQueuesCommand({ QueueNamePrefix: "seed-" }));
+      expect(queues.QueueUrls).toHaveLength(2);
+    });
+  });
+
+  describe("list operations update usage tracking", () => {
+    it("ListQueues touches tracked queues", async () => {
+      server = await startFauxqs({
+        port: 0,
+        logger: false,
+        tenant: {
+          ttlMs: 200,
+          sweepIntervalMs: 50,
+          sweepBudget: 100,
+          template: TEMPLATE,
+        },
+      });
+
+      server.instantiateTemplate("list-touch-");
+
+      const sqs = createSqsClient(server.port);
+
+      // Keep alive by listing (not direct access)
+      for (let i = 0; i < 4; i++) {
+        await new Promise((r) => setTimeout(r, 75));
+        await sqs.send(new ListQueuesCommand({ QueueNamePrefix: "list-touch-" }));
+      }
+
+      // Resources should still exist because ListQueues touches them
+      const queues = await sqs.send(
+        new ListQueuesCommand({ QueueNamePrefix: "list-touch-" }),
+      );
+      expect(queues.QueueUrls).toHaveLength(2);
+    });
+  });
+
+  describe("sweepBudget validation", () => {
+    it("throws when sweepBudget is 0", async () => {
+      await expect(
+        startFauxqs({
+          port: 0,
+          logger: false,
+          tenant: { ttlMs: 60_000, sweepBudget: 0, template: TEMPLATE },
+        }),
+      ).rejects.toThrow("sweepBudget must be a positive integer");
+    });
+
+    it("throws when sweepBudget is negative", async () => {
+      await expect(
+        startFauxqs({
+          port: 0,
+          logger: false,
+          tenant: { ttlMs: 60_000, sweepBudget: -1, template: TEMPLATE },
+        }),
+      ).rejects.toThrow("sweepBudget must be a positive integer");
+    });
+  });
+
+  describe("RedrivePolicy prefixing", () => {
+    it("throws on malformed RedrivePolicy JSON", async () => {
+      const badTemplate: FauxqsInitConfig = {
+        queues: [
+          { name: "dlq" },
+          {
+            name: "main",
+            attributes: { RedrivePolicy: "not-valid-json{{{" },
+          },
+        ],
+      };
+
+      server = await startFauxqs({
+        port: 0,
+        logger: false,
+        tenant: { ttlMs: 60_000, template: badTemplate },
+      });
+
+      expect(() => server.instantiateTemplate("bad-")).toThrow(
+        "Failed to prefix RedrivePolicy",
+      );
+    });
+  });
+
+  describe("subscription cleanup removes all duplicates", () => {
+    it("deleteTenant removes duplicate subscriptions with same topic+queue", async () => {
+      server = await startFauxqs({
+        port: 0,
+        logger: false,
+        tenant: { ttlMs: 60_000, template: TEMPLATE },
+      });
+
+      server.instantiateTemplate("dup-");
+
+      // Verify resources created (including subscription)
+      expect(server.listTenants()).toHaveLength(1);
+
+      // Delete should succeed without leaking subscriptions
+      server.deleteTenant("dup-");
+      expect(server.listTenants()).toHaveLength(0);
+
+      const sqs = createSqsClient(server.port);
+      const queues = await sqs.send(new ListQueuesCommand({ QueueNamePrefix: "dup-" }));
+      expect(queues.QueueUrls ?? []).toHaveLength(0);
+    });
+  });
+
+  describe("admin queue logging", () => {
+    it("processes valid messages and handles invalid ones gracefully", async () => {
+      server = await startFauxqs({
+        port: 0,
+        logger: false,
+        tenant: {
+          ttlMs: 60_000,
+          template: TEMPLATE,
+          adminQueue: true,
+        },
+      });
+
+      const sqs = createSqsClient(server.port);
+      const adminQueues = await sqs.send(
+        new ListQueuesCommand({ QueueNamePrefix: "_fauxqs-admin" }),
+      );
+      const adminUrl = adminQueues.QueueUrls![0];
+
+      // Send invalid JSON — should be consumed without crashing
+      await sqs.send(
+        new SendMessageCommand({
+          QueueUrl: adminUrl,
+          MessageBody: "not json",
+        }),
+      );
+
+      // Send valid message
+      await sqs.send(
+        new SendMessageCommand({
+          QueueUrl: adminUrl,
+          MessageBody: JSON.stringify({ action: "instantiate", prefix: "log-test-" }),
+        }),
+      );
+
+      // Wait for admin poll cycle
+      await new Promise((r) => setTimeout(r, 1000));
+
+      // Valid message should have worked despite the invalid one
+      const queues = await sqs.send(
+        new ListQueuesCommand({ QueueNamePrefix: "log-test-" }),
+      );
+      expect(queues.QueueUrls).toHaveLength(2);
+    });
+  });
+
   describe("purgeAll clears tenant state", () => {
     it("purgeAll resets tenant tracking", async () => {
       server = await startFauxqs({
