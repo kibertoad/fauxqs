@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { S3Error } from "../common/errors.ts";
 import type { MessageSpy } from "../spy.ts";
 import type { S3PersistenceProvider } from "./s3Persistence.ts";
@@ -408,7 +408,13 @@ export class S3Store {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
     }
 
-    const uploadId = randomUUID();
+    // Real AWS upload IDs are 128-char base64-encoded opaque tokens using [A-Za-z0-9.].
+    // 96 random bytes → 128 base64 chars (no padding since 96 is divisible by 3).
+    const uploadId = randomBytes(96)
+      .toString("base64")
+      .replaceAll("+", ".")
+      .replaceAll("/", ".")
+      .replaceAll("=", "");
     const upload: MultipartUpload = {
       uploadId,
       bucket,
