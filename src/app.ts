@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
+import { generateS3RequestId } from "./common/errors.ts";
 import { SqsStore } from "./sqs/sqsStore.ts";
 import type { MessageAttributeValue } from "./sqs/sqsTypes.ts";
 import { INVALID_MESSAGE_BODY_CHAR, calculateMessageSize } from "./sqs/sqsTypes.ts";
@@ -222,7 +223,7 @@ export function buildApp(options?: BuildAppOptions) {
   // Add x-amz-request-id and x-amz-id-2 headers to S3 responses
   app.addHook("onSend", (_request, reply, payload, done) => {
     if (!reply.hasHeader("x-amz-request-id")) {
-      reply.header("x-amz-request-id", randomUUID().replaceAll("-", "").toUpperCase().slice(0, 16));
+      reply.header("x-amz-request-id", generateS3RequestId());
       reply.header("x-amz-id-2", "fauxqs");
     }
     done();
