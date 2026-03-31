@@ -24,6 +24,15 @@ describe("S3 Object Operations", () => {
     await server.stop();
   });
 
+  it("returns x-amz-request-id as 16-char uppercase alphanumeric", async () => {
+    const res = await fetch(
+      `http://127.0.0.1:${server.port}/obj-bucket/hello-rid.txt`,
+      { method: "PUT", body: "test" },
+    );
+    const requestId = res.headers.get("x-amz-request-id");
+    expect(requestId).toMatch(/^[A-Z0-9]{16}$/);
+  });
+
   it("puts and gets a string body", async () => {
     await s3.send(
       new PutObjectCommand({

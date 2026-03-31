@@ -1,5 +1,17 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { escapeXml } from "./xml.ts";
+
+const REQUEST_ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+/** Generate a 16-char uppercase alphanumeric request ID matching real S3 format. */
+export function generateS3RequestId(): string {
+  const bytes = randomBytes(16);
+  let id = "";
+  for (let i = 0; i < 16; i++) {
+    id += REQUEST_ID_CHARS[bytes[i] % REQUEST_ID_CHARS.length];
+  }
+  return id;
+}
 
 export class SqsError extends Error {
   readonly code: string;
@@ -81,7 +93,7 @@ export class S3Error extends Error {
   }
 
   toXml(): string {
-    const requestId = randomUUID().replaceAll("-", "").toUpperCase().slice(0, 16);
+    const requestId = generateS3RequestId();
     const parts = [
       `<?xml version="1.0" encoding="UTF-8"?>`,
       `<Error>`,

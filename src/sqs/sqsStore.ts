@@ -1,4 +1,4 @@
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID, randomBytes, createHash } from "node:crypto";
 import type { QueueAttributeName } from "@aws-sdk/client-sqs";
 import { FifoMap } from "toad-cache";
 import { md5, md5OfMessageAttributes } from "../common/md5.ts";
@@ -228,7 +228,8 @@ export class SqsQueue {
         }
       }
 
-      const receiptHandle = randomUUID();
+      // Real AWS receipt handles are ~350-char base64 opaque tokens, not UUIDs.
+      const receiptHandle = randomBytes(256).toString("base64");
       const visibilityDeadline = Date.now() + visibilityTimeout * 1000;
 
       this.inflightMessages.set(receiptHandle, {
@@ -328,7 +329,8 @@ export class SqsQueue {
           }
         }
 
-        const receiptHandle = randomUUID();
+        // Real AWS receipt handles are ~350-char base64 opaque tokens, not UUIDs.
+        const receiptHandle = randomBytes(256).toString("base64");
         const visibilityDeadline = Date.now() + visibilityTimeout * 1000;
 
         this.inflightMessages.set(receiptHandle, {

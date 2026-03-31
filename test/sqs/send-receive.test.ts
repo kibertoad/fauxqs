@@ -53,7 +53,10 @@ describe("SQS Send/Receive/Delete", () => {
     expect(received.Messages![0].Body).toBe("hello world");
     expect(received.Messages![0].MessageId).toBe(sent.MessageId);
     expect(received.Messages![0].MD5OfBody).toBe(sent.MD5OfMessageBody);
-    expect(received.Messages![0].ReceiptHandle).toBeDefined();
+    // Real AWS receipt handles are ~350-char base64 opaque tokens, not UUIDs.
+    const handle = received.Messages![0].ReceiptHandle!;
+    expect(handle.length).toBeGreaterThan(100);
+    expect(handle).toMatch(/^[A-Za-z0-9+/=]+$/);
   });
 
   it("receives empty when no messages", async () => {
