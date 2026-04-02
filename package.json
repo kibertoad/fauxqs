@@ -1,6 +1,6 @@
 {
   "name": "fauxqs",
-  "version": "2.4.4",
+  "version": "2.4.5",
   "description": "SNS/SQS/S3 emulator",
   "type": "module",
   "scripts": {
