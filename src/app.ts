@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
+import cors from "@fastify/cors";
 import { generateS3RequestId } from "./common/errors.ts";
 import { SqsStore } from "./sqs/sqsStore.ts";
 import type { MessageAttributeValue } from "./sqs/sqsTypes.ts";
@@ -101,6 +102,11 @@ export function buildApp(options?: BuildAppOptions) {
     // Support S3 virtual-hosted-style requests: bucket name in Host header (e.g. bucket.localhost:port)
     // Rewrites to path-style (e.g. /bucket/key) before routing.
     rewriteUrl: (req) => {
+      // CORS preflight requests have no content-type and are handled by @fastify/cors
+      // before routing — skip the virtual-hosted-style rewrite for them.
+      if (req.method === "OPTIONS") {
+        return req.url ?? "/";
+      }
       const host = req.headers.host ?? "";
       const hostname = host.split(":")[0];
       // No rewrite for plain hostnames (localhost) or IP addresses
@@ -119,6 +125,29 @@ export function buildApp(options?: BuildAppOptions) {
       const bucket = hostname.substring(0, dotIndex);
       return `/${bucket}${req.url ?? "/"}`;
     },
+  });
+
+  // Permissive CORS — matches real S3 behavior when a bucket has a wildcard CORS config.
+  // Required for browser-based presigned URL uploads to work against the local mock.
+  app.register(cors, {
+    origin: true,
+    methods: ["GET", "PUT", "POST", "DELETE", "HEAD"],
+    // allowedHeaders omitted — @fastify/cors reflects the request's
+    // Access-Control-Request-Headers back, so arbitrary x-amz-meta-* headers
+    // (and any other headers) pass preflight without an explicit allowlist.
+    exposedHeaders: [
+      "etag",
+      "x-amz-request-id",
+      "x-amz-id-2",
+      "content-length",
+      "content-type",
+      "content-range",
+      "last-modified",
+      "x-amz-version-id",
+      "x-amz-mp-parts-count",
+    ],
+    credentials: true,
+    maxAge: 86400,
   });
 
   const sqsStore = options?.stores?.sqsStore ?? new SqsStore();

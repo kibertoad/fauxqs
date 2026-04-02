@@ -39,6 +39,7 @@ All state is in-memory by default. Optional SQLite-based persistence is availabl
 - [SNS Features](#sns-features)
 - [S3 Features](#s3-features)
   - [S3 URL styles](#s3-url-styles)
+  - [CORS](#cors)
   - [Using with AWS CLI](#using-with-aws-cli)
 - [Testing Strategies](#testing-strategies)
   - [Library mode for tests](#library-mode-for-tests)
@@ -1289,6 +1290,7 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Directory buckets** — `CreateBucket` accepts `<Type>Directory</Type>` in the body. Programmatic API: `server.createBucket("name", { type: "directory" })`. Init config supports `{ name, type, lifecycleConfiguration }` objects in the `buckets` array.
 - **Lifecycle configuration** — PutBucketLifecycleConfiguration, GetBucketLifecycleConfiguration, and DeleteBucketLifecycle. Lifecycle configs are stored and returned as-is (rules are not enforced — fauxqs is a mock). Persisted across restarts. Can also be set declaratively via init config.
 - **Path-style and virtual-hosted-style** — both S3 URL styles are supported (see below)
+- **CORS** — permissive CORS headers are enabled by default, allowing browser-based presigned URL uploads (see below)
 
 ### S3 URL styles
 
@@ -1373,6 +1375,39 @@ const s3 = new S3Client({
 });
 ```
 
+### CORS
+
+fauxqs includes permissive CORS headers on all responses, so browser-based presigned URL uploads work out of the box. This matches the behavior of a real S3 bucket configured with a wildcard CORS rule.
+
+Specifically:
+
+- **Preflight (OPTIONS)** requests return `204` with the appropriate `Access-Control-Allow-*` headers.
+- **All responses** include `Access-Control-Allow-Origin` reflecting the request origin, `Access-Control-Allow-Credentials: true`, and `Access-Control-Expose-Headers` listing common S3 response headers (ETag, x-amz-request-id, Content-Range, etc.).
+- **Allowed methods:** GET, PUT, POST, DELETE, HEAD.
+- **Allowed headers:** all headers requested in the preflight are reflected back as allowed. This includes standard S3 headers (`Authorization`, `Content-Type`, `x-amz-content-sha256`, `x-amz-date`, `Range`, etc.) as well as arbitrary `x-amz-meta-*` user metadata headers.
+
+This means you can generate presigned URLs server-side and have the browser upload directly to fauxqs without a proxy:
+
+```typescript
+import { PutObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+
+// Server-side: generate the presigned URL
+const url = await getSignedUrl(s3, new PutObjectCommand({
+  Bucket: "uploads",
+  Key: "photo.jpg",
+  ContentType: "image/jpeg",
+}), { expiresIn: 900 });
+
+// Browser-side: upload directly — CORS preflight succeeds automatically
+await fetch(url, {
+  method: "PUT",
+  headers: { "Content-Type": "image/jpeg" },
+  body: file,
+});
+```
+
+> **Note:** Unlike real S3 where CORS is configured per-bucket via `PutBucketCors`, fauxqs enables CORS globally for all buckets. There is no `PutBucketCors` API — the permissive policy is always active.
 
 ### Using with AWS CLI
 
