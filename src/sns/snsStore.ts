@@ -41,20 +41,20 @@ export class SnsStore {
         }
         Object.assign(existing.attributes, attributes);
       }
-      // One-directional tag check: only reject when a provided tag conflicts with an existing
-      // tag value. New tags are merged into the existing topic.
+      // Full tag set comparison: AWS rejects CreateTopic when the provided tags
+      // don't exactly match the existing topic's tags (same keys, same values, same count).
       if (tags) {
         const newTags = new Map(Object.entries(tags));
-        for (const [key, value] of newTags) {
-          if (existing.tags.has(key) && existing.tags.get(key) !== value) {
-            throw new SnsError(
-              "InvalidParameter",
-              "Invalid parameter: Tags Reason: Topic already exists with different tags",
-            );
-          }
-        }
-        for (const [key, value] of newTags) {
-          existing.tags.set(key, value);
+        const tagsMatch =
+          newTags.size === existing.tags.size &&
+          [...newTags].every(
+            ([key, value]) => existing.tags.has(key) && existing.tags.get(key) === value,
+          );
+        if (!tagsMatch) {
+          throw new SnsError(
+            "InvalidParameter",
+            "Invalid parameter: Tags Reason: Topic already exists with different tags",
+          );
         }
       }
       return existing;
