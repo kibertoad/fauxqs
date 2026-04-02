@@ -102,6 +102,45 @@ describe("SNS Topic Management", () => {
     ).rejects.toThrow("already exists with different tags");
   });
 
+  it("throws when creating topic with entirely different tag keys", async () => {
+    await sns.send(
+      new CreateTopicCommand({
+        Name: "tag-different-keys-topic",
+        Tags: [{ Key: "env", Value: "prod" }],
+      }),
+    );
+
+    await expect(
+      sns.send(
+        new CreateTopicCommand({
+          Name: "tag-different-keys-topic",
+          Tags: [{ Key: "team", Value: "backend" }],
+        }),
+      ),
+    ).rejects.toThrow("already exists with different tags");
+  });
+
+  it("throws when creating topic with subset of existing tags", async () => {
+    await sns.send(
+      new CreateTopicCommand({
+        Name: "tag-subset-topic",
+        Tags: [
+          { Key: "env", Value: "prod" },
+          { Key: "team", Value: "backend" },
+        ],
+      }),
+    );
+
+    await expect(
+      sns.send(
+        new CreateTopicCommand({
+          Name: "tag-subset-topic",
+          Tags: [{ Key: "env", Value: "prod" }],
+        }),
+      ),
+    ).rejects.toThrow("already exists with different tags");
+  });
+
   it("allows creating topic with same tags (idempotent)", async () => {
     await sns.send(
       new CreateTopicCommand({
