@@ -11,6 +11,15 @@ on:
         description: "Git ref (tag) to checkout"
         type: string
         required: false
+    secrets:
+      DOCKERHUB_USERNAME:
+        description: "Docker Hub username"
+        required: true
+      DOCKERHUB_TOKEN:
+        description: "Docker Hub access token"
+        required: true
+
+permissions: {}
 
 jobs:
   docker:
@@ -18,15 +27,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
 
       - name: Extract version
         id: meta
@@ -40,20 +50,24 @@ jobs:
           GITHUB_REF_TAG: ${{ github.ref_name }}
 
       - name: Build image for testing
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
         with:
           context: .
           load: true
           tags: fauxqs-ci-test:latest
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6
 
+      # Caching is disabled for this release workflow: a poisoned cache must
+      # not be able to influence the published image. setup-node v6 enables
+      # package-manager caching by default (package.json declares a
+      # packageManager field), so it is turned off explicitly here.
       - name: Setup Node
-        uses: actions/setup-node@v6.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
-          cache: 'pnpm'
+          package-manager-cache: false
 
       - name: Install test dependencies
         run: pnpm install --frozen-lockfile
@@ -64,13 +78,15 @@ jobs:
           FAUXQS_TEST_IMAGE: fauxqs-ci-test:latest
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v4
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # No build cache: the published image must not be assembled from
+      # layers that a less-trusted workflow run could have poisoned.
       - name: Build and push
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -78,5 +94,3 @@ jobs:
           tags: |
             kibertoad/fauxqs:latest
             kibertoad/fauxqs:${{ steps.meta.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
