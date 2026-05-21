@@ -12,17 +12,31 @@ on:
 jobs:
   typecheck-examples:
     runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        example:
+          - recommended
+          - alternatives
+
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
       - uses: actions/setup-node@v6.4.0
         with:
           node-version: 24.x
+          cache: 'pnpm'
+          cache-dependency-path: examples/${{ matrix.example }}/pnpm-lock.yaml
 
       - name: Install example dependencies
-        run: cd examples && npm install
+        run: pnpm install --frozen-lockfile
+        working-directory: examples/${{ matrix.example }}
 
-      - name: Type-check examples
-        run: cd examples && npx tsc --noEmit
+      - name: Type-check example
+        run: pnpm exec tsc --noEmit
+        working-directory: examples/${{ matrix.example }}

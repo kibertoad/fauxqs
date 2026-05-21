@@ -1,7 +1,7 @@
 /**
  * Dev entrypoint — starts the app against a Docker fauxqs instance.
  *
- * Run with: npm run dev
+ * Run with: pnpm dev
  * Requires: docker compose up -d (see docker-compose.yml)
  *
  * Environment variables are loaded from .env.dev via --env-file.

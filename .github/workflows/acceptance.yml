@@ -19,23 +19,27 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
       - name: Setup Node
         uses: actions/setup-node@v6.4.0
         with:
           always-auth: false
           node-version: 24.x
+          cache: 'pnpm'
 
       - name: Install dependencies
-        run: npm install
+        run: pnpm install --frozen-lockfile
 
       - name: Run Docker acceptance test
-        run: npm run test:docker
+        run: pnpm test:docker
 
       - name: Run Docker Compose acceptance test
-        run: npm run test:docker:compose
+        run: pnpm test:docker:compose
 
       - name: Run Docker persistence acceptance test
-        run: npm run test:docker:persistence
+        run: pnpm test:docker:persistence
 
       - name: Run Docker S3 file storage acceptance test
-        run: npm run test:docker:s3-storage
+        run: pnpm test:docker:s3-storage

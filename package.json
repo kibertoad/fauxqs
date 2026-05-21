@@ -18,8 +18,8 @@
     "lint:fix": "oxlint --fix && oxfmt --write src",
     "docker:build": "docker build -t kibertoad/fauxqs:latest -t kibertoad/fauxqs:$npm_package_version .",
     "docker:push": "docker push kibertoad/fauxqs:latest && docker push kibertoad/fauxqs:$npm_package_version",
-    "docker:publish": "npm run docker:build && npm run docker:push",
-    "prepublishOnly": "npm run build"
+    "docker:publish": "pnpm docker:build && pnpm docker:push",
+    "prepublishOnly": "pnpm build"
   },
   "main": "dist/app.js",
   "types": "dist/app.d.ts",
@@ -89,6 +89,8 @@
   "license": "MIT",
   "author": "Igor Savin",
   "engines": {
-    "node": ">=22.5.0"
-  }
+    "node": ">=22.5.0",
+    "pnpm": ">=11"
+  },
+  "packageManager": "pnpm@11.2.1"
 }
