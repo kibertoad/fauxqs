@@ -77,16 +77,16 @@ Run on 2026-02-21.
 From the `benchmarks/` directory:
 
 ```bash
-npm install
+pnpm install
 ```
 
 ### Individual benchmarks
 
 ```bash
-npm run bench:fauxqs-library
-npm run bench:fauxqs-docker-official
-npm run bench:fauxqs-docker-lite
-npm run bench:localstack
+pnpm bench:fauxqs-library
+pnpm bench:fauxqs-docker-official
+pnpm bench:fauxqs-docker-lite
+pnpm bench:localstack
 ```
 
 The Docker-based benchmarks (`fauxqs-docker-official`, `fauxqs-docker-lite`, `localstack`) require Docker to be running. They use `docker compose` to start and stop containers automatically.
@@ -94,7 +94,7 @@ The Docker-based benchmarks (`fauxqs-docker-official`, `fauxqs-docker-lite`, `lo
 ### All benchmarks + summary
 
 ```bash
-npm run bench:all
+pnpm bench:all
 ```
 
 Runs all four benchmarks sequentially, then merges results into `results/RESULTS.md` and `results/_summary.json`.
@@ -102,8 +102,8 @@ Runs all four benchmarks sequentially, then merges results into `results/RESULTS
 ### Other commands
 
 ```bash
-npm run bench:merge    # Re-generate summary from existing result files
-npm run bench:clean    # Delete all result files
+pnpm bench:merge    # Re-generate summary from existing result files
+pnpm bench:clean    # Delete all result files
 ```
 
 ## Output

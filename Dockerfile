@@ -2,12 +2,14 @@ FROM node:24-alpine AS build
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci
+RUN corepack enable && corepack prepare pnpm@11.2.1 --activate
+
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 
 COPY tsconfig.json ./
 COPY src/ src/
-RUN npm run build
+RUN pnpm run build
 
 FROM node:24-alpine
 
@@ -15,8 +17,10 @@ RUN apk add --no-cache tini dnsmasq
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN corepack enable && corepack prepare pnpm@11.2.1 --activate
+
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --prod --frozen-lockfile
 
 COPY --from=build /app/dist/ dist/
 COPY docker/entrypoint.sh /entrypoint.sh

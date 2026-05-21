@@ -16,8 +16,8 @@ The app accepts an `AppConfig` with the AWS endpoint, bucket name, queue URL, an
 Tests in `test/` use fauxqs as an in-process library. Each test suite gets its own server instance on a random port — no Docker, no port conflicts, no shared state.
 
 ```bash
-npm install
-npm test
+pnpm install
+pnpm test
 ```
 
 ### Programmatic API features demonstrated
