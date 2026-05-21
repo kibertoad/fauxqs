@@ -17,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read # checkout the repository
-      security-events: write # upload SARIF results to code scanning
 
     steps:
       - name: Checkout Repository
@@ -27,3 +26,9 @@ jobs:
 
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@5f14fd08f7cf1cb1609c1e344975f152c7ee938d # v0.5.6
+        with:
+          # Emit findings as inline GitHub workflow annotations on the PR.
+          # This is mutually exclusive with advanced-security (SARIF upload to
+          # code scanning), which must therefore be turned off explicitly.
+          advanced-security: false
+          annotations: true
