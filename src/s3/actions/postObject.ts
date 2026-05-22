@@ -66,7 +66,16 @@ export function postObject(
   if (fields["Cache-Control"]) systemMetadata.cacheControl = fields["Cache-Control"];
   if (fields["Content-Encoding"]) systemMetadata.contentEncoding = fields["Content-Encoding"];
 
-  const obj = store.putObject(bucket, key, fileBody, objectContentType, metadata, systemMetadata);
+  const obj = store.putObject(
+    bucket,
+    key,
+    fileBody,
+    objectContentType,
+    metadata,
+    systemMetadata,
+    undefined,
+    "Post",
+  );
 
   if (store.spy) {
     store.spy.addMessage({

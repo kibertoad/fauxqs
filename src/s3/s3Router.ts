@@ -21,6 +21,8 @@ import { postObject, isPostObjectRequest } from "./actions/postObject.ts";
 import { putBucketLifecycleConfiguration } from "./actions/putBucketLifecycleConfiguration.ts";
 import { getBucketLifecycleConfiguration } from "./actions/getBucketLifecycleConfiguration.ts";
 import { deleteBucketLifecycleConfiguration } from "./actions/deleteBucketLifecycleConfiguration.ts";
+import { putBucketNotificationConfiguration } from "./actions/putBucketNotificationConfiguration.ts";
+import { getBucketNotificationConfiguration } from "./actions/getBucketNotificationConfiguration.ts";
 
 export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
   const handleError = (err: unknown, reply: import("fastify").FastifyReply, isHead = false) => {
@@ -63,6 +65,8 @@ export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
     try {
       if ("lifecycle" in getQuery(request)) {
         putBucketLifecycleConfiguration(request as any, reply, store);
+      } else if ("notification" in getQuery(request)) {
+        putBucketNotificationConfiguration(request as any, reply, store);
       } else {
         createBucket(request as any, reply, store);
       }
@@ -87,6 +91,8 @@ export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
       try {
         if ("lifecycle" in getQuery(request)) {
           getBucketLifecycleConfiguration(request as any, reply, store);
+        } else if ("notification" in getQuery(request)) {
+          getBucketNotificationConfiguration(request as any, reply, store);
         } else {
           listObjects(request as any, reply, store);
         }
@@ -128,6 +134,8 @@ export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
       if (!key) {
         if ("lifecycle" in getQuery(request)) {
           putBucketLifecycleConfiguration(request as any, reply, store);
+        } else if ("notification" in getQuery(request)) {
+          putBucketNotificationConfiguration(request as any, reply, store);
         } else {
           createBucket(request as any, reply, store);
         }
@@ -155,6 +163,8 @@ export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
         if (!getKey(request.params as Record<string, unknown>)) {
           if ("lifecycle" in getQuery(request)) {
             getBucketLifecycleConfiguration(request as any, reply, store);
+          } else if ("notification" in getQuery(request)) {
+            getBucketNotificationConfiguration(request as any, reply, store);
           } else {
             listObjects(request as any, reply, store);
           }

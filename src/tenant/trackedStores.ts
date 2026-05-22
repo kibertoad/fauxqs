@@ -119,9 +119,19 @@ export class TrackedS3Store extends S3Store {
       type: "FULL_OBJECT" | "COMPOSITE";
       partChecksums?: string[];
     },
+    eventName: "Put" | "Post" | "Copy" = "Put",
   ): S3Object {
     this.tracker.touch(bucket);
-    return super.putObject(bucket, key, body, contentType, metadata, systemMetadata, checksumData);
+    return super.putObject(
+      bucket,
+      key,
+      body,
+      contentType,
+      metadata,
+      systemMetadata,
+      checksumData,
+      eventName,
+    );
   }
 
   override getObject(bucket: string, key: string): S3Object {

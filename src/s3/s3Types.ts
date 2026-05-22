@@ -1,4 +1,4 @@
-export type ChecksumAlgorithm = "CRC32" | "SHA1" | "SHA256";
+export type ChecksumAlgorithm = "CRC32" | "CRC32C" | "CRC64NVME" | "SHA1" | "SHA256";
 
 export interface S3Object {
   key: string;

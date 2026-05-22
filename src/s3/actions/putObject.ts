@@ -5,6 +5,7 @@ import type { S3Store } from "../s3Store.ts";
 import type { ChecksumAlgorithm } from "../s3Types.ts";
 import { decodeAwsChunked } from "../chunkedEncoding.ts";
 import { extractChecksumFromHeaders, checksumHeaderName } from "../checksum.ts";
+import { checkConditionalWrite } from "../conditionalWrites.ts";
 
 interface ChecksumData {
   algorithm: ChecksumAlgorithm;
@@ -106,6 +107,14 @@ export function putObject(
       };
     }
 
+    // Conditional write (If-None-Match / If-Match) against the destination key.
+    if (store.hasBucket(bucket)) {
+      checkConditionalWrite(
+        request.headers as Record<string, string | string[] | undefined>,
+        store.peekObject(bucket, key),
+      );
+    }
+
     const obj = store.putObject(
       bucket,
       key,
@@ -114,6 +123,7 @@ export function putObject(
       metadata,
       systemMeta,
       checksumData,
+      "Copy",
     );
 
     if (store.spy) {
@@ -171,6 +181,14 @@ export function putObject(
   const checksumData = cksum
     ? { algorithm: cksum.algorithm, value: cksum.value, type: "FULL_OBJECT" as const }
     : undefined;
+
+  // Conditional write (If-None-Match / If-Match) against the destination key.
+  if (store.hasBucket(bucket)) {
+    checkConditionalWrite(
+      request.headers as Record<string, string | string[] | undefined>,
+      store.peekObject(bucket, key),
+    );
+  }
 
   const obj = store.putObject(bucket, key, body, contentType, metadata, systemMeta, checksumData);
 

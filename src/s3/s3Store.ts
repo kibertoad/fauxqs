@@ -4,6 +4,7 @@ import type { MessageSpy } from "../spy.ts";
 import type { S3PersistenceProvider } from "./s3Persistence.ts";
 import type { S3Object, MultipartUpload, ChecksumAlgorithm } from "./s3Types.ts";
 import { computeCompositeChecksum } from "./checksum.ts";
+import type { S3EventDispatcher, S3NotificationConfiguration } from "./notifications.ts";
 
 export type BucketType = "general-purpose" | "directory";
 
@@ -20,6 +21,9 @@ export class S3Store {
   spy?: MessageSpy;
   persistence?: S3PersistenceProvider;
   relaxedRules?: { disableMinCopySourceSize?: boolean };
+  /** Dispatches S3 object events to SQS/SNS. Set by buildApp; undefined disables notifications. */
+  notificationDispatcher?: S3EventDispatcher;
+  private bucketNotificationConfigurations = new Map<string, S3NotificationConfiguration>();
 
   createBucket(name: string, type?: BucketType): void {
     if (!this.buckets.has(name)) {
@@ -74,6 +78,28 @@ export class S3Store {
 
   restoreBucketLifecycleConfiguration(name: string, config: string): void {
     this.bucketLifecycleConfigurations.set(name, config);
+  }
+
+  putBucketNotificationConfiguration(name: string, config: S3NotificationConfiguration): void {
+    this.bucketNotificationConfigurations.set(name, config);
+  }
+
+  getBucketNotificationConfiguration(name: string): S3NotificationConfiguration | undefined {
+    return this.bucketNotificationConfigurations.get(name);
+  }
+
+  /** Deliver an S3 object event to the bucket's configured SQS/SNS destinations. */
+  private fireObjectEvent(
+    bucket: string,
+    key: string,
+    eventName: string,
+    size?: number,
+    eTag?: string,
+  ): void {
+    if (!this.notificationDispatcher) return;
+    const config = this.bucketNotificationConfigurations.get(bucket);
+    if (!config) return;
+    this.notificationDispatcher.notify({ bucket, key, eventName, size, eTag }, config);
   }
 
   private validateBucketName(name: string): void {
@@ -154,6 +180,7 @@ export class S3Store {
       type: "FULL_OBJECT" | "COMPOSITE";
       partChecksums?: string[];
     },
+    eventName: "Put" | "Post" | "Copy" = "Put",
   ): S3Object {
     const objects = this.buckets.get(bucket);
     if (!objects) {
@@ -202,6 +229,8 @@ export class S3Store {
       });
     }
 
+    this.fireObjectEvent(bucket, key, `ObjectCreated:${eventName}`, obj.contentLength, obj.etag);
+
     return obj;
   }
 
@@ -241,7 +270,8 @@ export class S3Store {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
     }
 
-    if (this.spy && objects.has(key)) {
+    const existed = objects.has(key);
+    if (this.spy && existed) {
       this.spy.addMessage({
         service: "s3",
         bucket,
@@ -253,6 +283,10 @@ export class S3Store {
 
     objects.delete(key);
     this.persistence?.deleteObject(bucket, key);
+
+    if (existed) {
+      this.fireObjectEvent(bucket, key, "ObjectRemoved:Delete");
+    }
   }
 
   headObject(bucket: string, key: string): S3Object {
@@ -267,6 +301,20 @@ export class S3Store {
     }
 
     return obj;
+  }
+
+  /**
+   * Non-throwing object lookup used for conditional-write precondition checks.
+   * Returns undefined when the bucket or key is absent. Does not emit spy
+   * events or load object bodies from persistence.
+   */
+  peekObject(bucket: string, key: string): S3Object | undefined {
+    return this.buckets.get(bucket)?.get(key);
+  }
+
+  /** Look up an in-progress multipart upload by ID, or undefined if it does not exist. */
+  getMultipartUpload(uploadId: string): MultipartUpload | undefined {
+    return this.multipartUploads.get(uploadId);
   }
 
   listObjects(
@@ -620,6 +668,14 @@ export class S3Store {
       });
     }
 
+    this.fireObjectEvent(
+      upload.bucket,
+      upload.key,
+      "ObjectCreated:CompleteMultipartUpload",
+      obj.contentLength,
+      obj.etag,
+    );
+
     return obj;
   }
 
@@ -668,6 +724,7 @@ export class S3Store {
     this.bucketCreationDates.clear();
     this.bucketTypes.clear();
     this.bucketLifecycleConfigurations.clear();
+    this.bucketNotificationConfigurations.clear();
     this.multipartUploads.clear();
     this.multipartUploadsByBucket.clear();
   }

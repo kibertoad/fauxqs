@@ -15,6 +15,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { createS3Client } from "../helpers/clients.js";
 import { startFauxqsTestServer, type FauxqsServer } from "../helpers/setup.js";
+import { computeChecksum, crc32c, crc64nvme } from "../../src/s3/checksum.js";
 
 describe("S3 Checksums", () => {
   let server: FauxqsServer;
@@ -329,5 +330,119 @@ describe("S3 Checksums", () => {
     expect(getResult.ChecksumSHA1).toBeDefined();
     expect(getResult.ChecksumSHA1).toBe(result.ChecksumSHA1);
     await getResult.Body!.transformToString();
+  });
+
+  it("CRC32C checksum round-trip", async () => {
+    const result = await s3.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: "crc32c.txt",
+        Body: "crc32c test data",
+        ChecksumAlgorithm: ChecksumAlgorithm.CRC32C,
+      }),
+    );
+
+    expect(result.ChecksumCRC32C).toBeDefined();
+
+    const getResult = await s3.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: "crc32c.txt",
+        ChecksumMode: ChecksumMode.ENABLED,
+      }),
+    );
+
+    expect(getResult.ChecksumCRC32C).toBe(result.ChecksumCRC32C);
+    await getResult.Body!.transformToString();
+  });
+
+  it("CRC64NVME checksum round-trip (SDK default algorithm)", async () => {
+    const result = await s3.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: "crc64nvme.txt",
+        Body: "crc64nvme test data",
+        ChecksumAlgorithm: ChecksumAlgorithm.CRC64NVME,
+      }),
+    );
+
+    expect(result.ChecksumCRC64NVME).toBeDefined();
+
+    const getResult = await s3.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: "crc64nvme.txt",
+        ChecksumMode: ChecksumMode.ENABLED,
+      }),
+    );
+
+    expect(getResult.ChecksumCRC64NVME).toBe(result.ChecksumCRC64NVME);
+    await getResult.Body!.transformToString();
+  });
+
+  it("CRC64NVME multipart upload returns composite checksum", async () => {
+    const key = "crc64nvme-multipart";
+    const part1Body = Buffer.alloc(5 * 1024 * 1024, "x");
+    const part2Body = Buffer.from("crc64nvme final part");
+
+    const { UploadId } = await s3.send(
+      new CreateMultipartUploadCommand({
+        Bucket: bucket,
+        Key: key,
+        ChecksumAlgorithm: ChecksumAlgorithm.CRC64NVME,
+      }),
+    );
+
+    const upload1 = await s3.send(
+      new UploadPartCommand({
+        Bucket: bucket,
+        Key: key,
+        UploadId,
+        PartNumber: 1,
+        Body: part1Body,
+        ChecksumAlgorithm: ChecksumAlgorithm.CRC64NVME,
+      }),
+    );
+    const upload2 = await s3.send(
+      new UploadPartCommand({
+        Bucket: bucket,
+        Key: key,
+        UploadId,
+        PartNumber: 2,
+        Body: part2Body,
+        ChecksumAlgorithm: ChecksumAlgorithm.CRC64NVME,
+      }),
+    );
+
+    const complete = await s3.send(
+      new CompleteMultipartUploadCommand({
+        Bucket: bucket,
+        Key: key,
+        UploadId,
+        MultipartUpload: {
+          Parts: [
+            { PartNumber: 1, ETag: upload1.ETag, ChecksumCRC64NVME: upload1.ChecksumCRC64NVME },
+            { PartNumber: 2, ETag: upload2.ETag, ChecksumCRC64NVME: upload2.ChecksumCRC64NVME },
+          ],
+        },
+      }),
+    );
+
+    expect(complete.ChecksumCRC64NVME).toBeDefined();
+  });
+});
+
+describe("checksum algorithm unit vectors", () => {
+  it("CRC32C matches the standard check value for '123456789'", () => {
+    expect(crc32c(Buffer.from("123456789")).toString(16)).toBe("e3069283");
+  });
+
+  it("CRC64NVME matches the standard check value for '123456789'", () => {
+    expect(crc64nvme(Buffer.from("123456789")).toString(16)).toBe("ae8b14860a799888");
+  });
+
+  it("computeChecksum produces 4-byte CRC32C and 8-byte CRC64NVME", () => {
+    expect(Buffer.from(computeChecksum("CRC32C", Buffer.from("abc")), "base64")).toHaveLength(4);
+    expect(Buffer.from(computeChecksum("CRC64NVME", Buffer.from("abc")), "base64")).toHaveLength(8);
   });
 });

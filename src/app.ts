@@ -26,6 +26,10 @@ import { changeMessageVisibilityBatch } from "./sqs/actions/changeMessageVisibil
 import { tagQueue } from "./sqs/actions/tagQueue.ts";
 import { untagQueue } from "./sqs/actions/untagQueue.ts";
 import { listQueueTags } from "./sqs/actions/listQueueTags.ts";
+import { listDeadLetterSourceQueues } from "./sqs/actions/listDeadLetterSourceQueues.ts";
+import { startMessageMoveTask } from "./sqs/actions/startMessageMoveTask.ts";
+import { listMessageMoveTasks } from "./sqs/actions/listMessageMoveTasks.ts";
+import { cancelMessageMoveTask } from "./sqs/actions/cancelMessageMoveTask.ts";
 import { createTopic } from "./sns/actions/createTopic.ts";
 import { deleteTopic } from "./sns/actions/deleteTopic.ts";
 import { listTopics } from "./sns/actions/listTopics.ts";
@@ -41,6 +45,7 @@ import { publish, publishBatch, fanOutToSubscriptions } from "./sns/actions/publ
 import { tagResource, untagResource, listTagsForResource } from "./sns/actions/tagResource.ts";
 import { S3Store } from "./s3/s3Store.ts";
 import { registerS3Routes } from "./s3/s3Router.ts";
+import { S3NotificationDispatcher } from "./s3/notifications.ts";
 import { getCallerIdentity } from "./sts/getCallerIdentity.ts";
 import { sqsQueueArn, snsTopicArn } from "./common/arnHelper.ts";
 import { DEFAULT_REGION, SNS_MAX_MESSAGE_SIZE_BYTES } from "./common/types.ts";
@@ -180,6 +185,10 @@ export function buildApp(options?: BuildAppOptions) {
   sqsRouter.register("TagQueue", tagQueue);
   sqsRouter.register("UntagQueue", untagQueue);
   sqsRouter.register("ListQueueTags", listQueueTags);
+  sqsRouter.register("ListDeadLetterSourceQueues", listDeadLetterSourceQueues);
+  sqsRouter.register("StartMessageMoveTask", startMessageMoveTask);
+  sqsRouter.register("ListMessageMoveTasks", listMessageMoveTasks);
+  sqsRouter.register("CancelMessageMoveTask", cancelMessageMoveTask);
 
   const snsRouter = new SnsRouter(snsStore, sqsStore);
   snsRouter.register("CreateTopic", createTopic);
@@ -247,6 +256,12 @@ export function buildApp(options?: BuildAppOptions) {
   if (options?.relaxedRules) {
     s3Store.relaxedRules = options.relaxedRules;
   }
+  // Wire S3 object events to SQS queues and SNS topics (bucket notification configs).
+  s3Store.notificationDispatcher = new S3NotificationDispatcher(
+    sqsStore,
+    snsStore,
+    options?.defaultRegion ?? DEFAULT_REGION,
+  );
   registerS3Routes(app, s3Store);
 
   // Add x-amz-request-id and x-amz-id-2 headers to S3 responses

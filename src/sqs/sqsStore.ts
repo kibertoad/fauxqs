@@ -3,6 +3,7 @@ import type { QueueAttributeName } from "@aws-sdk/client-sqs";
 import { FifoMap } from "toad-cache";
 import { md5, md5OfMessageAttributes } from "../common/md5.ts";
 import { DEFAULT_ACCOUNT_ID } from "../common/types.ts";
+import { SqsError } from "../common/errors.ts";
 import type { MessageSpy } from "../spy.ts";
 import type { PersistenceManager } from "../persistence.ts";
 import type {
@@ -10,6 +11,7 @@ import type {
   InflightEntry,
   ReceivedMessage,
   MessageAttributeValue,
+  MessageMoveTask,
 } from "./sqsTypes.ts";
 import { DEFAULT_QUEUE_ATTRIBUTES, ALL_ATTRIBUTE_NAMES } from "./sqsTypes.ts";
 
@@ -223,6 +225,8 @@ export class SqsQueue {
           }
           // Persistence: delete from this queue (dlq.enqueue will insert into DLQ)
           this.persistence?.deleteMessage(msg.messageId);
+          // Record the origin queue so a message move task can redrive it back.
+          msg.deadLetterSourceArn = this.arn;
           dlq.enqueue(msg);
           continue;
         }
@@ -324,6 +328,8 @@ export class SqsQueue {
               });
             }
             this.persistence?.deleteMessage(msg.messageId);
+            // Record the origin queue so a message move task can redrive it back.
+            msg.deadLetterSourceArn = this.arn;
             dlq.enqueue(msg);
             continue;
           }
@@ -563,6 +569,28 @@ export class SqsQueue {
     this.persistence?.deleteQueueMessages(this.name);
   }
 
+  /**
+   * Remove and return all currently-visible (ready) messages. Used by message
+   * move tasks (DLQ redrive). Delayed and in-flight messages are left in place.
+   */
+  removeAllReadyMessages(): SqsMessage[] {
+    this.processTimers();
+    const result: SqsMessage[] = [];
+    if (this.isFifo()) {
+      for (const msgs of this.fifoMessages.values()) {
+        result.push(...msgs);
+      }
+      this.fifoMessages.clear();
+    } else {
+      result.push(...this.messages);
+      this.messages = [];
+    }
+    for (const msg of result) {
+      this.persistence?.deleteMessage(msg.messageId);
+    }
+    return result;
+  }
+
   /** Return a non-destructive snapshot of all messages in the queue, grouped by state. */
   inspectMessages(): {
     ready: SqsMessage[];
@@ -658,6 +686,7 @@ export class SqsStore {
   private queues = new Map<string, SqsQueue>();
   private queuesByName = new Map<string, SqsQueue>();
   private queuesByArn = new Map<string, SqsQueue>();
+  private messageMoveTasks: MessageMoveTask[] = [];
   host: string = "localhost";
   region?: string;
   spy?: MessageSpy;
@@ -756,6 +785,145 @@ export class SqsStore {
     return this.queuesByArn.get(arn);
   }
 
+  // --- Dead-letter queue redrive ---
+
+  /** Queues whose RedrivePolicy designates `dlqArn` as their dead-letter target. */
+  deadLetterSourceQueues(dlqArn: string): SqsQueue[] {
+    const result: SqsQueue[] = [];
+    for (const queue of this.queues.values()) {
+      const redrivePolicy = queue.attributes.RedrivePolicy;
+      if (!redrivePolicy) continue;
+      try {
+        const policy = JSON.parse(redrivePolicy);
+        if (policy?.deadLetterTargetArn === dlqArn) {
+          result.push(queue);
+        }
+      } catch {
+        // Ignore malformed RedrivePolicy
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Start a message move task (DLQ redrive). Ready messages in the source
+   * dead-letter queue are moved to `destinationArn`, or — when omitted — back to
+   * the queue each message originally came from. The move is performed
+   * synchronously, so the returned task is already COMPLETED.
+   */
+  startMessageMoveTask(
+    sourceArn: string,
+    destinationArn?: string,
+    maxNumberOfMessagesPerSecond?: number,
+  ): MessageMoveTask {
+    const source = this.getQueueByArn(sourceArn);
+    if (!source) {
+      throw new SqsError(
+        "ResourceNotFoundException",
+        "The resource that you specified for the SourceArn parameter doesn't exist.",
+        404,
+      );
+    }
+
+    const sourceQueues = this.deadLetterSourceQueues(sourceArn);
+    if (sourceQueues.length === 0) {
+      throw new SqsError(
+        "InvalidParameterValue",
+        "The source queue must be configured as a dead-letter queue before a message move task can be started.",
+      );
+    }
+
+    let destination: SqsQueue | undefined;
+    if (destinationArn) {
+      destination = this.getQueueByArn(destinationArn);
+      if (!destination) {
+        throw new SqsError(
+          "ResourceNotFoundException",
+          "The resource that you specified for the DestinationArn parameter doesn't exist.",
+          404,
+        );
+      }
+    }
+
+    const ready = source.removeAllReadyMessages();
+    let moved = 0;
+    for (const msg of ready) {
+      let target = destination;
+      if (!target) {
+        if (msg.deadLetterSourceArn) {
+          target = this.getQueueByArn(msg.deadLetterSourceArn);
+        }
+        if (!target && sourceQueues.length === 1) {
+          target = sourceQueues[0];
+        }
+      }
+      if (target) {
+        // Redriven messages start fresh so they are not immediately re-dead-lettered.
+        msg.approximateReceiveCount = 0;
+        msg.approximateFirstReceiveTimestamp = undefined;
+        msg.delayUntil = undefined;
+        msg.deadLetterSourceArn = undefined;
+        target.enqueue(msg);
+        moved++;
+      } else {
+        // Destination could not be resolved — leave the message in the source queue.
+        source.enqueue(msg);
+      }
+    }
+
+    const taskId = randomUUID();
+    const taskHandle = Buffer.from(JSON.stringify({ taskId, sourceArn }), "utf8").toString(
+      "base64",
+    );
+    const task: MessageMoveTask = {
+      taskId,
+      taskHandle,
+      sourceArn,
+      destinationArn,
+      maxNumberOfMessagesPerSecond,
+      status: "COMPLETED",
+      approximateNumberOfMessagesMoved: moved,
+      approximateNumberOfMessagesToMove: ready.length,
+      startedTimestamp: Date.now(),
+    };
+    this.messageMoveTasks.push(task);
+    return task;
+  }
+
+  /** List message move tasks for a source ARN, most recent first. */
+  listMessageMoveTasks(sourceArn: string, maxResults: number): MessageMoveTask[] {
+    return this.messageMoveTasks
+      .filter((task) => task.sourceArn === sourceArn)
+      .sort((a, b) => b.startedTimestamp - a.startedTimestamp)
+      .slice(0, Math.max(1, maxResults));
+  }
+
+  /**
+   * Cancel a running message move task. Because tasks complete synchronously,
+   * there is never a running task to cancel — this always reports the task as
+   * not found, matching AWS, which rejects cancelling a completed task.
+   */
+  cancelMessageMoveTask(taskHandle: string): number {
+    let taskId: string | undefined;
+    try {
+      taskId = JSON.parse(Buffer.from(taskHandle, "base64").toString("utf8")).taskId;
+    } catch {
+      // Invalid handle — treated as not found below
+    }
+    const task = taskId
+      ? this.messageMoveTasks.find((candidate) => candidate.taskId === taskId)
+      : undefined;
+    if (!task || task.status !== "RUNNING") {
+      throw new SqsError(
+        "ResourceNotFoundException",
+        "There is no running message move task with the specified task handle.",
+        404,
+      );
+    }
+    task.status = "CANCELLED";
+    return task.approximateNumberOfMessagesMoved;
+  }
+
   inspectQueue(name: string):
     | {
         name: string;
@@ -809,6 +977,7 @@ export class SqsStore {
     this.queues.clear();
     this.queuesByName.clear();
     this.queuesByArn.clear();
+    this.messageMoveTasks = [];
   }
 
   static createMessage(
