@@ -1,16 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import type { DeletedObject } from "@aws-sdk/client-s3";
-import { escapeXml } from "../../common/xml.ts";
+import { escapeXml, unescapeXml } from "../../common/xml.ts";
 import type { S3Store } from "../s3Store.ts";
-
-function unescapeXml(str: string): string {
-  return str
-    .replaceAll("&amp;", "&")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&apos;", "'");
-}
 
 export function deleteObjects(
   request: FastifyRequest<{ Params: { bucket: string } }>,

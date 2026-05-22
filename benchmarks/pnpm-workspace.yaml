@@ -1,0 +1,4 @@
+# Marks the benchmark suite as a standalone pnpm project so `pnpm install`
+# here is not absorbed into the repository-root workspace (whose
+# pnpm-workspace.yaml exists only to carry supply-chain policy settings).
+packages: []

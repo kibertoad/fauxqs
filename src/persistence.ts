@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS sqs_messages (
   message_deduplication_id TEXT,
   sequence_number TEXT,
   receipt_handle TEXT,
-  visibility_deadline INTEGER
+  visibility_deadline INTEGER,
+  dead_letter_source_arn TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sns_topics (
@@ -64,6 +65,11 @@ CREATE TABLE IF NOT EXISTS s3_buckets (
 );
 
 CREATE TABLE IF NOT EXISTS s3_bucket_lifecycle_configurations (
+  bucket TEXT PRIMARY KEY REFERENCES s3_buckets(name) ON DELETE CASCADE,
+  configuration TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS s3_bucket_notification_configurations (
   bucket TEXT PRIMARY KEY REFERENCES s3_buckets(name) ON DELETE CASCADE,
   configuration TEXT NOT NULL
 );
@@ -141,6 +147,8 @@ interface PreparedStatements {
   saveBucketLifecycleConfiguration: StatementSync;
   deleteBucketLifecycleConfiguration: StatementSync;
   loadBucketLifecycleConfigurations: StatementSync;
+  saveBucketNotificationConfiguration: StatementSync;
+  loadBucketNotificationConfigurations: StatementSync;
   upsertObject: StatementSync;
   deleteObject: StatementSync;
   deleteObjectsByBucket: StatementSync;
@@ -167,7 +175,23 @@ export class PersistenceManager implements S3PersistenceProvider {
     this.db = new DatabaseSync(dbPath, { enableForeignKeyConstraints: true });
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec(SCHEMA);
+    this.migrate();
     this.stmts = this.prepareStatements();
+  }
+
+  /**
+   * Apply schema additions to databases created by an older fauxqs version.
+   * SQLite has no `ADD COLUMN IF NOT EXISTS`, so existing columns are checked
+   * before each `ALTER TABLE`.
+   */
+  private migrate(): void {
+    const hasColumn = (table: string, column: string): boolean => {
+      const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return cols.some((c) => c.name === column);
+    };
+    if (!hasColumn("sqs_messages", "dead_letter_source_arn")) {
+      this.db.exec("ALTER TABLE sqs_messages ADD COLUMN dead_letter_source_arn TEXT");
+    }
   }
 
   private prepareStatements(): PreparedStatements {
@@ -189,8 +213,8 @@ export class PersistenceManager implements S3PersistenceProvider {
           message_id, queue_name, body, md5_of_body, message_attributes, md5_of_message_attributes,
           sent_timestamp, approximate_receive_count, approximate_first_receive_timestamp,
           delay_until, message_group_id, message_deduplication_id, sequence_number,
-          receipt_handle, visibility_deadline
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          receipt_handle, visibility_deadline, dead_letter_source_arn
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `),
       deleteMessage: this.db.prepare("DELETE FROM sqs_messages WHERE message_id = ?"),
       updateMessageInflight: this.db.prepare(`
@@ -232,6 +256,12 @@ export class PersistenceManager implements S3PersistenceProvider {
       ),
       loadBucketLifecycleConfigurations: this.db.prepare(
         "SELECT * FROM s3_bucket_lifecycle_configurations",
+      ),
+      saveBucketNotificationConfiguration: this.db.prepare(
+        "INSERT OR REPLACE INTO s3_bucket_notification_configurations (bucket, configuration) VALUES (?, ?)",
+      ),
+      loadBucketNotificationConfigurations: this.db.prepare(
+        "SELECT * FROM s3_bucket_notification_configurations",
       ),
       upsertObject: this.db.prepare(`
         INSERT OR REPLACE INTO s3_objects (
@@ -329,6 +359,7 @@ export class PersistenceManager implements S3PersistenceProvider {
       msg.sequenceNumber ?? null,
       null,
       null,
+      msg.deadLetterSourceArn ?? null,
     );
   }
 
@@ -425,6 +456,10 @@ export class PersistenceManager implements S3PersistenceProvider {
 
   deleteBucketLifecycleConfiguration(bucket: string): void {
     this.stmts.deleteBucketLifecycleConfiguration.run(bucket);
+  }
+
+  saveBucketNotificationConfiguration(bucket: string, config: string): void {
+    this.stmts.saveBucketNotificationConfiguration.run(bucket, config);
   }
 
   // ── S3 Object write-through ──
@@ -588,6 +623,7 @@ export class PersistenceManager implements S3PersistenceProvider {
   loadS3(s3Store: S3Store): void {
     this.loadS3Buckets(s3Store);
     this.loadS3BucketLifecycleConfigurations(s3Store);
+    this.loadS3BucketNotificationConfigurations(s3Store);
     this.loadS3Objects(s3Store);
     this.loadS3MultipartUploads(s3Store);
   }
@@ -637,6 +673,7 @@ export class PersistenceManager implements S3PersistenceProvider {
       sequence_number: string | null;
       receipt_handle: string | null;
       visibility_deadline: number | null;
+      dead_letter_source_arn: string | null;
     }>;
 
     for (const row of rows) {
@@ -653,6 +690,7 @@ export class PersistenceManager implements S3PersistenceProvider {
         messageGroupId: row.message_group_id ?? undefined,
         messageDeduplicationId: row.message_deduplication_id ?? undefined,
         sequenceNumber: row.sequence_number ?? undefined,
+        deadLetterSourceArn: row.dead_letter_source_arn ?? undefined,
       };
 
       // Recalculate message state from persisted timestamps
@@ -768,6 +806,17 @@ export class PersistenceManager implements S3PersistenceProvider {
 
     for (const row of rows) {
       s3Store.restoreBucketLifecycleConfiguration(row.bucket, row.configuration);
+    }
+  }
+
+  private loadS3BucketNotificationConfigurations(s3Store: S3Store): void {
+    const rows = this.stmts.loadBucketNotificationConfigurations.all() as Array<{
+      bucket: string;
+      configuration: string;
+    }>;
+
+    for (const row of rows) {
+      s3Store.restoreBucketNotificationConfiguration(row.bucket, row.configuration);
     }
   }
 

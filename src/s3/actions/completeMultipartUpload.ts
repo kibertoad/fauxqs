@@ -1,17 +1,9 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import type { CompleteMultipartUploadOutput } from "@aws-sdk/client-s3";
-import { escapeXml } from "../../common/xml.ts";
+import { escapeXml, unescapeXml } from "../../common/xml.ts";
 import type { S3Store } from "../s3Store.ts";
 import { checksumHeaderName } from "../checksum.ts";
-
-function unescapeXml(str: string): string {
-  return str
-    .replaceAll("&amp;", "&")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&apos;", "'");
-}
+import { checkConditionalWrite } from "../conditionalWrites.ts";
 
 export function completeMultipartUpload(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
@@ -43,6 +35,15 @@ export function completeMultipartUpload(
         etag: unescapeXml(etagMatch[1]),
       });
     }
+  }
+
+  // Conditional write (If-None-Match / If-Match) against the destination key.
+  const upload = store.getMultipartUpload(uploadId);
+  if (upload) {
+    checkConditionalWrite(
+      request.headers as Record<string, string | string[] | undefined>,
+      store.peekObject(upload.bucket, upload.key),
+    );
   }
 
   const obj = store.completeMultipartUpload(uploadId, parts);

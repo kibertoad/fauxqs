@@ -4,7 +4,7 @@ import { escapeXml } from "../../common/xml.ts";
 import type { S3Store } from "../s3Store.ts";
 import type { ChecksumAlgorithm } from "../s3Types.ts";
 
-const SUPPORTED_CHECKSUM_ALGORITHMS = new Set(["CRC32", "SHA1", "SHA256"]);
+const SUPPORTED_CHECKSUM_ALGORITHMS = new Set(["CRC32", "CRC32C", "CRC64NVME", "SHA1", "SHA256"]);
 
 function extractMetadata(
   headers: Record<string, string | string[] | undefined>,

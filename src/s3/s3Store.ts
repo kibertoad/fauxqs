@@ -3,7 +3,8 @@ import { S3Error } from "../common/errors.ts";
 import type { MessageSpy } from "../spy.ts";
 import type { S3PersistenceProvider } from "./s3Persistence.ts";
 import type { S3Object, MultipartUpload, ChecksumAlgorithm } from "./s3Types.ts";
-import { computeCompositeChecksum } from "./checksum.ts";
+import { computeChecksum, computeCompositeChecksum } from "./checksum.ts";
+import type { S3EventDispatcher, S3NotificationConfiguration } from "./notifications.ts";
 
 export type BucketType = "general-purpose" | "directory";
 
@@ -20,6 +21,9 @@ export class S3Store {
   spy?: MessageSpy;
   persistence?: S3PersistenceProvider;
   relaxedRules?: { disableMinCopySourceSize?: boolean };
+  /** Dispatches S3 object events to SQS/SNS. Set by buildApp; undefined disables notifications. */
+  notificationDispatcher?: S3EventDispatcher;
+  private bucketNotificationConfigurations = new Map<string, S3NotificationConfiguration>();
 
   createBucket(name: string, type?: BucketType): void {
     if (!this.buckets.has(name)) {
@@ -76,6 +80,50 @@ export class S3Store {
     this.bucketLifecycleConfigurations.set(name, config);
   }
 
+  putBucketNotificationConfiguration(name: string, config: S3NotificationConfiguration): void {
+    // Reject unknown destination ARNs / unsupported event names before storing,
+    // mirroring real S3 which validates at PutBucketNotificationConfiguration
+    // time. Skipped when notifications are disabled (no dispatcher wired).
+    this.notificationDispatcher?.validateConfiguration(config);
+    this.bucketNotificationConfigurations.set(name, config);
+    this.persistence?.saveBucketNotificationConfiguration(name, JSON.stringify(config));
+  }
+
+  getBucketNotificationConfiguration(name: string): S3NotificationConfiguration | undefined {
+    return this.bucketNotificationConfigurations.get(name);
+  }
+
+  /** Restore a persisted notification configuration during startup load. */
+  restoreBucketNotificationConfiguration(name: string, configJson: string): void {
+    try {
+      this.bucketNotificationConfigurations.set(
+        name,
+        JSON.parse(configJson) as S3NotificationConfiguration,
+      );
+    } catch {
+      // Ignore a corrupt persisted configuration rather than failing startup.
+    }
+  }
+
+  /** Deliver an S3 object event to the bucket's configured SQS/SNS destinations. */
+  private fireObjectEvent(
+    bucket: string,
+    key: string,
+    eventName: string,
+    size?: number,
+    eTag?: string,
+  ): void {
+    if (!this.notificationDispatcher) return;
+    const config = this.bucketNotificationConfigurations.get(bucket);
+    if (!config) return;
+    try {
+      this.notificationDispatcher.notify({ bucket, key, eventName, size, eTag }, config);
+    } catch {
+      // Notification delivery must never fail the originating S3 operation,
+      // which has already been committed by the time this runs.
+    }
+  }
+
   private validateBucketName(name: string): void {
     if (name.length < 3 || name.length > 63) {
       throw new S3Error("InvalidBucketName", `The specified bucket is not valid: ${name}`, 400);
@@ -118,6 +166,7 @@ export class S3Store {
     this.bucketCreationDates.delete(name);
     this.bucketTypes.delete(name);
     this.bucketLifecycleConfigurations.delete(name);
+    this.bucketNotificationConfigurations.delete(name);
     this.persistence?.deleteBucket(name);
   }
 
@@ -154,6 +203,7 @@ export class S3Store {
       type: "FULL_OBJECT" | "COMPOSITE";
       partChecksums?: string[];
     },
+    eventName: "Put" | "Post" | "Copy" = "Put",
   ): S3Object {
     const objects = this.buckets.get(bucket);
     if (!objects) {
@@ -202,6 +252,8 @@ export class S3Store {
       });
     }
 
+    this.fireObjectEvent(bucket, key, `ObjectCreated:${eventName}`, obj.contentLength, obj.etag);
+
     return obj;
   }
 
@@ -241,7 +293,8 @@ export class S3Store {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
     }
 
-    if (this.spy && objects.has(key)) {
+    const existed = objects.has(key);
+    if (this.spy && existed) {
       this.spy.addMessage({
         service: "s3",
         bucket,
@@ -253,6 +306,10 @@ export class S3Store {
 
     objects.delete(key);
     this.persistence?.deleteObject(bucket, key);
+
+    if (existed) {
+      this.fireObjectEvent(bucket, key, "ObjectRemoved:Delete");
+    }
   }
 
   headObject(bucket: string, key: string): S3Object {
@@ -267,6 +324,20 @@ export class S3Store {
     }
 
     return obj;
+  }
+
+  /**
+   * Non-throwing object lookup used for conditional-write precondition checks.
+   * Returns undefined when the bucket or key is absent. Does not emit spy
+   * events or load object bodies from persistence.
+   */
+  peekObject(bucket: string, key: string): S3Object | undefined {
+    return this.buckets.get(bucket)?.get(key);
+  }
+
+  /** Look up an in-progress multipart upload by ID, or undefined if it does not exist. */
+  getMultipartUpload(uploadId: string): MultipartUpload | undefined {
+    return this.multipartUploads.get(uploadId);
   }
 
   listObjects(
@@ -542,25 +613,16 @@ export class S3Store {
       partSizes.push(part.body.length);
     }
 
-    // Collect per-part checksums before clearing parts
-    let checksumFields: Partial<
-      Pick<S3Object, "checksumAlgorithm" | "checksumValue" | "checksumType" | "partChecksums">
-    > = {};
+    // Collect per-part checksums before the part buffers are released. The
+    // final object checksum is resolved below, once the full body is assembled.
+    let partChecksumsArr: string[] | undefined;
     if (upload.checksumAlgorithm) {
-      const partChecksumsArr: string[] = [];
+      partChecksumsArr = [];
       for (const spec of partSpecs) {
         const part = upload.parts.get(spec.partNumber)!;
         if (part.checksumValue) {
           partChecksumsArr.push(part.checksumValue);
         }
-      }
-      if (partChecksumsArr.length > 0) {
-        checksumFields = {
-          checksumAlgorithm: upload.checksumAlgorithm,
-          checksumValue: computeCompositeChecksum(upload.checksumAlgorithm, partChecksumsArr),
-          checksumType: "COMPOSITE",
-          partChecksums: partChecksumsArr,
-        };
       }
     }
 
@@ -582,6 +644,46 @@ export class S3Store {
     // Calculate multipart ETag: MD5(concat of binary MD5 digests) + "-" + part count
     const combinedDigest = createHash("md5").update(Buffer.concat(partDigests)).digest("hex");
     const etag = `"${combinedDigest}-${partSpecs.length}"`;
+
+    // Resolve the object checksum now that the full body is assembled.
+    // CRC64NVME is a full-object checksum even for multipart uploads — AWS
+    // computes it over the whole object, with no composite "-N" suffix, so it
+    // can be produced even when individual parts carried no per-part checksum.
+    // The other algorithms use a composite checksum-of-checksums and therefore
+    // require every part's checksum.
+    let checksumFields: Partial<
+      Pick<S3Object, "checksumAlgorithm" | "checksumValue" | "checksumType" | "partChecksums">
+    > = {};
+    if (upload.checksumAlgorithm === "CRC64NVME") {
+      checksumFields = {
+        checksumAlgorithm: upload.checksumAlgorithm,
+        checksumValue: computeChecksum(upload.checksumAlgorithm, body),
+        checksumType: "FULL_OBJECT",
+        ...(partChecksumsArr && partChecksumsArr.length > 0
+          ? { partChecksums: partChecksumsArr }
+          : {}),
+      };
+    } else if (
+      upload.checksumAlgorithm &&
+      partChecksumsArr &&
+      partChecksumsArr.length === partSpecs.length
+    ) {
+      checksumFields = {
+        checksumAlgorithm: upload.checksumAlgorithm,
+        checksumValue: computeCompositeChecksum(upload.checksumAlgorithm, partChecksumsArr),
+        checksumType: "COMPOSITE",
+        partChecksums: partChecksumsArr,
+      };
+    } else if (upload.checksumAlgorithm && partChecksumsArr && partChecksumsArr.length > 0) {
+      // A composite checksum is a checksum-of-checksums, so it can only be
+      // computed when every part carries one. A partial set would yield a
+      // silently wrong value — reject it the way real S3 does.
+      throw new S3Error(
+        "InvalidRequest",
+        "The upload was created with a composite checksum algorithm; every part must include a checksum.",
+        400,
+      );
+    }
 
     const obj: S3Object = {
       key: upload.key,
@@ -619,6 +721,14 @@ export class S3Store {
         timestamp: Date.now(),
       });
     }
+
+    this.fireObjectEvent(
+      upload.bucket,
+      upload.key,
+      "ObjectCreated:CompleteMultipartUpload",
+      obj.contentLength,
+      obj.etag,
+    );
 
     return obj;
   }
@@ -668,6 +778,7 @@ export class S3Store {
     this.bucketCreationDates.clear();
     this.bucketTypes.clear();
     this.bucketLifecycleConfigurations.clear();
+    this.bucketNotificationConfigurations.clear();
     this.multipartUploads.clear();
     this.multipartUploadsByBucket.clear();
   }

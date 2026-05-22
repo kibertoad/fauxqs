@@ -1164,10 +1164,10 @@ Resources created via init config or programmatic API use the `defaultRegion` un
 | ListQueueTags | Yes |
 | AddPermission | No |
 | RemovePermission | No |
-| ListDeadLetterSourceQueues | No |
-| StartMessageMoveTask | No |
-| CancelMessageMoveTask | No |
-| ListMessageMoveTasks | No |
+| ListDeadLetterSourceQueues | Yes |
+| StartMessageMoveTask | Yes |
+| CancelMessageMoveTask | Yes |
+| ListMessageMoveTasks | Yes |
 
 ### SNS
 
@@ -1230,8 +1230,10 @@ Platform application, SMS, and phone number actions are not supported.
 | PutBucketLifecycleConfiguration | Yes |
 | GetBucketLifecycleConfiguration | Yes |
 | DeleteBucketLifecycle | Yes |
+| PutBucketNotificationConfiguration | Yes |
+| GetBucketNotificationConfiguration | Yes |
 
-Bucket configuration (CORS, encryption, replication, logging, website, notifications, policy), ACLs, versioning, tagging, object lock, and public access block actions are not supported.
+Bucket configuration (CORS, encryption, replication, logging, website, policy), ACLs, versioning, tagging, object lock, and public access block actions are not supported.
 
 ### STS
 
@@ -1250,7 +1252,7 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Visibility timeout** — messages become invisible after receive and reappear after timeout
 - **Delay queues** — per-queue default delay and per-message delay overrides
 - **Long polling** — `WaitTimeSeconds` on ReceiveMessage blocks until messages arrive or timeout
-- **Dead letter queues** — messages exceeding `maxReceiveCount` are moved to the configured DLQ
+- **Dead letter queues** — messages exceeding `maxReceiveCount` are moved to the configured DLQ. `ListDeadLetterSourceQueues` enumerates the queues feeding a DLQ, and message move tasks (`StartMessageMoveTask`, `ListMessageMoveTasks`, `CancelMessageMoveTask`) redrive dead-lettered messages back to their origin queue or an explicit destination. Move tasks run synchronously and complete immediately: `ListMessageMoveTasks` reports them as `COMPLETED`, `CancelMessageMoveTask` rejects them because a finished task cannot be cancelled, and `MaxNumberOfMessagesPerSecond` is accepted but not enforced
 - **Batch operations** — SendMessageBatch, DeleteMessageBatch, ChangeMessageVisibilityBatch with entry ID validation (`InvalidBatchEntryId`) and total batch size validation (`BatchRequestTooLong`)
 - **Queue attribute range validation** — validates `VisibilityTimeout`, `DelaySeconds`, `ReceiveMessageWaitTimeSeconds`, `MaximumMessageSize`, and `MessageRetentionPeriod` on both CreateQueue and SetQueueAttributes
 - **Message size validation** — rejects messages exceeding 1 MiB (1,048,576 bytes)
@@ -1262,7 +1264,7 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 ## SNS Features
 
 - **SNS-to-SQS fan-out** — publish to a topic and messages are delivered to all confirmed SQS subscriptions
-- **Filter policies** — both `MessageAttributes` and `MessageBody` scope, supporting exact match, prefix, suffix, anything-but (including anything-but with suffix), numeric ranges, exists, null conditions, and `$or` top-level grouping. MessageBody scope supports nested key matching
+- **Filter policies** — both `MessageAttributes` and `MessageBody` scope, supporting exact match, prefix, suffix, equals-ignore-case, wildcard, CIDR, anything-but (including anything-but with prefix, suffix, or wildcard), numeric ranges, exists, null conditions, and `$or` top-level grouping. MessageBody scope supports nested key matching
 - **Raw message delivery** — configurable per subscription
 - **Message size validation** — rejects messages exceeding 256 KB (262,144 bytes)
 - **Topic idempotency with conflict detection** — `CreateTopic` returns the existing topic when called with the same name, attributes, and tags, but throws when attributes or tags differ
@@ -1284,13 +1286,15 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Bulk delete** — DeleteObjects for batch key deletion with proper XML entity handling
 - **Keys with slashes** — full support for slash-delimited keys (e.g., `path/to/file.txt`)
 - **Stream uploads** — handles AWS chunked transfer encoding (`Content-Encoding: aws-chunked`) for stream bodies, including trailing header parsing for checksums
-- **Checksums** — CRC32, SHA1, and SHA256 checksums are stored on upload (PutObject, UploadPart) and returned on download (GetObject, HeadObject with `x-amz-checksum-mode: ENABLED`). Multipart uploads compute composite checksums. GetObjectAttributes supports the `Checksum` attribute. CRC32C and CRC64NVME are silently ignored. Checksums are stored and returned as-is — no body validation is performed.
+- **Checksums** — CRC32, CRC32C, CRC64NVME, SHA1, and SHA256 checksums are stored on upload (PutObject, UploadPart) and returned on download (GetObject, HeadObject with `x-amz-checksum-mode: ENABLED`). Multipart uploads compute composite checksums. GetObjectAttributes supports the `Checksum` attribute. Checksums are stored and returned as-is — no body validation is performed.
 - **GetObjectAttributes** — selective metadata retrieval via `x-amz-object-attributes` header: ETag, StorageClass, ObjectSize, ObjectParts (with pagination), and Checksum (including per-part checksums for multipart objects)
 - **RenameObject** — atomic rename within directory buckets (`PUT /:bucket/:key?renameObject`). Preserves all metadata, ETag, timestamps, and checksums. Rejects general-purpose buckets. Default no-overwrite (412 if destination exists unless `If-Match` is provided). Supports source and destination conditional headers.
 - **Directory buckets** — `CreateBucket` accepts `<Type>Directory</Type>` in the body. Programmatic API: `server.createBucket("name", { type: "directory" })`. Init config supports `{ name, type, lifecycleConfiguration }` objects in the `buckets` array.
 - **Lifecycle configuration** — PutBucketLifecycleConfiguration, GetBucketLifecycleConfiguration, and DeleteBucketLifecycle. Lifecycle configs are stored and returned as-is (rules are not enforced — fauxqs is a mock). Persisted across restarts. Can also be set declaratively via init config.
 - **Path-style and virtual-hosted-style** — both S3 URL styles are supported (see below)
 - **CORS** — permissive CORS headers are enabled by default, allowing browser-based presigned URL uploads (see below)
+- **Conditional writes** — `If-None-Match` and `If-Match` preconditions on PutObject, CompleteMultipartUpload, and CopyObject (compare-and-swap and overwrite prevention), returning `412 Precondition Failed` when a precondition does not hold. Conditional reads (`If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`) are supported on GetObject.
+- **Event notifications** — `PutBucketNotificationConfiguration` / `GetBucketNotificationConfiguration` wire object events (`ObjectCreated:*`, `ObjectRemoved:*`) to SQS queues and SNS topics, with optional prefix/suffix key filters. Events are delivered as the standard S3 `{"Records":[...]}` JSON envelope, with the object key URL-encoded as real S3 does. Destination ARNs and event names are validated when the configuration is set, and the configuration is persisted across restarts. Lambda and EventBridge destinations are not supported.
 
 ### S3 URL styles
 

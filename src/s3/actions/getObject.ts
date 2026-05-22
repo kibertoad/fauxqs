@@ -2,6 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { S3Error } from "../../common/errors.ts";
 import type { S3Store } from "../s3Store.ts";
 import { checksumHeaderName } from "../checksum.ts";
+import { etagEquals } from "../conditionalWrites.ts";
 
 export function getObject(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
@@ -57,7 +58,10 @@ export function getObject(
   const ifNoneMatch = request.headers["if-none-match"] as string | undefined;
 
   if (ifMatch) {
-    if (ifMatch !== obj.etag) {
+    // `If-Match: *` matches any existing object; otherwise compare ETags
+    // ignoring weak-validator prefixes and quoting differences.
+    const matches = ifMatch.trim() === "*" || etagEquals(ifMatch, obj.etag);
+    if (!matches) {
       throw new S3Error(
         "PreconditionFailed",
         "At least one of the pre-conditions you specified did not hold",
@@ -80,7 +84,10 @@ export function getObject(
   }
 
   if (ifNoneMatch) {
-    if (ifNoneMatch === obj.etag) {
+    // `If-None-Match: *` matches any existing object; for a GET, a match means
+    // the cached copy is still current → 304 Not Modified.
+    const matches = ifNoneMatch.trim() === "*" || etagEquals(ifNoneMatch, obj.etag);
+    if (matches) {
       reply.status(304).send();
       return;
     }

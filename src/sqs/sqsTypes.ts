@@ -19,6 +19,28 @@ export interface SqsMessage {
   messageGroupId?: string;
   messageDeduplicationId?: string;
   sequenceNumber?: string;
+  /**
+   * ARN of the queue this message was moved to a dead-letter queue from.
+   * Set when a message exceeds maxReceiveCount; used to redrive it back to its
+   * origin during a message move task that omits an explicit DestinationArn.
+   */
+  deadLetterSourceArn?: string;
+}
+
+export type MessageMoveTaskStatus = "RUNNING" | "COMPLETED" | "CANCELLING" | "CANCELLED" | "FAILED";
+
+/** An SQS message move task (DLQ redrive). See StartMessageMoveTask. */
+export interface MessageMoveTask {
+  taskId: string;
+  taskHandle: string;
+  sourceArn: string;
+  destinationArn?: string;
+  maxNumberOfMessagesPerSecond?: number;
+  status: MessageMoveTaskStatus;
+  approximateNumberOfMessagesMoved: number;
+  approximateNumberOfMessagesToMove: number;
+  failureReason?: string;
+  startedTimestamp: number;
 }
 
 export interface InflightEntry {
