@@ -2,7 +2,7 @@
 
 Local SNS/SQS/S3 emulator for development and testing. Point your AWS SDK clients at fauxqs instead of real AWS.
 
-All state is in-memory. No persistence, no external storage dependencies. Single container, single port.
+State is in-memory by default: no external storage dependencies, single container, single port. Optional SQLite-based persistence is available by mounting a volume and setting `FAUXQS_PERSISTENCE=true`.
 
 ## Quick Start
 
@@ -98,6 +98,27 @@ Alternatively, use `forcePathStyle: true` on the S3 client if you prefer path-st
 | `FAUXQS_DEFAULT_REGION` | Fallback region for ARNs and URLs | `us-east-1` |
 | `FAUXQS_LOGGER` | Enable request logging | `true` |
 | `FAUXQS_INIT` | Path to JSON init config file | (none) |
+| `FAUXQS_PERSISTENCE` | Enable SQLite persistence (requires a volume mounted at `/data`) | `false` |
+| `FAUXQS_DATA_DIR` | Directory for the SQLite database | `/data` (preset in image) |
+| `FAUXQS_S3_STORAGE_DIR` | Store S3 objects as files on disk instead of SQLite blobs | (none) |
+
+## Persistence
+
+State is in-memory by default. To persist queues, messages, topics, subscriptions, buckets, and objects across restarts, mount a volume at `/data` and set `FAUXQS_PERSISTENCE=true`:
+
+```bash
+docker run -p 4566:4566 -v fauxqs-data:/data -e FAUXQS_PERSISTENCE=true kibertoad/fauxqs
+```
+
+Without `FAUXQS_PERSISTENCE=true`, the server runs in-memory even if a volume is mounted. If no volume is mounted at `/data`, persistence is silently disabled regardless of the env var.
+
+Alternatively, store S3 objects as plain files on disk with `FAUXQS_S3_STORAGE_DIR`:
+
+```bash
+docker run -p 4566:4566 -v ./local-s3:/s3data -e FAUXQS_S3_STORAGE_DIR=/s3data kibertoad/fauxqs
+```
+
+See [full documentation](https://github.com/kibertoad/fauxqs#persistence) for details.
 
 ## Multi-Tenant Management
 
