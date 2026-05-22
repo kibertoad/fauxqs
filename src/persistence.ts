@@ -69,6 +69,11 @@ CREATE TABLE IF NOT EXISTS s3_bucket_lifecycle_configurations (
   configuration TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS s3_bucket_notification_configurations (
+  bucket TEXT PRIMARY KEY REFERENCES s3_buckets(name) ON DELETE CASCADE,
+  configuration TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS s3_objects (
   bucket TEXT NOT NULL,
   key TEXT NOT NULL,
@@ -142,6 +147,8 @@ interface PreparedStatements {
   saveBucketLifecycleConfiguration: StatementSync;
   deleteBucketLifecycleConfiguration: StatementSync;
   loadBucketLifecycleConfigurations: StatementSync;
+  saveBucketNotificationConfiguration: StatementSync;
+  loadBucketNotificationConfigurations: StatementSync;
   upsertObject: StatementSync;
   deleteObject: StatementSync;
   deleteObjectsByBucket: StatementSync;
@@ -249,6 +256,12 @@ export class PersistenceManager implements S3PersistenceProvider {
       ),
       loadBucketLifecycleConfigurations: this.db.prepare(
         "SELECT * FROM s3_bucket_lifecycle_configurations",
+      ),
+      saveBucketNotificationConfiguration: this.db.prepare(
+        "INSERT OR REPLACE INTO s3_bucket_notification_configurations (bucket, configuration) VALUES (?, ?)",
+      ),
+      loadBucketNotificationConfigurations: this.db.prepare(
+        "SELECT * FROM s3_bucket_notification_configurations",
       ),
       upsertObject: this.db.prepare(`
         INSERT OR REPLACE INTO s3_objects (
@@ -445,6 +458,10 @@ export class PersistenceManager implements S3PersistenceProvider {
     this.stmts.deleteBucketLifecycleConfiguration.run(bucket);
   }
 
+  saveBucketNotificationConfiguration(bucket: string, config: string): void {
+    this.stmts.saveBucketNotificationConfiguration.run(bucket, config);
+  }
+
   // ── S3 Object write-through ──
 
   upsertObject(bucket: string, obj: S3Object): void {
@@ -606,6 +623,7 @@ export class PersistenceManager implements S3PersistenceProvider {
   loadS3(s3Store: S3Store): void {
     this.loadS3Buckets(s3Store);
     this.loadS3BucketLifecycleConfigurations(s3Store);
+    this.loadS3BucketNotificationConfigurations(s3Store);
     this.loadS3Objects(s3Store);
     this.loadS3MultipartUploads(s3Store);
   }
@@ -788,6 +806,17 @@ export class PersistenceManager implements S3PersistenceProvider {
 
     for (const row of rows) {
       s3Store.restoreBucketLifecycleConfiguration(row.bucket, row.configuration);
+    }
+  }
+
+  private loadS3BucketNotificationConfigurations(s3Store: S3Store): void {
+    const rows = this.stmts.loadBucketNotificationConfigurations.all() as Array<{
+      bucket: string;
+      configuration: string;
+    }>;
+
+    for (const row of rows) {
+      s3Store.restoreBucketNotificationConfiguration(row.bucket, row.configuration);
     }
   }
 

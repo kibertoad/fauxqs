@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { escapeXml, unescapeXml } from "../common/xml.ts";
 import { DEFAULT_ACCOUNT_ID } from "../common/types.ts";
+import { S3Error } from "../common/errors.ts";
 import { SqsStore } from "../sqs/sqsStore.ts";
 import type { SnsStore } from "../sns/snsStore.ts";
 import { fanOutToSubscriptions } from "../sns/actions/publish.ts";
@@ -40,6 +41,36 @@ export interface S3EventInfo {
 /** Delivers S3 object events to configured SQS/SNS destinations. */
 export interface S3EventDispatcher {
   notify(event: S3EventInfo, config: S3NotificationConfiguration): void;
+  /**
+   * Validate a configuration's destination ARNs and event names, throwing an
+   * `S3Error` on the first problem. Real S3 rejects unknown destinations and
+   * unsupported events at `PutBucketNotificationConfiguration` time.
+   */
+  validateConfiguration(config: S3NotificationConfiguration): void;
+}
+
+/**
+ * Event-type categories S3 accepts in a notification configuration. Only the
+ * category (the part before the first `:`) is checked — that is enough to reject
+ * the realistic typo of a misspelled category without enumerating every leaf.
+ */
+const VALID_S3_EVENT_CATEGORIES = new Set([
+  "ObjectCreated",
+  "ObjectRemoved",
+  "ObjectRestore",
+  "ObjectTagging",
+  "ObjectAcl",
+  "Replication",
+  "LifecycleExpiration",
+  "LifecycleTransition",
+  "IntelligentTiering",
+  "ReducedRedundancyLostObject",
+]);
+
+/** Whether `event` (e.g. `"s3:ObjectCreated:*"`) names a supported S3 event category. */
+function isValidEventName(event: string): boolean {
+  const stripped = event.startsWith("s3:") ? event.slice(3) : event;
+  return VALID_S3_EVENT_CATEGORIES.has(stripped.split(":")[0]);
 }
 
 /**
@@ -198,15 +229,55 @@ export class S3NotificationDispatcher implements S3EventDispatcher {
       const topic = this.snsStore.getTopic(target.arn);
       if (!topic) continue;
       const body = JSON.stringify({ Records: [this.buildRecord(event, target.id)] });
+      // FIFO topics require a group + dedup id; group events per bucket so they
+      // stay ordered, and give each event a distinct dedup id.
+      const isFifoTopic = topic.attributes.FifoTopic === "true";
       fanOutToSubscriptions({
         topicArn: target.arn,
         topic,
         messageId: randomUUID(),
         message: body,
         messageAttributes: {},
+        ...(isFifoTopic
+          ? { messageGroupId: event.bucket, messageDeduplicationId: randomUUID() }
+          : {}),
         snsStore: this.snsStore,
         sqsStore: this.sqsStore,
       });
+    }
+  }
+
+  validateConfiguration(config: S3NotificationConfiguration): void {
+    const checkEvents = (target: S3NotificationTarget): void => {
+      for (const event of target.events) {
+        if (!isValidEventName(event)) {
+          throw new S3Error(
+            "InvalidArgument",
+            `The event is not supported for notifications: ${event}`,
+            400,
+          );
+        }
+      }
+    };
+    for (const target of config.queueConfigurations) {
+      checkEvents(target);
+      if (!this.sqsStore.getQueueByArn(target.arn)) {
+        throw new S3Error(
+          "InvalidArgument",
+          `Unable to validate the following destination configurations. The SQS queue does not exist: ${target.arn}`,
+          400,
+        );
+      }
+    }
+    for (const target of config.topicConfigurations) {
+      checkEvents(target);
+      if (!this.snsStore.getTopic(target.arn)) {
+        throw new S3Error(
+          "InvalidArgument",
+          `Unable to validate the following destination configurations. The SNS topic does not exist: ${target.arn}`,
+          400,
+        );
+      }
     }
   }
 

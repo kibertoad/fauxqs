@@ -23,10 +23,14 @@ export function listDeadLetterSourceQueues(
   const maxResults = body.MaxResults as number | undefined;
   const nextToken = body.NextToken as string | undefined;
 
+  // Sort with default (UTF-16 code-unit) ordering so it stays consistent with
+  // the `u > nextToken` cursor comparison below. A locale-aware sort can order
+  // mixed-case names differently from `>` and silently drop queues at a page
+  // boundary.
   let urls = store
     .deadLetterSourceQueues(dlq.arn)
     .map((q) => q.url)
-    .sort((a, b) => a.localeCompare(b));
+    .sort();
 
   if (nextToken) {
     urls = urls.filter((u) => u > nextToken);

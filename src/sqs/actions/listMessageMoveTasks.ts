@@ -15,6 +15,14 @@ export function listMessageMoveTasks(
     throw new SqsError("InvalidParameterValue", "SourceArn is required");
   }
 
+  if (!store.getQueueByArn(sourceArn)) {
+    throw new SqsError(
+      "ResourceNotFoundException",
+      "The resource that you specified for the SourceArn parameter doesn't exist.",
+      404,
+    );
+  }
+
   // AWS allows MaxResults in the range 1–10, defaulting to 1.
   const requestedMaxResults = (body.MaxResults as number | undefined) ?? 1;
   const maxResults = Math.min(10, Math.max(1, Math.trunc(requestedMaxResults) || 1));

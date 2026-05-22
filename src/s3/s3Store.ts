@@ -81,11 +81,28 @@ export class S3Store {
   }
 
   putBucketNotificationConfiguration(name: string, config: S3NotificationConfiguration): void {
+    // Reject unknown destination ARNs / unsupported event names before storing,
+    // mirroring real S3 which validates at PutBucketNotificationConfiguration
+    // time. Skipped when notifications are disabled (no dispatcher wired).
+    this.notificationDispatcher?.validateConfiguration(config);
     this.bucketNotificationConfigurations.set(name, config);
+    this.persistence?.saveBucketNotificationConfiguration(name, JSON.stringify(config));
   }
 
   getBucketNotificationConfiguration(name: string): S3NotificationConfiguration | undefined {
     return this.bucketNotificationConfigurations.get(name);
+  }
+
+  /** Restore a persisted notification configuration during startup load. */
+  restoreBucketNotificationConfiguration(name: string, configJson: string): void {
+    try {
+      this.bucketNotificationConfigurations.set(
+        name,
+        JSON.parse(configJson) as S3NotificationConfiguration,
+      );
+    } catch {
+      // Ignore a corrupt persisted configuration rather than failing startup.
+    }
   }
 
   /** Deliver an S3 object event to the bucket's configured SQS/SNS destinations. */
@@ -149,6 +166,7 @@ export class S3Store {
     this.bucketCreationDates.delete(name);
     this.bucketTypes.delete(name);
     this.bucketLifecycleConfigurations.delete(name);
+    this.bucketNotificationConfigurations.delete(name);
     this.persistence?.deleteBucket(name);
   }
 
@@ -629,19 +647,27 @@ export class S3Store {
 
     // Resolve the object checksum now that the full body is assembled.
     // CRC64NVME is a full-object checksum even for multipart uploads — AWS
-    // computes it over the whole object, with no composite "-N" suffix. The
-    // other algorithms use a composite checksum-of-checksums.
+    // computes it over the whole object, with no composite "-N" suffix, so it
+    // can be produced even when individual parts carried no per-part checksum.
+    // The other algorithms use a composite checksum-of-checksums and therefore
+    // require every part's checksum.
     let checksumFields: Partial<
       Pick<S3Object, "checksumAlgorithm" | "checksumValue" | "checksumType" | "partChecksums">
     > = {};
-    if (upload.checksumAlgorithm && partChecksumsArr && partChecksumsArr.length > 0) {
-      const isFullObject = upload.checksumAlgorithm === "CRC64NVME";
+    if (upload.checksumAlgorithm === "CRC64NVME") {
       checksumFields = {
         checksumAlgorithm: upload.checksumAlgorithm,
-        checksumValue: isFullObject
-          ? computeChecksum(upload.checksumAlgorithm, body)
-          : computeCompositeChecksum(upload.checksumAlgorithm, partChecksumsArr),
-        checksumType: isFullObject ? "FULL_OBJECT" : "COMPOSITE",
+        checksumValue: computeChecksum(upload.checksumAlgorithm, body),
+        checksumType: "FULL_OBJECT",
+        ...(partChecksumsArr && partChecksumsArr.length > 0
+          ? { partChecksums: partChecksumsArr }
+          : {}),
+      };
+    } else if (upload.checksumAlgorithm && partChecksumsArr && partChecksumsArr.length > 0) {
+      checksumFields = {
+        checksumAlgorithm: upload.checksumAlgorithm,
+        checksumValue: computeCompositeChecksum(upload.checksumAlgorithm, partChecksumsArr),
+        checksumType: "COMPOSITE",
         partChecksums: partChecksumsArr,
       };
     }

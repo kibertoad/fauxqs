@@ -46,6 +46,8 @@ import {
   CompleteMultipartUploadCommand,
   PutBucketLifecycleConfigurationCommand,
   GetBucketLifecycleConfigurationCommand,
+  PutBucketNotificationConfigurationCommand,
+  GetBucketNotificationConfigurationCommand,
 } from "@aws-sdk/client-s3";
 
 function createTempDir(): string {
@@ -203,6 +205,72 @@ describe("Persistence", () => {
       new ReceiveMessageCommand({ QueueUrl: url("redrive-src-b"), WaitTimeSeconds: 1 }),
     );
     expect(other.Messages ?? []).toHaveLength(0);
+
+    await server.stop();
+  });
+
+  it("S3: bucket notification configuration survives restart", async () => {
+    let server = await startFauxqs({ port: 0, logger: false, dataDir });
+    let sqs = makeSqsClient(server.port);
+    let s3 = makeS3Client(server.port);
+
+    const queueUrl = `http://sqs.us-east-1.localhost:${server.port}/000000000000/notif-persist-queue`;
+    await sqs.send(new CreateQueueCommand({ QueueName: "notif-persist-queue" }));
+    const queueArn = (
+      await sqs.send(
+        new GetQueueAttributesCommand({ QueueUrl: queueUrl, AttributeNames: ["QueueArn"] }),
+      )
+    ).Attributes!.QueueArn!;
+
+    await s3.send(new CreateBucketCommand({ Bucket: "notif-persist-bucket" }));
+    await s3.send(
+      new PutBucketNotificationConfigurationCommand({
+        Bucket: "notif-persist-bucket",
+        NotificationConfiguration: {
+          QueueConfigurations: [
+            {
+              Id: "persisted-cfg",
+              QueueArn: queueArn,
+              Events: ["s3:ObjectCreated:*"],
+              Filter: { Key: { FilterRules: [{ Name: "prefix", Value: "uploads/" }] } },
+            },
+          ],
+        },
+      }),
+    );
+
+    await server.stop();
+
+    // Restart — the notification configuration must be reloaded from disk.
+    server = await startFauxqs({ port: 0, logger: false, dataDir });
+    sqs = makeSqsClient(server.port);
+    s3 = makeS3Client(server.port);
+
+    const config = await s3.send(
+      new GetBucketNotificationConfigurationCommand({ Bucket: "notif-persist-bucket" }),
+    );
+    expect(config.QueueConfigurations).toHaveLength(1);
+    expect(config.QueueConfigurations![0].Id).toBe("persisted-cfg");
+    expect(config.QueueConfigurations![0].QueueArn).toBe(queueArn);
+
+    // It must still actually fire events after the restart.
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: "notif-persist-bucket",
+        Key: "uploads/after-restart.txt",
+        Body: "hello",
+      }),
+    );
+    const recv = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: `http://sqs.us-east-1.localhost:${server.port}/000000000000/notif-persist-queue`,
+        WaitTimeSeconds: 1,
+      }),
+    );
+    expect(recv.Messages).toHaveLength(1);
+    const record = JSON.parse(recv.Messages![0].Body!).Records[0];
+    expect(record.eventName).toBe("ObjectCreated:Put");
+    expect(record.s3.object.key).toBe("uploads/after-restart.txt");
 
     await server.stop();
   });

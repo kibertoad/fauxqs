@@ -201,4 +201,78 @@ describe("SQS DLQ redrive (message move tasks)", () => {
       ),
     ).rejects.toThrow();
   });
+
+  it("ListMessageMoveTasks rejects an unknown source ARN", async () => {
+    await expect(
+      sqs.send(
+        new ListMessageMoveTasksCommand({
+          SourceArn: "arn:aws:sqs:us-east-1:000000000000:lmmt-does-not-exist",
+        }),
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("ListDeadLetterSourceQueues paginates without dropping mixed-case names", async () => {
+    const dlq = await sqs.send(new CreateQueueCommand({ QueueName: "ldlsq-pg-dlq" }));
+    const dlqArn = await arnOf(dlq.QueueUrl!);
+
+    // Names chosen so a locale-aware sort would order them differently from the
+    // code-unit `>` cursor comparison ('Z' = 0x5A precedes 'a' = 0x61).
+    const createdUrls: string[] = [];
+    for (const name of ["ldlsq-pg-Zsrc", "ldlsq-pg-asrc"]) {
+      const q = await sqs.send(new CreateQueueCommand({ QueueName: name }));
+      createdUrls.push(q.QueueUrl!);
+      await sqs.send(
+        new SetQueueAttributesCommand({
+          QueueUrl: q.QueueUrl!,
+          Attributes: {
+            RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn, maxReceiveCount: 3 }),
+          },
+        }),
+      );
+    }
+
+    // Walk every page with MaxResults=1 — no source queue may be lost at a boundary.
+    const seen: string[] = [];
+    let nextToken: string | undefined;
+    for (let i = 0; i < 5; i++) {
+      const page = await sqs.send(
+        new ListDeadLetterSourceQueuesCommand({
+          QueueUrl: dlq.QueueUrl!,
+          MaxResults: 1,
+          ...(nextToken ? { NextToken: nextToken } : {}),
+        }),
+      );
+      seen.push(...(page.queueUrls ?? []));
+      nextToken = page.NextToken;
+      if (!nextToken) break;
+    }
+
+    expect(seen).toHaveLength(2);
+    expect(seen).toEqual(expect.arrayContaining(createdUrls));
+  });
+
+  // Kept last: server.reset() purges messages from every queue in this suite.
+  it("clears message move task history on reset", async () => {
+    const dlq = await sqs.send(new CreateQueueCommand({ QueueName: "reset-mmt-dlq" }));
+    const dlqArn = await arnOf(dlq.QueueUrl!);
+    const source = await sqs.send(new CreateQueueCommand({ QueueName: "reset-mmt-source" }));
+    await sqs.send(
+      new SetQueueAttributesCommand({
+        QueueUrl: source.QueueUrl!,
+        Attributes: {
+          RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn, maxReceiveCount: 1 }),
+        },
+      }),
+    );
+
+    await sqs.send(new StartMessageMoveTaskCommand({ SourceArn: dlqArn }));
+    const before = await sqs.send(new ListMessageMoveTasksCommand({ SourceArn: dlqArn }));
+    expect(before.Results).toHaveLength(1);
+
+    server.reset();
+
+    const after = await sqs.send(new ListMessageMoveTasksCommand({ SourceArn: dlqArn }));
+    expect(after.Results ?? []).toHaveLength(0);
+  });
 });

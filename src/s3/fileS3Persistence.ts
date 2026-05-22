@@ -118,6 +118,11 @@ export class FileS3Persistence implements S3PersistenceProvider {
     }
   }
 
+  saveBucketNotificationConfiguration(bucket: string, config: string): void {
+    const notificationPath = join(this.bucketsDir, bucket, ".notifications.json");
+    writeFileSync(notificationPath, config);
+  }
+
   // ── Object ops ──
 
   upsertObject(bucket: string, obj: S3Object): void {
@@ -303,6 +308,14 @@ export class FileS3Persistence implements S3PersistenceProvider {
         s3Store.restoreBucketLifecycleConfiguration(
           meta.name,
           readFileSync(lifecyclePath, "utf-8"),
+        );
+      }
+
+      const notificationPath = join(this.bucketsDir, bucketName, ".notifications.json");
+      if (existsSync(notificationPath)) {
+        s3Store.restoreBucketNotificationConfiguration(
+          meta.name,
+          readFileSync(notificationPath, "utf-8"),
         );
       }
     }

@@ -325,4 +325,109 @@ describe("S3 Event Notifications", () => {
     expect(config.QueueConfigurations ?? []).toHaveLength(0);
     expect(config.TopicConfigurations ?? []).toHaveLength(0);
   });
+
+  it("rejects a configuration whose destination queue does not exist", async () => {
+    const bucket = "notif-bad-dest";
+    await s3.send(new CreateBucketCommand({ Bucket: bucket }));
+
+    await expect(
+      s3.send(
+        new PutBucketNotificationConfigurationCommand({
+          Bucket: bucket,
+          NotificationConfiguration: {
+            QueueConfigurations: [
+              {
+                QueueArn: "arn:aws:sqs:us-east-1:000000000000:notif-no-such-queue",
+                Events: ["s3:ObjectCreated:*"],
+              },
+            ],
+          },
+        }),
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("rejects a configuration with an unsupported event name", async () => {
+    const bucket = "notif-bad-event";
+    const queue = await makeQueue("notif-bad-event-queue");
+    await s3.send(new CreateBucketCommand({ Bucket: bucket }));
+
+    await expect(
+      s3.send(
+        new PutBucketNotificationConfigurationCommand({
+          Bucket: bucket,
+          NotificationConfiguration: {
+            QueueConfigurations: [
+              {
+                QueueArn: queue.arn,
+                // Misspelled category ("ObjectCreate") — real S3 rejects this.
+                Events: ["s3:ObjectCreate:*" as unknown as "s3:ObjectCreated:*"],
+              },
+            ],
+          },
+        }),
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("delivers to a FIFO SNS topic that fans out to a FIFO SQS queue", async () => {
+    const bucket = "notif-fifo";
+    await s3.send(new CreateBucketCommand({ Bucket: bucket }));
+
+    const fifoQueue = await sqs.send(
+      new CreateQueueCommand({
+        QueueName: "notif-fifo-queue.fifo",
+        Attributes: { FifoQueue: "true" },
+      }),
+    );
+    const fifoQueueArn = (
+      await sqs.send(
+        new GetQueueAttributesCommand({
+          QueueUrl: fifoQueue.QueueUrl!,
+          AttributeNames: ["QueueArn"],
+        }),
+      )
+    ).Attributes!.QueueArn!;
+
+    const topic = await sns.send(
+      new CreateTopicCommand({
+        Name: "notif-fifo-topic.fifo",
+        Attributes: { FifoTopic: "true" },
+      }),
+    );
+    await sns.send(
+      new SubscribeCommand({
+        TopicArn: topic.TopicArn!,
+        Protocol: "sqs",
+        Endpoint: fifoQueueArn,
+      }),
+    );
+
+    await s3.send(
+      new PutBucketNotificationConfigurationCommand({
+        Bucket: bucket,
+        NotificationConfiguration: {
+          TopicConfigurations: [{ TopicArn: topic.TopicArn!, Events: ["s3:ObjectCreated:*"] }],
+        },
+      }),
+    );
+
+    await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "fifo-evt.txt", Body: "z" }));
+
+    const result = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: fifoQueue.QueueUrl!,
+        MaxNumberOfMessages: 10,
+        WaitTimeSeconds: 1,
+        MessageSystemAttributeNames: ["All"],
+      }),
+    );
+    expect(result.Messages).toHaveLength(1);
+    const message = result.Messages![0];
+    // FIFO delivery needs a group id and an assigned sequence number.
+    expect(message.Attributes?.MessageGroupId).toBe(bucket);
+    expect(message.Attributes?.SequenceNumber).toBeDefined();
+    const records = JSON.parse(JSON.parse(message.Body!).Message).Records;
+    expect(records[0].eventName).toBe("ObjectCreated:Put");
+  });
 });

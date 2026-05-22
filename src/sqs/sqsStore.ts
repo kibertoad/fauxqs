@@ -18,6 +18,8 @@ import { DEFAULT_QUEUE_ATTRIBUTES, ALL_ATTRIBUTE_NAMES } from "./sqsTypes.ts";
 const DEDUP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const DEDUP_CACHE_MAX_SIZE = 10_000;
 const DEFAULT_FIFO_GROUP_ID = "__default";
+/** Cap on retained message move task history, so repeated redrives don't grow unbounded. */
+const MESSAGE_MOVE_TASK_HISTORY_LIMIT = 100;
 
 export class SqsQueue {
   readonly name: string;
@@ -35,6 +37,8 @@ export class SqsQueue {
     timer: ReturnType<typeof setTimeout>;
   }> = [];
   private pollTimer?: ReturnType<typeof setInterval>;
+  /** Lazily-parsed RedrivePolicy. `undefined` = not parsed yet; `null` = unset/malformed. */
+  private parsedRedrivePolicy?: { deadLetterTargetArn?: string; maxReceiveCount?: number } | null;
 
   spy?: MessageSpy;
   persistence?: PersistenceManager;
@@ -126,8 +130,31 @@ export class SqsQueue {
     if (attrs.RedrivePolicy === "") {
       delete this.attributes.RedrivePolicy;
     }
+    // Invalidate the cached parse — the policy may have changed or been cleared.
+    this.parsedRedrivePolicy = undefined;
     this.lastModifiedTimestamp = Math.floor(Date.now() / 1000);
     this.persistence?.updateQueueAttributes(this.name, this.attributes, this.lastModifiedTimestamp);
+  }
+
+  /**
+   * Parsed RedrivePolicy for this queue, or undefined when unset or malformed.
+   * The result is cached and invalidated by {@link setAttributes}, so hot paths
+   * (dequeue, DLQ resolution) avoid re-parsing JSON on every call.
+   */
+  getRedrivePolicy(): { deadLetterTargetArn?: string; maxReceiveCount?: number } | undefined {
+    if (this.parsedRedrivePolicy === undefined) {
+      const raw = this.attributes.RedrivePolicy;
+      if (!raw) {
+        this.parsedRedrivePolicy = null;
+      } else {
+        try {
+          this.parsedRedrivePolicy = JSON.parse(raw);
+        } catch {
+          this.parsedRedrivePolicy = null;
+        }
+      }
+    }
+    return this.parsedRedrivePolicy ?? undefined;
   }
 
   enqueue(msg: SqsMessage): void {
@@ -182,18 +209,10 @@ export class SqsQueue {
     const visibilityTimeout =
       visibilityTimeoutOverride ?? parseInt(this.attributes.VisibilityTimeout);
 
-    // Parse RedrivePolicy for DLQ
-    let maxReceiveCount = Infinity;
-    let dlqArn: string | undefined;
-    if (this.attributes.RedrivePolicy) {
-      try {
-        const policy = JSON.parse(this.attributes.RedrivePolicy);
-        maxReceiveCount = policy.maxReceiveCount ?? Infinity;
-        dlqArn = policy.deadLetterTargetArn;
-      } catch {
-        // Invalid policy, ignore
-      }
-    }
+    // DLQ config from the (cached) RedrivePolicy
+    const redrivePolicy = this.getRedrivePolicy();
+    const maxReceiveCount = redrivePolicy?.maxReceiveCount ?? Infinity;
+    const dlqArn = redrivePolicy?.deadLetterTargetArn;
 
     const count = Math.min(maxCount, this.messages.length, 10);
     const result: ReceivedMessage[] = [];
@@ -282,18 +301,10 @@ export class SqsQueue {
     const visibilityTimeout =
       visibilityTimeoutOverride ?? parseInt(this.attributes.VisibilityTimeout);
 
-    // Parse RedrivePolicy for DLQ
-    let maxReceiveCount = Infinity;
-    let dlqArn: string | undefined;
-    if (this.attributes.RedrivePolicy) {
-      try {
-        const policy = JSON.parse(this.attributes.RedrivePolicy);
-        maxReceiveCount = policy.maxReceiveCount ?? Infinity;
-        dlqArn = policy.deadLetterTargetArn;
-      } catch {
-        // Invalid policy, ignore
-      }
-    }
+    // DLQ config from the (cached) RedrivePolicy
+    const redrivePolicy = this.getRedrivePolicy();
+    const maxReceiveCount = redrivePolicy?.maxReceiveCount ?? Infinity;
+    const dlqArn = redrivePolicy?.deadLetterTargetArn;
 
     const result: ReceivedMessage[] = [];
     const count = Math.min(maxCount, 10);
@@ -572,6 +583,10 @@ export class SqsQueue {
   /**
    * Remove and return all currently-visible (ready) messages. Used by message
    * move tasks (DLQ redrive). Delayed and in-flight messages are left in place.
+   *
+   * `fifoLockedGroups` is intentionally left untouched: a locked group tracks an
+   * in-flight message, which this method does not remove. That lock is released
+   * normally when the in-flight message is deleted or its visibility expires.
    */
   removeAllReadyMessages(): SqsMessage[] {
     this.processTimers();
@@ -766,7 +781,10 @@ export class SqsStore {
     if (prefix) {
       queues = queues.filter((q) => q.name.startsWith(prefix));
     }
-    queues.sort((a, b) => a.name.localeCompare(b.name));
+    // Code-unit ordering, consistent with the `q.name > nextToken` cursor below.
+    // A locale-aware sort can order mixed-case names differently from `>` and
+    // silently drop queues at a page boundary.
+    queues.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
     if (nextToken) {
       queues = queues.filter((q) => q.name > nextToken);
@@ -791,15 +809,8 @@ export class SqsStore {
   deadLetterSourceQueues(dlqArn: string): SqsQueue[] {
     const result: SqsQueue[] = [];
     for (const queue of this.queues.values()) {
-      const redrivePolicy = queue.attributes.RedrivePolicy;
-      if (!redrivePolicy) continue;
-      try {
-        const policy = JSON.parse(redrivePolicy);
-        if (policy?.deadLetterTargetArn === dlqArn) {
-          result.push(queue);
-        }
-      } catch {
-        // Ignore malformed RedrivePolicy
+      if (queue.getRedrivePolicy()?.deadLetterTargetArn === dlqArn) {
+        result.push(queue);
       }
     }
     return result;
@@ -809,7 +820,8 @@ export class SqsStore {
    * Start a message move task (DLQ redrive). Ready messages in the source
    * dead-letter queue are moved to `destinationArn`, or — when omitted — back to
    * the queue each message originally came from. The move is performed
-   * synchronously, so the returned task is already COMPLETED.
+   * synchronously, so the returned task is already COMPLETED;
+   * `maxNumberOfMessagesPerSecond` is recorded for API fidelity but not enforced.
    */
   startMessageMoveTask(
     sourceArn: string,
@@ -887,6 +899,12 @@ export class SqsStore {
       startedTimestamp: Date.now(),
     };
     this.messageMoveTasks.push(task);
+    if (this.messageMoveTasks.length > MESSAGE_MOVE_TASK_HISTORY_LIMIT) {
+      this.messageMoveTasks.splice(
+        0,
+        this.messageMoveTasks.length - MESSAGE_MOVE_TASK_HISTORY_LIMIT,
+      );
+    }
     return task;
   }
 
@@ -899,9 +917,11 @@ export class SqsStore {
   }
 
   /**
-   * Cancel a running message move task. Because tasks complete synchronously,
-   * there is never a running task to cancel — this always reports the task as
-   * not found, matching AWS, which rejects cancelling a completed task.
+   * Cancel a running message move task. fauxqs runs move tasks synchronously, so
+   * by the time a caller could cancel one it has already completed — and, like
+   * real AWS, a task that is not RUNNING cannot be cancelled. The error message
+   * distinguishes an unknown handle from an already-finished task so callers are
+   * not misled into thinking a valid handle was rejected.
    */
   cancelMessageMoveTask(taskHandle: string): number {
     let taskId: string | undefined;
@@ -913,10 +933,17 @@ export class SqsStore {
     const task = taskId
       ? this.messageMoveTasks.find((candidate) => candidate.taskId === taskId)
       : undefined;
-    if (!task || task.status !== "RUNNING") {
+    if (!task) {
       throw new SqsError(
         "ResourceNotFoundException",
-        "There is no running message move task with the specified task handle.",
+        "There is no message move task with the specified task handle.",
+        404,
+      );
+    }
+    if (task.status !== "RUNNING") {
+      throw new SqsError(
+        "ResourceNotFoundException",
+        `The message move task is already in status ${task.status} and cannot be cancelled.`,
         404,
       );
     }
@@ -970,6 +997,8 @@ export class SqsStore {
     for (const queue of this.queues.values()) {
       queue.purge();
     }
+    // Move task history describes message movements that no longer exist.
+    this.messageMoveTasks = [];
   }
 
   purgeAll(): void {

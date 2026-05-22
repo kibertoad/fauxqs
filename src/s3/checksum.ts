@@ -61,22 +61,42 @@ export function crc32c(data: Buffer): number {
  * `@aws-sdk/client-s3` JavaScript SDK still defaults to CRC32.
  */
 const CRC64NVME_POLY = 0x9a6c9329ac4bc9b5n;
-const MASK64 = 0xffffffffffffffffn;
-const crc64Table: bigint[] = Array.from({ length: 256 }, (_, i) => {
+
+// CRC-64/NVME lookup table, split into high/low 32-bit halves. Keeping the
+// table (and the running CRC) as pairs of 32-bit integers lets the hot path
+// use fast integer math instead of a per-byte BigInt operation, which is
+// roughly an order of magnitude slower for large object bodies.
+const crc64TableHi = new Uint32Array(256);
+const crc64TableLo = new Uint32Array(256);
+for (let i = 0; i < 256; i++) {
   let crc = BigInt(i);
   for (let j = 0; j < 8; j++) {
     crc = crc & 1n ? (crc >> 1n) ^ CRC64NVME_POLY : crc >> 1n;
   }
-  return crc;
-});
+  crc64TableHi[i] = Number(crc >> 32n);
+  crc64TableLo[i] = Number(crc & 0xffffffffn);
+}
 
-/** Compute CRC-64/NVME of a buffer, returning a uint64 as a bigint. */
+/**
+ * Compute CRC-64/NVME of a buffer, returning a uint64 as a bigint.
+ * The 64-bit running CRC is kept as two 32-bit halves so the per-byte loop
+ * runs entirely on fast integer math; BigInt is touched only to assemble the
+ * final result.
+ */
 export function crc64nvme(data: Buffer): bigint {
-  let crc = MASK64;
+  let hi = 0xffffffff;
+  let lo = 0xffffffff;
   for (let i = 0; i < data.length; i++) {
-    crc = crc64Table[Number((crc ^ BigInt(data[i])) & 0xffn)] ^ (crc >> 8n);
+    const idx = (lo ^ data[i]) & 0xff;
+    // crc >>>= 8, carrying the low byte of `hi` into the high byte of `lo`
+    const shiftedLo = ((lo >>> 8) | (hi << 24)) >>> 0;
+    const shiftedHi = hi >>> 8;
+    lo = (shiftedLo ^ crc64TableLo[idx]) >>> 0;
+    hi = (shiftedHi ^ crc64TableHi[idx]) >>> 0;
   }
-  return crc ^ MASK64;
+  hi = (hi ^ 0xffffffff) >>> 0;
+  lo = (lo ^ 0xffffffff) >>> 0;
+  return (BigInt(hi) << 32n) | BigInt(lo);
 }
 
 /** Compute a base64-encoded checksum of data. */
