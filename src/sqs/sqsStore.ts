@@ -592,10 +592,15 @@ export class SqsQueue {
     this.processTimers();
     const result: SqsMessage[] = [];
     if (this.isFifo()) {
-      for (const msgs of this.fifoMessages.values()) {
+      // A locked group has an in-flight message; the rest of that group is not
+      // visible and must not be redriven. Drain only unlocked groups.
+      for (const [groupId, msgs] of this.fifoMessages) {
+        if (this.fifoLockedGroups.has(groupId)) {
+          continue;
+        }
         result.push(...msgs);
+        this.fifoMessages.delete(groupId);
       }
-      this.fifoMessages.clear();
     } else {
       result.push(...this.messages);
       this.messages = [];

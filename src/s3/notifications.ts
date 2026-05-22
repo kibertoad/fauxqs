@@ -50,27 +50,45 @@ export interface S3EventDispatcher {
 }
 
 /**
- * Event-type categories S3 accepts in a notification configuration. Only the
- * category (the part before the first `:`) is checked — that is enough to reject
- * the realistic typo of a misspelled category without enumerating every leaf.
+ * The complete set of event names S3 accepts in a notification configuration.
+ * Validation is exact (full `Category:Leaf` name, not category-only) so a
+ * misspelled leaf such as `s3:ObjectCreated:Typo` — which would silently never
+ * match an emitted event — is rejected the same way real S3 rejects it.
  */
-const VALID_S3_EVENT_CATEGORIES = new Set([
-  "ObjectCreated",
-  "ObjectRemoved",
-  "ObjectRestore",
-  "ObjectTagging",
-  "ObjectAcl",
-  "Replication",
-  "LifecycleExpiration",
+const VALID_S3_EVENT_NAMES = new Set([
+  "ObjectCreated:*",
+  "ObjectCreated:Put",
+  "ObjectCreated:Post",
+  "ObjectCreated:Copy",
+  "ObjectCreated:CompleteMultipartUpload",
+  "ObjectRemoved:*",
+  "ObjectRemoved:Delete",
+  "ObjectRemoved:DeleteMarkerCreated",
+  "ObjectRestore:*",
+  "ObjectRestore:Post",
+  "ObjectRestore:Completed",
+  "ObjectRestore:Delete",
+  "ObjectTagging:*",
+  "ObjectTagging:Put",
+  "ObjectTagging:Delete",
+  "ObjectAcl:Put",
+  "ReducedRedundancyLostObject",
+  "Replication:*",
+  "Replication:OperationFailedReplication",
+  "Replication:OperationMissedThreshold",
+  "Replication:OperationReplicatedAfterThreshold",
+  "Replication:OperationNotTracked",
+  "LifecycleExpiration:*",
+  "LifecycleExpiration:Delete",
+  "LifecycleExpiration:DeleteMarkerCreated",
   "LifecycleTransition",
   "IntelligentTiering",
-  "ReducedRedundancyLostObject",
 ]);
 
-/** Whether `event` (e.g. `"s3:ObjectCreated:*"`) names a supported S3 event category. */
+/** Whether `event` (e.g. `"s3:ObjectCreated:*"`) names a supported S3 event. */
 function isValidEventName(event: string): boolean {
   const stripped = event.startsWith("s3:") ? event.slice(3) : event;
-  return VALID_S3_EVENT_CATEGORIES.has(stripped.split(":")[0]);
+  return VALID_S3_EVENT_NAMES.has(stripped);
 }
 
 /**

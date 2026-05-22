@@ -2,7 +2,17 @@ import { S3Error } from "../common/errors.ts";
 
 function headerValue(v: string | string[] | undefined): string | undefined {
   if (v === undefined) return undefined;
-  return Array.isArray(v) ? v[0] : v;
+  // Preserve every value: a repeated header and a single comma-separated header
+  // are equivalent under RFC 7232, and both must be evaluated as a list.
+  return Array.isArray(v) ? v.join(",") : v;
+}
+
+/** Split a comma-separated entity-tag list (RFC 7232) into individual tokens. */
+function parseEtagList(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0);
 }
 
 /** Normalize an ETag for comparison: strip a weak-validator prefix and surrounding quotes. */
@@ -45,17 +55,24 @@ export function checkConditionalWrite(
 ): void {
   const ifNoneMatch = headerValue(headers["if-none-match"]);
   if (ifNoneMatch !== undefined) {
-    const trimmed = ifNoneMatch.trim();
-    if (trimmed === "*") {
+    // If-None-Match is "none-of": fail when any listed tag (or `*`) matches.
+    const values = parseEtagList(ifNoneMatch);
+    if (values.includes("*")) {
       if (existing) throw preconditionFailed();
-    } else if (existing && etagEquals(existing.etag, trimmed)) {
+    } else if (existing && values.some((v) => etagEquals(existing.etag, v))) {
       throw preconditionFailed();
     }
   }
 
   const ifMatch = headerValue(headers["if-match"]);
   if (ifMatch !== undefined) {
-    if (!existing || !etagEquals(existing.etag, ifMatch)) {
+    // If-Match is "any-of": pass when `*` is listed and the object exists, or
+    // when any listed tag matches; fail otherwise.
+    const values = parseEtagList(ifMatch);
+    if (!existing) {
+      throw preconditionFailed();
+    }
+    if (!values.includes("*") && !values.some((v) => etagEquals(existing.etag, v))) {
       throw preconditionFailed();
     }
   }

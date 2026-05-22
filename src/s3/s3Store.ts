@@ -663,13 +663,26 @@ export class S3Store {
           ? { partChecksums: partChecksumsArr }
           : {}),
       };
-    } else if (upload.checksumAlgorithm && partChecksumsArr && partChecksumsArr.length > 0) {
+    } else if (
+      upload.checksumAlgorithm &&
+      partChecksumsArr &&
+      partChecksumsArr.length === partSpecs.length
+    ) {
       checksumFields = {
         checksumAlgorithm: upload.checksumAlgorithm,
         checksumValue: computeCompositeChecksum(upload.checksumAlgorithm, partChecksumsArr),
         checksumType: "COMPOSITE",
         partChecksums: partChecksumsArr,
       };
+    } else if (upload.checksumAlgorithm && partChecksumsArr && partChecksumsArr.length > 0) {
+      // A composite checksum is a checksum-of-checksums, so it can only be
+      // computed when every part carries one. A partial set would yield a
+      // silently wrong value — reject it the way real S3 does.
+      throw new S3Error(
+        "InvalidRequest",
+        "The upload was created with a composite checksum algorithm; every part must include a checksum.",
+        400,
+      );
     }
 
     const obj: S3Object = {

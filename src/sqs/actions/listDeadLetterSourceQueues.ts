@@ -20,7 +20,17 @@ export function listDeadLetterSourceQueues(
     throw new QueueDoesNotExistError();
   }
 
-  const maxResults = body.MaxResults as number | undefined;
+  let maxResults: number | undefined;
+  if (body.MaxResults !== undefined) {
+    const parsed = Number(body.MaxResults);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1000) {
+      throw new SqsError(
+        "InvalidParameterValue",
+        "MaxResults must be an integer between 1 and 1000",
+      );
+    }
+    maxResults = parsed;
+  }
   const nextToken = body.NextToken as string | undefined;
 
   // Sort with default (UTF-16 code-unit) ordering so it stays consistent with
