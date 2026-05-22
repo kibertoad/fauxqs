@@ -1252,7 +1252,7 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Visibility timeout** — messages become invisible after receive and reappear after timeout
 - **Delay queues** — per-queue default delay and per-message delay overrides
 - **Long polling** — `WaitTimeSeconds` on ReceiveMessage blocks until messages arrive or timeout
-- **Dead letter queues** — messages exceeding `maxReceiveCount` are moved to the configured DLQ. `ListDeadLetterSourceQueues` enumerates the queues feeding a DLQ, and message move tasks (`StartMessageMoveTask`, `ListMessageMoveTasks`, `CancelMessageMoveTask`) redrive dead-lettered messages back to their origin queue or an explicit destination
+- **Dead letter queues** — messages exceeding `maxReceiveCount` are moved to the configured DLQ. `ListDeadLetterSourceQueues` enumerates the queues feeding a DLQ, and message move tasks (`StartMessageMoveTask`, `ListMessageMoveTasks`, `CancelMessageMoveTask`) redrive dead-lettered messages back to their origin queue or an explicit destination. Move tasks run synchronously and complete immediately, so `ListMessageMoveTasks` reports them as `COMPLETED` and `CancelMessageMoveTask` always reports that there is no running task to cancel
 - **Batch operations** — SendMessageBatch, DeleteMessageBatch, ChangeMessageVisibilityBatch with entry ID validation (`InvalidBatchEntryId`) and total batch size validation (`BatchRequestTooLong`)
 - **Queue attribute range validation** — validates `VisibilityTimeout`, `DelaySeconds`, `ReceiveMessageWaitTimeSeconds`, `MaximumMessageSize`, and `MessageRetentionPeriod` on both CreateQueue and SetQueueAttributes
 - **Message size validation** — rejects messages exceeding 1 MiB (1,048,576 bytes)
@@ -1294,7 +1294,7 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Path-style and virtual-hosted-style** — both S3 URL styles are supported (see below)
 - **CORS** — permissive CORS headers are enabled by default, allowing browser-based presigned URL uploads (see below)
 - **Conditional writes** — `If-None-Match` and `If-Match` preconditions on PutObject, CompleteMultipartUpload, and CopyObject (compare-and-swap and overwrite prevention), returning `412 Precondition Failed` when a precondition does not hold. Conditional reads (`If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`) are supported on GetObject.
-- **Event notifications** — `PutBucketNotificationConfiguration` / `GetBucketNotificationConfiguration` wire object events (`ObjectCreated:*`, `ObjectRemoved:*`) to SQS queues and SNS topics, with optional prefix/suffix key filters. Events are delivered as the standard S3 `{"Records":[...]}` JSON envelope. Notification configuration is held in memory (not persisted across restarts).
+- **Event notifications** — `PutBucketNotificationConfiguration` / `GetBucketNotificationConfiguration` wire object events (`ObjectCreated:*`, `ObjectRemoved:*`) to SQS queues and SNS topics, with optional prefix/suffix key filters. Events are delivered as the standard S3 `{"Records":[...]}` JSON envelope, with the object key URL-encoded as real S3 does. Lambda and EventBridge destinations are not supported. Notification configuration is held in memory (not persisted across restarts).
 
 ### S3 URL styles
 

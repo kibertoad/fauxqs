@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS sqs_messages (
   message_deduplication_id TEXT,
   sequence_number TEXT,
   receipt_handle TEXT,
-  visibility_deadline INTEGER
+  visibility_deadline INTEGER,
+  dead_letter_source_arn TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sns_topics (
@@ -167,7 +168,23 @@ export class PersistenceManager implements S3PersistenceProvider {
     this.db = new DatabaseSync(dbPath, { enableForeignKeyConstraints: true });
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec(SCHEMA);
+    this.migrate();
     this.stmts = this.prepareStatements();
+  }
+
+  /**
+   * Apply schema additions to databases created by an older fauxqs version.
+   * SQLite has no `ADD COLUMN IF NOT EXISTS`, so existing columns are checked
+   * before each `ALTER TABLE`.
+   */
+  private migrate(): void {
+    const hasColumn = (table: string, column: string): boolean => {
+      const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return cols.some((c) => c.name === column);
+    };
+    if (!hasColumn("sqs_messages", "dead_letter_source_arn")) {
+      this.db.exec("ALTER TABLE sqs_messages ADD COLUMN dead_letter_source_arn TEXT");
+    }
   }
 
   private prepareStatements(): PreparedStatements {
@@ -189,8 +206,8 @@ export class PersistenceManager implements S3PersistenceProvider {
           message_id, queue_name, body, md5_of_body, message_attributes, md5_of_message_attributes,
           sent_timestamp, approximate_receive_count, approximate_first_receive_timestamp,
           delay_until, message_group_id, message_deduplication_id, sequence_number,
-          receipt_handle, visibility_deadline
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          receipt_handle, visibility_deadline, dead_letter_source_arn
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `),
       deleteMessage: this.db.prepare("DELETE FROM sqs_messages WHERE message_id = ?"),
       updateMessageInflight: this.db.prepare(`
@@ -329,6 +346,7 @@ export class PersistenceManager implements S3PersistenceProvider {
       msg.sequenceNumber ?? null,
       null,
       null,
+      msg.deadLetterSourceArn ?? null,
     );
   }
 
@@ -637,6 +655,7 @@ export class PersistenceManager implements S3PersistenceProvider {
       sequence_number: string | null;
       receipt_handle: string | null;
       visibility_deadline: number | null;
+      dead_letter_source_arn: string | null;
     }>;
 
     for (const row of rows) {
@@ -653,6 +672,7 @@ export class PersistenceManager implements S3PersistenceProvider {
         messageGroupId: row.message_group_id ?? undefined,
         messageDeduplicationId: row.message_deduplication_id ?? undefined,
         sequenceNumber: row.sequence_number ?? undefined,
+        deadLetterSourceArn: row.dead_letter_source_arn ?? undefined,
       };
 
       // Recalculate message state from persisted timestamps

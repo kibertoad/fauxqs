@@ -56,8 +56,9 @@ export function crc32c(data: Buffer): number {
 /**
  * CRC-64/NVME lookup table. Reflected polynomial 0x9A6C9329AC4BC9B5
  * (reverse of the normal polynomial 0xAD93D23594C935A9).
- * This is the checksum algorithm AWS S3 exposes as `x-amz-checksum-crc64nvme`,
- * the SDK's default for new uploads.
+ * This is the checksum algorithm AWS S3 exposes as `x-amz-checksum-crc64nvme`.
+ * It is the default for the AWS CLI v2 and CRT-based SDKs; the
+ * `@aws-sdk/client-s3` JavaScript SDK still defaults to CRC32.
  */
 const CRC64NVME_POLY = 0x9a6c9329ac4bc9b5n;
 const MASK64 = 0xffffffffffffffffn;

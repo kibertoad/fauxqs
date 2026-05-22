@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { escapeXml } from "../common/xml.ts";
+import { escapeXml, unescapeXml } from "../common/xml.ts";
 import { DEFAULT_ACCOUNT_ID } from "../common/types.ts";
 import { SqsStore } from "../sqs/sqsStore.ts";
 import type { SnsStore } from "../sns/snsStore.ts";
@@ -42,13 +42,13 @@ export interface S3EventDispatcher {
   notify(event: S3EventInfo, config: S3NotificationConfiguration): void;
 }
 
-function unescapeXml(str: string): string {
-  return str
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&apos;", "'")
-    .replaceAll("&amp;", "&");
+/**
+ * Encode an object key the way S3 event notifications do: spaces become `+`
+ * and other reserved characters are percent-encoded, but path separators (`/`)
+ * are left intact. Consumers decode it with `decodeURIComponent(key.replace(/\+/g, " "))`.
+ */
+function encodeEventKey(key: string): string {
+  return encodeURIComponent(key).replaceAll("%2F", "/").replaceAll("%20", "+");
 }
 
 /** Extract the text content of the first `<tag>...</tag>` within `xml`. */
@@ -91,7 +91,14 @@ function parseTargets(xml: string, blockTag: string, arnTag: string): S3Notifica
   return targets;
 }
 
-/** Parse a `<NotificationConfiguration>` XML document. */
+/**
+ * Parse a `<NotificationConfiguration>` XML document.
+ *
+ * This is a deliberately small regex-based parser that handles the plain,
+ * attribute-free element form the AWS SDK emits. `LambdaFunctionConfiguration`
+ * and `EventBridgeConfiguration` destinations are not parsed — fauxqs only
+ * dispatches S3 events to SQS queues and SNS topics.
+ */
 export function parseNotificationConfigXml(xml: string): S3NotificationConfiguration {
   return {
     queueConfigurations: parseTargets(xml, "QueueConfiguration", "Queue"),
@@ -178,7 +185,12 @@ export class S3NotificationDispatcher implements S3EventDispatcher {
       const queue = this.sqsStore.getQueueByArn(target.arn);
       if (!queue) continue; // lenient: skip destinations that don't exist
       const body = JSON.stringify({ Records: [this.buildRecord(event, target.id)] });
-      queue.enqueue(SqsStore.createMessage(body));
+      // FIFO destinations need a group + dedup id; group events per bucket so
+      // they stay ordered, and give each event a distinct dedup id.
+      const message = queue.isFifo()
+        ? SqsStore.createMessage(body, {}, undefined, event.bucket, randomUUID())
+        : SqsStore.createMessage(body);
+      queue.enqueue(message);
     }
 
     for (const target of config.topicConfigurations) {
@@ -222,7 +234,8 @@ export class S3NotificationDispatcher implements S3EventDispatcher {
           arn: `arn:aws:s3:::${event.bucket}`,
         },
         object: {
-          key: event.key,
+          // S3 event notifications deliver the key URL-encoded.
+          key: encodeEventKey(event.key),
           ...(isCreate && event.size !== undefined ? { size: event.size } : {}),
           ...(isCreate && event.eTag ? { eTag: event.eTag.replaceAll('"', "") } : {}),
           sequencer,

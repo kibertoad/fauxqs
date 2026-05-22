@@ -356,7 +356,7 @@ describe("S3 Checksums", () => {
     await getResult.Body!.transformToString();
   });
 
-  it("CRC64NVME checksum round-trip (SDK default algorithm)", async () => {
+  it("CRC64NVME checksum round-trip", async () => {
     const result = await s3.send(
       new PutObjectCommand({
         Bucket: bucket,
@@ -380,7 +380,7 @@ describe("S3 Checksums", () => {
     await getResult.Body!.transformToString();
   });
 
-  it("CRC64NVME multipart upload returns composite checksum", async () => {
+  it("CRC64NVME multipart upload returns a full-object checksum", async () => {
     const key = "crc64nvme-multipart";
     const part1Body = Buffer.alloc(5 * 1024 * 1024, "x");
     const part2Body = Buffer.from("crc64nvme final part");
@@ -428,7 +428,11 @@ describe("S3 Checksums", () => {
       }),
     );
 
+    // CRC64NVME is a full-object checksum even for multipart uploads: no
+    // composite "-N" suffix, and ChecksumType is FULL_OBJECT (not COMPOSITE).
     expect(complete.ChecksumCRC64NVME).toBeDefined();
+    expect(complete.ChecksumCRC64NVME).not.toMatch(/-\d+$/);
+    expect(complete.ChecksumType).toBe("FULL_OBJECT");
   });
 });
 

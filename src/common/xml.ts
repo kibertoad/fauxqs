@@ -40,3 +40,17 @@ export function escapeXml(str: string): string {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&apos;");
 }
+
+/**
+ * Reverse of {@link escapeXml}. The `&amp;` entity is decoded last so that an
+ * escaped entity reference (e.g. `&amp;lt;`) round-trips to `&lt;` rather than
+ * being double-decoded into `<`.
+ */
+export function unescapeXml(str: string): string {
+  return str
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'")
+    .replaceAll("&amp;", "&");
+}

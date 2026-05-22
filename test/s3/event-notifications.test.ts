@@ -86,6 +86,29 @@ describe("S3 Event Notifications", () => {
     expect(record.s3.object.size).toBe(5);
   });
 
+  it("URL-encodes the object key in the event record", async () => {
+    const bucket = "notif-encoded-key";
+    const queue = await makeQueue("notif-encoded-key-queue");
+    await s3.send(new CreateBucketCommand({ Bucket: bucket }));
+
+    await s3.send(
+      new PutBucketNotificationConfigurationCommand({
+        Bucket: bucket,
+        NotificationConfiguration: {
+          QueueConfigurations: [{ QueueArn: queue.arn, Events: ["s3:ObjectCreated:*"] }],
+        },
+      }),
+    );
+
+    await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "my folder/a b.txt", Body: "x" }));
+
+    const events = await receiveOne(queue.url);
+    expect(events).toHaveLength(1);
+    const record = (events[0].Records as Record<string, any>[])[0];
+    // Spaces become "+"; path separators stay literal — as real S3 delivers it.
+    expect(record.s3.object.key).toBe("my+folder/a+b.txt");
+  });
+
   it("applies prefix and suffix filters", async () => {
     const bucket = "notif-filter";
     const queue = await makeQueue("notif-filter-queue");

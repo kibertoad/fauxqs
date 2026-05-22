@@ -6,14 +6,15 @@ function headerValue(v: string | string[] | undefined): string | undefined {
 }
 
 /** Normalize an ETag for comparison: strip a weak-validator prefix and surrounding quotes. */
-function normalizeEtag(etag: string): string {
+export function normalizeEtag(etag: string): string {
   let e = etag.trim();
   if (e.startsWith("W/")) e = e.slice(2);
   if (e.length >= 2 && e.startsWith('"') && e.endsWith('"')) e = e.slice(1, -1);
   return e;
 }
 
-function etagEquals(a: string, b: string): boolean {
+/** Compare two ETags ignoring weak-validator prefixes and surrounding quotes. */
+export function etagEquals(a: string, b: string): boolean {
   return normalizeEtag(a) === normalizeEtag(b);
 }
 

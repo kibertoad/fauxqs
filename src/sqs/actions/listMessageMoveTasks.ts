@@ -15,11 +15,14 @@ export function listMessageMoveTasks(
     throw new SqsError("InvalidParameterValue", "SourceArn is required");
   }
 
-  const maxResults = (body.MaxResults as number | undefined) ?? 1;
+  // AWS allows MaxResults in the range 1–10, defaulting to 1.
+  const requestedMaxResults = (body.MaxResults as number | undefined) ?? 1;
+  const maxResults = Math.min(10, Math.max(1, Math.trunc(requestedMaxResults) || 1));
   const tasks = store.listMessageMoveTasks(sourceArn, maxResults);
 
   const results: ListMessageMoveTasksResultEntry[] = tasks.map((task) => ({
-    TaskHandle: task.taskHandle,
+    // AWS only returns a TaskHandle for RUNNING tasks (the cancellable ones).
+    ...(task.status === "RUNNING" ? { TaskHandle: task.taskHandle } : {}),
     Status: task.status,
     SourceArn: task.sourceArn,
     ...(task.destinationArn ? { DestinationArn: task.destinationArn } : {}),

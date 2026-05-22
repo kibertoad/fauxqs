@@ -3,7 +3,7 @@ import { S3Error } from "../common/errors.ts";
 import type { MessageSpy } from "../spy.ts";
 import type { S3PersistenceProvider } from "./s3Persistence.ts";
 import type { S3Object, MultipartUpload, ChecksumAlgorithm } from "./s3Types.ts";
-import { computeCompositeChecksum } from "./checksum.ts";
+import { computeChecksum, computeCompositeChecksum } from "./checksum.ts";
 import type { S3EventDispatcher, S3NotificationConfiguration } from "./notifications.ts";
 
 export type BucketType = "general-purpose" | "directory";
@@ -99,7 +99,12 @@ export class S3Store {
     if (!this.notificationDispatcher) return;
     const config = this.bucketNotificationConfigurations.get(bucket);
     if (!config) return;
-    this.notificationDispatcher.notify({ bucket, key, eventName, size, eTag }, config);
+    try {
+      this.notificationDispatcher.notify({ bucket, key, eventName, size, eTag }, config);
+    } catch {
+      // Notification delivery must never fail the originating S3 operation,
+      // which has already been committed by the time this runs.
+    }
   }
 
   private validateBucketName(name: string): void {
@@ -590,25 +595,16 @@ export class S3Store {
       partSizes.push(part.body.length);
     }
 
-    // Collect per-part checksums before clearing parts
-    let checksumFields: Partial<
-      Pick<S3Object, "checksumAlgorithm" | "checksumValue" | "checksumType" | "partChecksums">
-    > = {};
+    // Collect per-part checksums before the part buffers are released. The
+    // final object checksum is resolved below, once the full body is assembled.
+    let partChecksumsArr: string[] | undefined;
     if (upload.checksumAlgorithm) {
-      const partChecksumsArr: string[] = [];
+      partChecksumsArr = [];
       for (const spec of partSpecs) {
         const part = upload.parts.get(spec.partNumber)!;
         if (part.checksumValue) {
           partChecksumsArr.push(part.checksumValue);
         }
-      }
-      if (partChecksumsArr.length > 0) {
-        checksumFields = {
-          checksumAlgorithm: upload.checksumAlgorithm,
-          checksumValue: computeCompositeChecksum(upload.checksumAlgorithm, partChecksumsArr),
-          checksumType: "COMPOSITE",
-          partChecksums: partChecksumsArr,
-        };
       }
     }
 
@@ -630,6 +626,25 @@ export class S3Store {
     // Calculate multipart ETag: MD5(concat of binary MD5 digests) + "-" + part count
     const combinedDigest = createHash("md5").update(Buffer.concat(partDigests)).digest("hex");
     const etag = `"${combinedDigest}-${partSpecs.length}"`;
+
+    // Resolve the object checksum now that the full body is assembled.
+    // CRC64NVME is a full-object checksum even for multipart uploads — AWS
+    // computes it over the whole object, with no composite "-N" suffix. The
+    // other algorithms use a composite checksum-of-checksums.
+    let checksumFields: Partial<
+      Pick<S3Object, "checksumAlgorithm" | "checksumValue" | "checksumType" | "partChecksums">
+    > = {};
+    if (upload.checksumAlgorithm && partChecksumsArr && partChecksumsArr.length > 0) {
+      const isFullObject = upload.checksumAlgorithm === "CRC64NVME";
+      checksumFields = {
+        checksumAlgorithm: upload.checksumAlgorithm,
+        checksumValue: isFullObject
+          ? computeChecksum(upload.checksumAlgorithm, body)
+          : computeCompositeChecksum(upload.checksumAlgorithm, partChecksumsArr),
+        checksumType: isFullObject ? "FULL_OBJECT" : "COMPOSITE",
+        partChecksums: partChecksumsArr,
+      };
+    }
 
     const obj: S3Object = {
       key: upload.key,

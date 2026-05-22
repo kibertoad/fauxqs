@@ -18,6 +18,17 @@ export function startMessageMoveTask(
 
   const destinationArn = body.DestinationArn as string | undefined;
   const maxNumberOfMessagesPerSecond = body.MaxNumberOfMessagesPerSecond as number | undefined;
+  if (
+    maxNumberOfMessagesPerSecond !== undefined &&
+    (!Number.isInteger(maxNumberOfMessagesPerSecond) ||
+      maxNumberOfMessagesPerSecond < 1 ||
+      maxNumberOfMessagesPerSecond > 500)
+  ) {
+    throw new SqsError(
+      "InvalidParameterValue",
+      "MaxNumberOfMessagesPerSecond must be an integer between 1 and 500.",
+    );
+  }
 
   const task = store.startMessageMoveTask(sourceArn, destinationArn, maxNumberOfMessagesPerSecond);
 

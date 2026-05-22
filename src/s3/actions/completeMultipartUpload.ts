@@ -1,18 +1,9 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import type { CompleteMultipartUploadOutput } from "@aws-sdk/client-s3";
-import { escapeXml } from "../../common/xml.ts";
+import { escapeXml, unescapeXml } from "../../common/xml.ts";
 import type { S3Store } from "../s3Store.ts";
 import { checksumHeaderName } from "../checksum.ts";
 import { checkConditionalWrite } from "../conditionalWrites.ts";
-
-function unescapeXml(str: string): string {
-  return str
-    .replaceAll("&amp;", "&")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&apos;", "'");
-}
 
 export function completeMultipartUpload(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,

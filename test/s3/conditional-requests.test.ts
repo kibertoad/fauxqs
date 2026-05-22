@@ -101,4 +101,28 @@ describe("S3 Conditional Requests", () => {
     const body = await result.Body!.transformToString();
     expect(body).toBe("conditional test");
   });
+
+  it("returns 200 when If-Match is * and the object exists", async () => {
+    const response = await fetch(`http://127.0.0.1:${server.port}/cond-bucket/cond-test.txt`, {
+      headers: { "if-match": "*" },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("conditional test");
+  });
+
+  it("returns 304 when If-None-Match is * and the object exists", async () => {
+    const response = await fetch(`http://127.0.0.1:${server.port}/cond-bucket/cond-test.txt`, {
+      headers: { "if-none-match": "*" },
+    });
+    expect(response.status).toBe(304);
+    await response.text();
+  });
+
+  it("matches If-Match ignoring a weak-validator prefix", async () => {
+    const response = await fetch(`http://127.0.0.1:${server.port}/cond-bucket/cond-test.txt`, {
+      headers: { "if-match": `W/${etag}` },
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+  });
 });
