@@ -9,6 +9,7 @@ import { SqsStore as SqsStoreClass } from "../../sqs/sqsStore.ts";
 import type { MessageAttributeValue } from "../../sqs/sqsTypes.ts";
 import { SNS_MAX_MESSAGE_SIZE_BYTES } from "../../common/types.ts";
 import { matchesFilterPolicy, matchesFilterPolicyOnBody } from "../filter.ts";
+import { parseSubscriptionRedrivePolicy } from "../subscriptionRedrivePolicy.ts";
 
 export function publish(
   params: Record<string, string>,
@@ -246,7 +247,7 @@ export function publishBatch(
 
 export function fanOutToSubscriptions(params: {
   topicArn: string;
-  topic: { subscriptionArns: string[] };
+  topic: { subscriptionArns: string[]; name: string };
   messageId: string;
   message: string;
   messageAttributes: Record<string, MessageAttributeValue>;
@@ -268,6 +269,12 @@ export function fanOutToSubscriptions(params: {
     snsStore,
     sqsStore,
   } = params;
+
+  // Shared per-publish RequestID — AWS uses one ID across all fan-out
+  // deliveries for a given publish. Generated lazily so we don't pay the
+  // randomUUID cost when no subscriber falls back to DLQ.
+  let cachedRequestId: string | undefined;
+  const getRequestId = (): string => (cachedRequestId ??= randomUUID());
 
   // Pre-compute envelope fields shared across subscriptions (only UnsubscribeURL varies)
   // Real AWS omits Subject and MessageAttributes when not provided
@@ -333,28 +340,35 @@ export function fanOutToSubscriptions(params: {
     // endpoints, etc.) aren't modelled here because fauxqs only delivers to
     // SQS endpoints, where the missing-queue case is the only real failure.
     let targetQueue = sqsStore.getQueueByArn(sub.endpoint);
+    let routedToDlq = false;
     if (!targetQueue) {
-      const dlqArn = getSubscriptionDlqArn(sub);
+      const dlqArn = resolveSubscriptionDlqArn(sub);
       if (!dlqArn) continue;
       const dlq = sqsStore.getQueueByArn(dlqArn);
       if (!dlq) continue;
       targetQueue = dlq;
+      routedToDlq = true;
       // SNS adds these on the DLQ message so consumers can see why delivery
-      // was redriven. Keys, DataTypes, and the ErrorCode/ErrorMessage strings
-      // match what real AWS surfaces for a missing SQS endpoint — see
+      // was redriven and which publish/topic it came from. Keys, DataTypes,
+      // and the ErrorCode/ErrorMessage strings match what real AWS surfaces
+      // for a missing SQS endpoint — see
       // https://repost.aws/knowledge-center/sns-sqs-subscriptions-notifications
       sqsAttributes = {
         ...sqsAttributes,
-        RequestID: { DataType: "String", StringValue: randomUUID() },
+        RequestID: { DataType: "String", StringValue: getRequestId() },
         ErrorCode: {
           DataType: "String",
           StringValue: "AWS.SimpleQueueService.NonExistentQueue",
         },
         ErrorMessage: {
           DataType: "String",
-          StringValue:
-            "The specified queue does not exist or you do not have access to it.",
+          StringValue: "The specified queue does not exist or you do not have access to it.",
         },
+        // Preserve correlation back to the original publish. Important
+        // especially for RawMessageDelivery, where the MessageId would
+        // otherwise be lost from the body.
+        "AWS.SNS.MessageId": { DataType: "String", StringValue: messageId },
+        "AWS.SNS.TopicARN": { DataType: "String", StringValue: topicArn },
       };
     }
 
@@ -374,21 +388,30 @@ export function fanOutToSubscriptions(params: {
     }
 
     targetQueue.enqueue(sqsMsg);
+
+    if (routedToDlq && snsStore.spy) {
+      snsStore.spy.addMessage({
+        service: "sns",
+        topicArn,
+        topicName: topic.name,
+        messageId,
+        body: sqsBody,
+        messageAttributes: sqsAttributes,
+        status: "dlq",
+        timestamp: Date.now(),
+      });
+    }
   }
 }
 
-function getSubscriptionDlqArn(sub: SnsSubscription): string | undefined {
+/**
+ * Resolve the DLQ ARN for a subscription's RedrivePolicy, using a memoised
+ * parse on the subscription. `parsedRedrivePolicy` is the cache:
+ * `undefined` = not parsed yet, `null` = absent/malformed, object = parsed.
+ */
+function resolveSubscriptionDlqArn(sub: SnsSubscription): string | undefined {
   if (sub.parsedRedrivePolicy === undefined) {
-    const raw = sub.attributes.RedrivePolicy;
-    if (!raw) {
-      sub.parsedRedrivePolicy = null;
-    } else {
-      try {
-        sub.parsedRedrivePolicy = JSON.parse(raw);
-      } catch {
-        sub.parsedRedrivePolicy = null;
-      }
-    }
+    sub.parsedRedrivePolicy = parseSubscriptionRedrivePolicy(sub.attributes.RedrivePolicy);
   }
   return sub.parsedRedrivePolicy?.deadLetterTargetArn;
 }

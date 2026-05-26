@@ -14,8 +14,13 @@ export interface SqsSpyMessage {
   timestamp: number;
 }
 
-/** Possible statuses for an SNS spy message. */
-export type SnsSpyMessageStatus = "published";
+/**
+ * Possible statuses for an SNS spy message.
+ * - `published`: the publish API call succeeded (one event per Publish/PublishBatch entry).
+ * - `dlq`: a fan-out delivery was rerouted to the subscription's RedrivePolicy DLQ
+ *   (one event per affected subscription, in addition to the original `published` event).
+ */
+export type SnsSpyMessageStatus = "published" | "dlq";
 
 /** An SNS event captured by {@link MessageSpy}. */
 export interface SnsSpyMessage {

@@ -3,6 +3,7 @@ import { SnsError } from "../../common/errors.ts";
 import { snsSuccessResponse, escapeXml } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
 import { validateFilterPolicyLimits } from "../filter.ts";
+import { validateSubscriptionRedrivePolicy } from "../subscriptionRedrivePolicy.ts";
 
 export function subscribe(params: Record<string, string>, snsStore: SnsStore): string {
   const topicArn = params.TopicArn;
@@ -63,6 +64,9 @@ export function subscribe(params: Record<string, string>, snsStore: SnsStore): s
 
   if (resolvedAttributes.FilterPolicy) {
     validateFilterPolicyLimits(resolvedAttributes.FilterPolicy);
+  }
+  if (resolvedAttributes.RedrivePolicy !== undefined) {
+    validateSubscriptionRedrivePolicy(resolvedAttributes.RedrivePolicy);
   }
 
   const subscription = snsStore.subscribe(

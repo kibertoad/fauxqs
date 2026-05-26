@@ -580,7 +580,7 @@ Supported subscription attributes:
 | `RawMessageDelivery` | `"true"` / `"false"` | Deliver the raw message body instead of the SNS envelope JSON. |
 | `FilterPolicy` | JSON string | SNS filter policy for message filtering (e.g., `"{\"color\": [\"blue\"]}"`) |
 | `FilterPolicyScope` | `"MessageAttributes"` / `"MessageBody"` | Whether the filter policy applies to message attributes or body. Defaults to `MessageAttributes`. |
-| `RedrivePolicy` | JSON string | Subscription-level dead-letter queue config. When the endpoint queue is missing at publish time, the message is routed to `deadLetterTargetArn` with SNS-style `ErrorCode` / `ErrorMessage` / `RequestID` attributes (matches AWS for `AWS.SimpleQueueService.NonExistentQueue`). |
+| `RedrivePolicy` | JSON string | Subscription-level dead-letter queue config. See [Subscription dead-letter queues](#subscription-dead-letter-queues) below. |
 | `DeliveryPolicy` | JSON string | Delivery retry policy (stored, not enforced). |
 | `SubscriptionRoleArn` | ARN string | IAM role ARN for delivery (stored, not enforced). |
 
@@ -1196,6 +1196,42 @@ Resources created via init config or programmatic API use the `defaultRegion` un
 | PutDataProtectionPolicy | No |
 
 Platform application, SMS, and phone number actions are not supported.
+
+#### Subscription dead-letter queues
+
+When an SQS subscription has a `RedrivePolicy` attribute set and its endpoint
+queue no longer exists at publish time, fauxqs reroutes the delivery to the
+DLQ rather than dropping the message — matching AWS and LocalStack behaviour.
+
+Scope: only the missing-endpoint case is modelled. Throttling, HTTP 5xx, and
+other delivery failures don't apply because fauxqs only delivers to SQS
+endpoints. Messages dropped by a `FilterPolicy` are not redriven.
+
+```ts
+await sns.send(
+  new SubscribeCommand({
+    TopicArn: topicArn,
+    Protocol: "sqs",
+    Endpoint: endpointQueueArn,
+    Attributes: {
+      RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn }),
+    },
+  }),
+);
+
+// Later: endpoint queue is deleted, publish still succeeds, and the message
+// lands in the DLQ with these extra SQS message attributes:
+//   ErrorCode        = "AWS.SimpleQueueService.NonExistentQueue"
+//   ErrorMessage     = "The specified queue does not exist or you do not have access to it."
+//   RequestID        = <shared across all fan-out deliveries from this publish>
+//   AWS.SNS.MessageId = <original SNS MessageId>
+//   AWS.SNS.TopicARN  = <topic ARN>
+```
+
+The body is the normal SNS notification envelope, or the raw message body
+when `RawMessageDelivery=true`. `RedrivePolicy` is validated at write time:
+malformed JSON, non-object values, or a non-string `deadLetterTargetArn` are
+rejected at Subscribe / SetSubscriptionAttributes with `InvalidParameter`.
 
 ### S3
 
