@@ -1,5 +1,5 @@
 <img src="logo-readme.jpg" alt="fauxqs" width="360" />
-
+ 
 [![npm version](https://img.shields.io/npm/v/fauxqs.svg)](https://www.npmjs.com/package/fauxqs)
 
 # fauxqs
