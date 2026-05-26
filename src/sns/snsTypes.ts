@@ -15,6 +15,11 @@ export interface SnsSubscription {
   attributes: Record<string, string>;
   /** Cached parsed FilterPolicy — invalidated when attributes change. */
   parsedFilterPolicy?: Record<string, unknown>;
+  /**
+   * Cached parsed RedrivePolicy. `undefined` = not parsed yet;
+   * `null` = absent or malformed. Invalidated when attributes change.
+   */
+  parsedRedrivePolicy?: { deadLetterTargetArn?: string } | null;
 }
 
 export interface SnsMessageAttribute {

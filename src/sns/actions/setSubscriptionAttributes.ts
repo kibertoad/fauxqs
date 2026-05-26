@@ -2,6 +2,8 @@ import { SnsError } from "../../common/errors.ts";
 import { snsSuccessResponse } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
 import { validateFilterPolicyLimits } from "../filter.ts";
+import { validateSubscriptionRedrivePolicy } from "../subscriptionRedrivePolicy.ts";
+import { setSubscriptionAttribute } from "../snsStore.ts";
 
 const VALID_SUBSCRIPTION_ATTRIBUTES = new Set([
   "RawMessageDelivery",
@@ -39,11 +41,10 @@ export function setSubscriptionAttributes(
     if (attributeName === "FilterPolicy" && attributeValue) {
       validateFilterPolicyLimits(attributeValue);
     }
-    subscription.attributes[attributeName] = attributeValue;
-    // Invalidate cached parsed filter policy when relevant attributes change
-    if (attributeName === "FilterPolicy" || attributeName === "FilterPolicyScope") {
-      subscription.parsedFilterPolicy = undefined;
+    if (attributeName === "RedrivePolicy") {
+      validateSubscriptionRedrivePolicy(attributeValue);
     }
+    setSubscriptionAttribute(subscription, attributeName, attributeValue);
     snsStore.persistence?.updateSubscriptionAttributes(subscriptionArn, subscription.attributes);
   }
 

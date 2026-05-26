@@ -879,6 +879,61 @@ describe("Persistence", () => {
     await server.stop();
   });
 
+  it("SNS: subscription DLQ routing works after restart", async () => {
+    let server = await startFauxqs({ port: 0, logger: false, dataDir });
+    let sns = makeSnsClient(server.port);
+    let sqs = makeSqsClient(server.port);
+
+    await sqs.send(new CreateQueueCommand({ QueueName: "dlq-restart-endpoint" }));
+    await sqs.send(new CreateQueueCommand({ QueueName: "dlq-restart-target" }));
+    const dlqArn = "arn:aws:sqs:us-east-1:000000000000:dlq-restart-target";
+
+    const { TopicArn } = await sns.send(
+      new CreateTopicCommand({ Name: "dlq-restart-topic" }),
+    );
+    await sns.send(
+      new SubscribeCommand({
+        TopicArn,
+        Protocol: "sqs",
+        Endpoint: "arn:aws:sqs:us-east-1:000000000000:dlq-restart-endpoint",
+        Attributes: {
+          RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn }),
+        },
+      }),
+    );
+
+    await server.stop();
+
+    // Restart, delete the endpoint queue, publish — DLQ should still resolve
+    // even though the in-memory parsedRedrivePolicy cache starts fresh.
+    server = await startFauxqs({ port: 0, logger: false, dataDir });
+    sns = makeSnsClient(server.port);
+    sqs = makeSqsClient(server.port);
+
+    await sqs.send(
+      new DeleteQueueCommand({
+        QueueUrl: `http://sqs.us-east-1.localhost:${server.port}/000000000000/dlq-restart-endpoint`,
+      }),
+    );
+
+    await sns.send(
+      new PublishCommand({ TopicArn: TopicArn!, Message: "after-restart" }),
+    );
+
+    const recv = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: `http://sqs.us-east-1.localhost:${server.port}/000000000000/dlq-restart-target`,
+        MaxNumberOfMessages: 1,
+        WaitTimeSeconds: 2,
+      }),
+    );
+    expect(recv.Messages).toHaveLength(1);
+    const envelope = JSON.parse(recv.Messages![0].Body!);
+    expect(envelope.Message).toBe("after-restart");
+
+    await server.stop();
+  });
+
   it("SNS: topic deletion persists", async () => {
     let server = await startFauxqs({ port: 0, logger: false, dataDir });
     let sns = makeSnsClient(server.port);

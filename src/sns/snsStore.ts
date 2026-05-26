@@ -217,3 +217,23 @@ export class SnsStore {
     this.subscriptions.clear();
   }
 }
+
+/**
+ * Write a subscription attribute and invalidate any cached parsed form. The
+ * only sanctioned way to mutate `subscription.attributes` for keys that have
+ * derived caches (FilterPolicy, FilterPolicyScope, RedrivePolicy) — callers
+ * that reach into `attributes` directly will leave stale cache entries.
+ */
+export function setSubscriptionAttribute(
+  subscription: SnsSubscription,
+  name: string,
+  value: string,
+): void {
+  subscription.attributes[name] = value;
+  if (name === "FilterPolicy" || name === "FilterPolicyScope") {
+    subscription.parsedFilterPolicy = undefined;
+  }
+  if (name === "RedrivePolicy") {
+    subscription.parsedRedrivePolicy = undefined;
+  }
+}
