@@ -44,6 +44,9 @@ export function setSubscriptionAttributes(
     if (attributeName === "FilterPolicy" || attributeName === "FilterPolicyScope") {
       subscription.parsedFilterPolicy = undefined;
     }
+    if (attributeName === "RedrivePolicy") {
+      subscription.parsedRedrivePolicy = undefined;
+    }
     snsStore.persistence?.updateSubscriptionAttributes(subscriptionArn, subscription.attributes);
   }
 

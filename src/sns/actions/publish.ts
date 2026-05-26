@@ -3,6 +3,7 @@ import type { PublishResponse } from "@aws-sdk/client-sns";
 import { SnsError } from "../../common/errors.ts";
 import { snsSuccessResponse } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
+import type { SnsSubscription } from "../snsTypes.ts";
 import type { SqsStore } from "../../sqs/sqsStore.ts";
 import { SqsStore as SqsStoreClass } from "../../sqs/sqsStore.ts";
 import type { MessageAttributeValue } from "../../sqs/sqsTypes.ts";
@@ -313,10 +314,6 @@ export function fanOutToSubscriptions(params: {
       }
     }
 
-    const sqsQueueArn = sub.endpoint;
-    const queue = sqsStore.getQueueByArn(sqsQueueArn);
-    if (!queue) continue;
-
     const isRaw = sub.attributes.RawMessageDelivery === "true";
 
     let sqsBody: string;
@@ -330,6 +327,37 @@ export function fanOutToSubscriptions(params: {
       sqsBody = JSON.stringify(envelopeBase);
     }
 
+    // Resolve the target queue. If the subscription endpoint is gone, fall
+    // back to the subscription's RedrivePolicy DLQ (matches AWS / LocalStack
+    // behaviour). Other delivery-failure modes (throttling, 5xx from HTTP
+    // endpoints, etc.) aren't modelled here because fauxqs only delivers to
+    // SQS endpoints, where the missing-queue case is the only real failure.
+    let targetQueue = sqsStore.getQueueByArn(sub.endpoint);
+    if (!targetQueue) {
+      const dlqArn = getSubscriptionDlqArn(sub);
+      if (!dlqArn) continue;
+      const dlq = sqsStore.getQueueByArn(dlqArn);
+      if (!dlq) continue;
+      targetQueue = dlq;
+      // SNS adds these on the DLQ message so consumers can see why delivery
+      // was redriven. Keys, DataTypes, and the ErrorCode/ErrorMessage strings
+      // match what real AWS surfaces for a missing SQS endpoint — see
+      // https://repost.aws/knowledge-center/sns-sqs-subscriptions-notifications
+      sqsAttributes = {
+        ...sqsAttributes,
+        RequestID: { DataType: "String", StringValue: randomUUID() },
+        ErrorCode: {
+          DataType: "String",
+          StringValue: "AWS.SimpleQueueService.NonExistentQueue",
+        },
+        ErrorMessage: {
+          DataType: "String",
+          StringValue:
+            "The specified queue does not exist or you do not have access to it.",
+        },
+      };
+    }
+
     const sqsMsg = SqsStoreClass.createMessage(
       sqsBody,
       sqsAttributes,
@@ -338,15 +366,31 @@ export function fanOutToSubscriptions(params: {
       messageDeduplicationId,
     );
 
-    if (queue.isFifo() && messageDeduplicationId) {
-      const dedupResult = queue.checkDeduplication(messageDeduplicationId);
+    if (targetQueue.isFifo() && messageDeduplicationId) {
+      const dedupResult = targetQueue.checkDeduplication(messageDeduplicationId);
       if (dedupResult.isDuplicate) continue;
-      sqsMsg.sequenceNumber = queue.nextSequenceNumber();
-      queue.recordDeduplication(messageDeduplicationId, sqsMsg.messageId);
+      sqsMsg.sequenceNumber = targetQueue.nextSequenceNumber();
+      targetQueue.recordDeduplication(messageDeduplicationId, sqsMsg.messageId);
     }
 
-    queue.enqueue(sqsMsg);
+    targetQueue.enqueue(sqsMsg);
   }
+}
+
+function getSubscriptionDlqArn(sub: SnsSubscription): string | undefined {
+  if (sub.parsedRedrivePolicy === undefined) {
+    const raw = sub.attributes.RedrivePolicy;
+    if (!raw) {
+      sub.parsedRedrivePolicy = null;
+    } else {
+      try {
+        sub.parsedRedrivePolicy = JSON.parse(raw);
+      } catch {
+        sub.parsedRedrivePolicy = null;
+      }
+    }
+  }
+  return sub.parsedRedrivePolicy?.deadLetterTargetArn;
 }
 
 function parseMessageAttributes(

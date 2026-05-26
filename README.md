@@ -580,7 +580,7 @@ Supported subscription attributes:
 | `RawMessageDelivery` | `"true"` / `"false"` | Deliver the raw message body instead of the SNS envelope JSON. |
 | `FilterPolicy` | JSON string | SNS filter policy for message filtering (e.g., `"{\"color\": [\"blue\"]}"`) |
 | `FilterPolicyScope` | `"MessageAttributes"` / `"MessageBody"` | Whether the filter policy applies to message attributes or body. Defaults to `MessageAttributes`. |
-| `RedrivePolicy` | JSON string | Subscription-level dead-letter queue config. |
+| `RedrivePolicy` | JSON string | Subscription-level dead-letter queue config. When the endpoint queue is missing at publish time, the message is routed to `deadLetterTargetArn` with SNS-style `ErrorCode` / `ErrorMessage` / `RequestID` attributes (matches AWS for `AWS.SimpleQueueService.NonExistentQueue`). |
 | `DeliveryPolicy` | JSON string | Delivery retry policy (stored, not enforced). |
 | `SubscriptionRoleArn` | ARN string | IAM role ARN for delivery (stored, not enforced). |
 
