@@ -93,6 +93,7 @@ The server starts on port `4566` and handles SQS, SNS, and S3 on a single endpoi
 | `FAUXQS_DATA_DIR` | Directory for SQLite persistence (see [Persistence](#persistence)). Omit to keep all state in-memory. | (none) |
 | `FAUXQS_PERSISTENCE` | Set to `true` to enable persistence when `FAUXQS_DATA_DIR` is set | `false` |
 | `FAUXQS_S3_STORAGE_DIR` | Directory for file-based S3 object storage (see [File-based S3 storage](#file-based-s3-storage)). Independent of `FAUXQS_DATA_DIR`. | (none) |
+| `FAUXQS_ORDERING_SEED` | Seed for the standard-queue reordering PRNG, for deterministic delivery order (see [Message ordering](#message-ordering)). Omit for non-deterministic ordering. | (none) |
 | `FAUXQS_DNS_NAME` | Domain that dnsmasq resolves (including all subdomains) to the container IP. Only needed when the container hostname doesn't match the docker-compose service name — e.g., when using `container_name` or running with plain `docker run`. In docker-compose the hostname is set to the service name automatically, so this is rarely needed. (Docker only) | container hostname |
 | `FAUXQS_DNS_UPSTREAM` | Where dnsmasq forwards non-fauxqs DNS queries (e.g., `registry.npmjs.org`). Change this if you're in a corporate network with an internal DNS server, or if you prefer a different public resolver like `1.1.1.1`. (Docker only) | `8.8.8.8` |
 
