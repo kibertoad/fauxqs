@@ -721,8 +721,20 @@ export class SqsStore {
   region?: string;
   spy?: MessageSpy;
   persistence?: PersistenceManager;
+  private _random: () => number = Math.random;
+
   /** PRNG shared with every queue for standard-queue reordering. Seeded via the `ordering` option. */
-  random: () => number = Math.random;
+  get random(): () => number {
+    return this._random;
+  }
+
+  /** Reseeding propagates to already-created queues, not just future ones. */
+  set random(random: () => number) {
+    this._random = random;
+    for (const queue of this.queues.values()) {
+      queue.random = random;
+    }
+  }
 
   createQueue(
     name: string,
@@ -732,7 +744,7 @@ export class SqsStore {
     tags?: Record<string, string>,
   ): SqsQueue {
     const queue = new SqsQueue(name, url, arn, attributes, tags);
-    queue.random = this.random;
+    queue.random = this._random;
     if (this.spy) {
       queue.spy = this.spy;
     }

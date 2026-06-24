@@ -8,6 +8,8 @@ import {
 } from "@aws-sdk/client-sqs";
 import { CreateTopicCommand, SubscribeCommand, PublishCommand } from "@aws-sdk/client-sns";
 import { startFauxqs, type FauxqsServer } from "../../src/app.js";
+import { SqsStore } from "../../src/sqs/sqsStore.js";
+import { mulberry32 } from "../../src/common/prng.js";
 import { createSqsClient, createSnsClient } from "../helpers/clients.js";
 
 describe("Standard queue delivery reordering", () => {
@@ -47,6 +49,22 @@ describe("Standard queue delivery reordering", () => {
     }
     return received;
   }
+
+  it("propagates a reseed to already-created queues", () => {
+    const store = new SqsStore();
+    const queue = store.createQueue(
+      "q",
+      "http://localhost/q",
+      "arn:aws:sqs:us-east-1:000000000000:q",
+    );
+    expect(queue.random).toBe(store.random);
+
+    // Reseeding after the queue exists must reach that queue, not just future ones.
+    const seeded = mulberry32(99);
+    store.random = seeded;
+    expect(queue.random).toBe(seeded);
+    expect(queue.random).toBe(store.random);
+  });
 
   it("reorders standard-queue messages (not strict FIFO)", async () => {
     server = await startFauxqs({ port: 0, logger: false, ordering: { seed: 42 } });
