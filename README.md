@@ -93,6 +93,7 @@ The server starts on port `4566` and handles SQS, SNS, and S3 on a single endpoi
 | `FAUXQS_DATA_DIR` | Directory for SQLite persistence (see [Persistence](#persistence)). Omit to keep all state in-memory. | (none) |
 | `FAUXQS_PERSISTENCE` | Set to `true` to enable persistence when `FAUXQS_DATA_DIR` is set | `false` |
 | `FAUXQS_S3_STORAGE_DIR` | Directory for file-based S3 object storage (see [File-based S3 storage](#file-based-s3-storage)). Independent of `FAUXQS_DATA_DIR`. | (none) |
+| `FAUXQS_ORDERING_SEED` | Seed for the standard-queue reordering PRNG, for deterministic delivery order (see [Message ordering](#message-ordering)). Omit for non-deterministic ordering. | (none) |
 | `FAUXQS_DNS_NAME` | Domain that dnsmasq resolves (including all subdomains) to the container IP. Only needed when the container hostname doesn't match the docker-compose service name — e.g., when using `container_name` or running with plain `docker run`. In docker-compose the hostname is set to the service name automatically, so this is rarely needed. (Docker only) | container hostname |
 | `FAUXQS_DNS_UPSTREAM` | Where dnsmasq forwards non-fauxqs DNS queries (e.g., `registry.npmjs.org`). Change this if you're in a corporate network with an internal DNS server, or if you prefer a different public resolver like `1.1.1.1`. (Docker only) | `8.8.8.8` |
 
@@ -328,6 +329,23 @@ const server = await startFauxqs({
 | Rule | Default | Description |
 |------|---------|-------------|
 | `disableMinCopySourceSize` | `false` | AWS requires the source object to be [larger than 5 MiB](https://docs.aws.amazon.com/AmazonS3/latest/API/API_UploadPartCopy.html) for byte-range `UploadPartCopy`. Set to `true` to allow byte-range copies from smaller sources. |
+
+#### Message ordering
+
+Standard (non-FIFO) SQS queues and standard SNS topics give **no ordering guarantee** on real AWS — messages can be delivered out of the order they were sent. fauxqs reflects this: it delivers standard-queue messages in a **random order** so that consumers which implicitly rely on ordering fail locally instead of in production. This applies to messages received directly from a standard queue as well as messages fanned out from a standard SNS topic.
+
+There is intentionally **no option to force strict ordering on a standard queue** — that would replicate behaviour real AWS does not provide. If you need ordering, use a **FIFO queue** (`.fifo` suffix / `FifoQueue: "true"`), which fauxqs delivers in strict per-message-group order.
+
+For deterministic tests or to reproduce a specific interleaving, seed the reordering PRNG. The same seed always produces the same delivery order:
+
+```typescript
+const server = await startFauxqs({
+  port: 0,
+  ordering: { seed: 42 },
+});
+```
+
+The seed can also be set via the `FAUXQS_ORDERING_SEED` environment variable. Without a seed, ordering is non-deterministic across runs.
 
 #### Programmatic state setup
 

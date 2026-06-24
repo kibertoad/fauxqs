@@ -105,16 +105,19 @@ describe("Queue inspection - programmatic API", () => {
       }),
     );
 
-    // Receive one message to make it in-flight (takes first available: msg-a)
+    // Receive one message to make it in-flight. Standard queues deliver in a
+    // non-deterministic order, so it's either msg-a or msg-b — the other stays ready.
     await sqs.send(
       new ReceiveMessageCommand({ QueueUrl: queue.QueueUrl!, MaxNumberOfMessages: 1 }),
     );
 
     const result = server.inspectQueue("inspect-all-states")!;
     expect(result.messages.ready).toHaveLength(1);
-    expect(result.messages.ready[0].body).toBe("msg-b");
     expect(result.messages.inflight).toHaveLength(1);
-    expect(result.messages.inflight[0].message.body).toBe("msg-a");
+    // One of the two standard messages is in-flight, the other is ready.
+    expect([result.messages.inflight[0].message.body, result.messages.ready[0].body].sort()).toEqual(
+      ["msg-a", "msg-b"],
+    );
     expect(result.messages.delayed).toHaveLength(1);
     expect(result.messages.delayed[0].body).toBe("delayed-msg");
   });
@@ -217,7 +220,8 @@ describe("Queue inspection - HTTP endpoint", () => {
       new SendMessageCommand({ QueueUrl: queue.QueueUrl!, MessageBody: "msg-b" }),
     );
 
-    // Make one in-flight (takes first available: ready-msg)
+    // Make one in-flight. Standard queues deliver in a non-deterministic order,
+    // so it's either ready-msg or msg-b — the other stays ready.
     await sqs.send(
       new ReceiveMessageCommand({ QueueUrl: queue.QueueUrl!, MaxNumberOfMessages: 1 }),
     );
@@ -230,11 +234,14 @@ describe("Queue inspection - HTTP endpoint", () => {
     expect(body.arn).toContain("http-inspect-detail");
     expect(body.attributes.VisibilityTimeout).toBe("60");
     expect(body.messages.ready).toHaveLength(1);
-    expect(body.messages.ready[0].body).toBe("msg-b");
+    expect(body.messages.inflight).toHaveLength(1);
+    // One of the two standard messages is in-flight, the other is ready.
+    expect([body.messages.inflight[0].message.body, body.messages.ready[0].body].sort()).toEqual([
+      "msg-b",
+      "ready-msg",
+    ]);
     expect(body.messages.delayed).toHaveLength(1);
     expect(body.messages.delayed[0].body).toBe("delayed-msg");
-    expect(body.messages.inflight).toHaveLength(1);
-    expect(body.messages.inflight[0].message.body).toBe("ready-msg");
   });
 
   it("inspection does not consume messages", async () => {

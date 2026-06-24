@@ -49,6 +49,7 @@ import { S3NotificationDispatcher } from "./s3/notifications.ts";
 import { getCallerIdentity } from "./sts/getCallerIdentity.ts";
 import { sqsQueueArn, snsTopicArn } from "./common/arnHelper.ts";
 import { DEFAULT_REGION, SNS_MAX_MESSAGE_SIZE_BYTES } from "./common/types.ts";
+import { mulberry32 } from "./common/prng.ts";
 import { loadInitConfig, applyInitConfig } from "./initConfig.ts";
 import { MessageSpy, type MessageSpyReader } from "./spy.ts";
 import { PersistenceManager } from "./persistence.ts";
@@ -97,6 +98,9 @@ export interface BuildAppOptions {
   stores?: { sqsStore: SqsStore; snsStore: SnsStore; s3Store: S3Store };
   relaxedRules?: RelaxedRules;
   tenantManager?: TenantManager;
+  /** Seed for the standard-queue reordering PRNG. Standard queues always reorder (real SQS/SNS give no
+   *  ordering guarantee); a seed only makes that reordering deterministic. Use a FIFO queue if you need ordering. */
+  ordering?: { seed?: number };
 }
 
 export function buildApp(options?: BuildAppOptions) {
@@ -161,6 +165,9 @@ export function buildApp(options?: BuildAppOptions) {
   }
   if (options?.defaultRegion) {
     sqsStore.region = options.defaultRegion;
+  }
+  if (options?.ordering?.seed !== undefined) {
+    sqsStore.random = mulberry32(options.ordering.seed);
   }
   const snsStore = options?.stores?.snsStore ?? new SnsStore();
   if (options?.defaultRegion) {
@@ -470,6 +477,10 @@ export async function startFauxqs(options?: {
   s3StorageDir?: string;
   /** Multi-tenant configuration. When set, enables auto-cleanup, templated creation, and permanent prefix management. */
   tenant?: TenantConfig;
+  /** Seed for the standard-queue reordering PRNG. Standard queues always reorder (real SQS/SNS give no
+   *  ordering guarantee); a seed only makes that reordering deterministic. Use a FIFO queue if you need ordering.
+   *  Env fallback: FAUXQS_ORDERING_SEED. */
+  ordering?: { seed?: number };
 }): Promise<FauxqsServer> {
   const port = options?.port ?? parseInt(process.env.FAUXQS_PORT ?? "4566");
   const host = options?.host ?? process.env.FAUXQS_HOST;
@@ -484,6 +495,15 @@ export async function startFauxqs(options?: {
   const sqsStore = usageTracker ? new TrackedSqsStore(usageTracker) : new SqsStore();
   const snsStore = usageTracker ? new TrackedSnsStore(usageTracker) : new SnsStore();
   const s3Store = usageTracker ? new TrackedS3Store(usageTracker) : new S3Store();
+
+  // Seed the standard-queue reordering PRNG before any queues are created (incl. during
+  // persistence load, which uses createQueue and propagates this.random to each queue).
+  const orderingSeed =
+    options?.ordering?.seed ??
+    (process.env.FAUXQS_ORDERING_SEED ? parseInt(process.env.FAUXQS_ORDERING_SEED) : undefined);
+  if (orderingSeed !== undefined && !Number.isNaN(orderingSeed)) {
+    sqsStore.random = mulberry32(orderingSeed);
+  }
 
   // Persistence: create managers and wire into stores before any data is loaded
   const persistenceManager = options?.dataDir ? new PersistenceManager(options.dataDir) : undefined;
