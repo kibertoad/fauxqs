@@ -42,6 +42,8 @@ export class SqsQueue {
 
   spy?: MessageSpy;
   persistence?: PersistenceManager;
+  /** PRNG for standard-queue reordering; injected from the store so all queues share one (optionally seeded) stream. */
+  random: () => number = Math.random;
 
   // FIFO-specific fields
   fifoMessages: Map<string, SqsMessage[]> = new Map();
@@ -219,7 +221,15 @@ export class SqsQueue {
     let collected = 0;
 
     while (collected < count && this.messages.length > 0) {
-      const msg = this.messages.shift();
+      // Standard queues give no ordering guarantee — select a random ready message
+      // instead of strict FIFO. Use a FIFO queue if ordering is required.
+      let msg: SqsMessage | undefined;
+      if (this.messages.length > 1) {
+        const idx = Math.floor(this.random() * this.messages.length);
+        msg = this.messages.splice(idx, 1)[0];
+      } else {
+        msg = this.messages.shift();
+      }
       if (!msg) break;
 
       msg.approximateReceiveCount++;
@@ -711,6 +721,8 @@ export class SqsStore {
   region?: string;
   spy?: MessageSpy;
   persistence?: PersistenceManager;
+  /** PRNG shared with every queue for standard-queue reordering. Seeded via the `ordering` option. */
+  random: () => number = Math.random;
 
   createQueue(
     name: string,
@@ -720,6 +732,7 @@ export class SqsStore {
     tags?: Record<string, string>,
   ): SqsQueue {
     const queue = new SqsQueue(name, url, arn, attributes, tags);
+    queue.random = this.random;
     if (this.spy) {
       queue.spy = this.spy;
     }

@@ -329,6 +329,23 @@ const server = await startFauxqs({
 |------|---------|-------------|
 | `disableMinCopySourceSize` | `false` | AWS requires the source object to be [larger than 5 MiB](https://docs.aws.amazon.com/AmazonS3/latest/API/API_UploadPartCopy.html) for byte-range `UploadPartCopy`. Set to `true` to allow byte-range copies from smaller sources. |
 
+#### Message ordering
+
+Standard (non-FIFO) SQS queues and standard SNS topics give **no ordering guarantee** on real AWS — messages can be delivered out of the order they were sent. fauxqs reflects this: it delivers standard-queue messages in a **random order** so that consumers which implicitly rely on ordering fail locally instead of in production. This applies to messages received directly from a standard queue as well as messages fanned out from a standard SNS topic.
+
+There is intentionally **no option to force strict ordering on a standard queue** — that would replicate behaviour real AWS does not provide. If you need ordering, use a **FIFO queue** (`.fifo` suffix / `FifoQueue: "true"`), which fauxqs delivers in strict per-message-group order.
+
+For deterministic tests or to reproduce a specific interleaving, seed the reordering PRNG. The same seed always produces the same delivery order:
+
+```typescript
+const server = await startFauxqs({
+  port: 0,
+  ordering: { seed: 42 },
+});
+```
+
+The seed can also be set via the `FAUXQS_ORDERING_SEED` environment variable. Without a seed, ordering is non-deterministic across runs.
+
 #### Programmatic state setup
 
 The server object exposes methods for pre-creating resources without going through the SDK:
