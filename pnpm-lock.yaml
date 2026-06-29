@@ -41,7 +41,7 @@ importers:
         version: 3.1074.0
       '@message-queue-toolkit/s3-payload-store':
         specifier: ^3.0.0
-        version: 3.0.0(@aws-sdk/client-s3@3.1074.0)(@message-queue-toolkit/core@25.5.0(zod@4.4.3))
+        version: 3.1.1(@aws-sdk/client-s3@3.1074.0)(@message-queue-toolkit/core@25.5.0(zod@4.4.3))
       '@types/node':
         specifier: ^25.2.3
         version: 25.9.1
@@ -263,8 +263,8 @@ packages:
     peerDependencies:
       zod: '>=3.25.76 <5.0.0'
 
-  '@message-queue-toolkit/s3-payload-store@3.0.0':
-    resolution: {integrity: sha512-AX2PI74CN9CBQWHT/nJBhUPR8E6beGodTsuSSlZ/zQvy6ViDcI4gEKxFViqKR2xai7PeLsqw+HWdkXhawwEqYA==}
+  '@message-queue-toolkit/s3-payload-store@3.1.1':
+    resolution: {integrity: sha512-AhkO/eb3eyr0o0Sd8wFqYo/Oa0CSsCTVAI3LrNI3jXJxZBKV8snWlIg5AatvOA+8IPj/dpKCGLub15AJT8R5Bg==}
     peerDependencies:
       '@aws-sdk/client-s3': ^3.596.0
       '@message-queue-toolkit/core': '>=24.0.0'
@@ -1682,7 +1682,7 @@ snapshots:
       toad-cache: 3.7.1
       zod: 4.4.3
 
-  '@message-queue-toolkit/s3-payload-store@3.0.0(@aws-sdk/client-s3@3.1074.0)(@message-queue-toolkit/core@25.5.0(zod@4.4.3))':
+  '@message-queue-toolkit/s3-payload-store@3.1.1(@aws-sdk/client-s3@3.1074.0)(@message-queue-toolkit/core@25.5.0(zod@4.4.3))':
     dependencies:
       '@aws-sdk/client-s3': 3.1074.0
       '@message-queue-toolkit/core': 25.5.0(zod@4.4.3)
