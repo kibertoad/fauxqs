@@ -28,7 +28,7 @@ importers:
         version: 5.9.0
       toad-cache:
         specifier: ^3.7.1
-        version: 3.7.1
+        version: 3.7.4
       valibot:
         specifier: ^1.4.0
         version: 1.4.2(typescript@6.0.3)
@@ -1145,10 +1145,6 @@ packages:
     resolution: {integrity: sha512-e0votIpp4Uo2AJYSzVHV6xCcawuiez3DzqDAbrTc3YxBkplN6e+dM13ZeIcZnDg/QpSuU2zfZ3rzwY8ukEnaXw==}
     engines: {node: '>=14.14'}
 
-  toad-cache@3.7.1:
-    resolution: {integrity: sha512-5DXWzE4Vz7xNHsv+xQ+MGfJYyC78Aok3tEr0MNwHoRf7vZnga1mQXZ4/Nsodld4VR6Wd+VhfmqnNrsRJyYPfrQ==}
-    engines: {node: '>=20'}
-
   toad-cache@3.7.4:
     resolution: {integrity: sha512-m1TdR/rvT7kgGJZhspNtXdsdYk0fddFpJJFlG5s+UkPFo6lkLoZ3YLOaovPYjq1R75NP5JfeTlSHaOsE09peCg==}
     engines: {node: '>=20'}
@@ -1527,7 +1523,7 @@ snapshots:
   '@fastify/cors@11.2.0':
     dependencies:
       fastify-plugin: 5.1.0
-      toad-cache: 3.7.1
+      toad-cache: 3.7.4
 
   '@fastify/error@4.2.0': {}
 
@@ -1992,7 +1988,7 @@ snapshots:
       rfdc: 1.4.1
       secure-json-parse: 4.1.0
       semver: 7.8.5
-      toad-cache: 3.7.1
+      toad-cache: 3.7.4
 
   fastq@1.20.1:
     dependencies:
@@ -2321,8 +2317,6 @@ snapshots:
   tinyrainbow@3.1.0: {}
 
   tmp@0.2.7: {}
-
-  toad-cache@3.7.1: {}
 
   toad-cache@3.7.4: {}
 
