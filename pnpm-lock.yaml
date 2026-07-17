@@ -22,7 +22,7 @@ importers:
         version: 11.3.0
       '@smithy/node-http-handler':
         specifier: ^4.7.4
-        version: 4.9.4
+        version: 4.9.5
       fastify:
         specifier: ^5.8.5
         version: 5.10.0
@@ -597,10 +597,6 @@ packages:
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
-  '@smithy/core@3.29.4':
-    resolution: {integrity: sha512-G1GRglAabzEhqghJMBAd54FkRS7SAFGHEwbhcI9r+O+LIMuFsLyXkLZkCoFSgAglRu8s/URVXJB0hglq3ZipIg==}
-    engines: {node: '>=18.0.0'}
-
   '@smithy/core@3.29.5':
     resolution: {integrity: sha512-i0dk2t5B+CwV/dcJdUHILYkOQF5lof8f44dFCfDWToGCxjT9YQ+CgHqTAvJxzc3+zqQwm2QtVoJ5IqiNar/CnQ==}
     engines: {node: '>=18.0.0'}
@@ -613,8 +609,8 @@ packages:
     resolution: {integrity: sha512-3zpg8yqqyXzoK2TsRDdkqVOj2RDBFfLXwCczOZ5c7TWB4eiaebfSCsbMjDPYB3PJ9ihV62QaeadZ+wLadZtNGA==}
     engines: {node: '>=18.0.0'}
 
-  '@smithy/node-http-handler@4.9.4':
-    resolution: {integrity: sha512-BNTop/fSOptmoVk8g+efwHCofFh37g70OWGAFES1TeAAJja1K5aAI8rTE26ETSc5k8IQuWY2kAIoPla01NgYrA==}
+  '@smithy/node-http-handler@4.9.5':
+    resolution: {integrity: sha512-bNqdxTQTxmLbomSmlkZFz8L6B/feQ2HHzw4L2zY7Ecp2XffYAZq2uzdWDdxJHJFbEvqd+SRuluJso0P8+xPdbw==}
     engines: {node: '>=18.0.0'}
 
   '@smithy/node-http-handler@4.9.7':
@@ -1407,7 +1403,7 @@ snapshots:
       '@aws-sdk/types': 3.974.2
       '@smithy/core': 3.29.5
       '@smithy/fetch-http-handler': 5.6.7
-      '@smithy/node-http-handler': 4.9.7
+      '@smithy/node-http-handler': 4.9.5
       '@smithy/types': 4.16.1
       tslib: 2.8.1
 
@@ -1418,7 +1414,7 @@ snapshots:
       '@aws-sdk/types': 3.974.2
       '@smithy/core': 3.29.5
       '@smithy/fetch-http-handler': 5.6.7
-      '@smithy/node-http-handler': 4.9.7
+      '@smithy/node-http-handler': 4.9.5
       '@smithy/types': 4.16.1
       tslib: 2.8.1
 
@@ -1430,7 +1426,7 @@ snapshots:
       '@aws-sdk/types': 3.974.2
       '@smithy/core': 3.29.5
       '@smithy/fetch-http-handler': 5.6.7
-      '@smithy/node-http-handler': 4.9.7
+      '@smithy/node-http-handler': 4.9.5
       '@smithy/types': 4.16.1
       tslib: 2.8.1
 
@@ -1878,11 +1874,6 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
-  '@smithy/core@3.29.4':
-    dependencies:
-      '@smithy/types': 4.16.1
-      tslib: 2.8.1
-
   '@smithy/core@3.29.5':
     dependencies:
       '@smithy/types': 4.16.1
@@ -1900,9 +1891,9 @@ snapshots:
       '@smithy/types': 4.16.1
       tslib: 2.8.1
 
-  '@smithy/node-http-handler@4.9.4':
+  '@smithy/node-http-handler@4.9.5':
     dependencies:
-      '@smithy/core': 3.29.4
+      '@smithy/core': 3.29.5
       '@smithy/types': 4.16.1
       tslib: 2.8.1
 
