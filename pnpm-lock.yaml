@@ -10,13 +10,13 @@ importers:
     dependencies:
       '@aws-sdk/client-s3':
         specifier: ^3.1053.0
-        version: 3.1088.0
+        version: 3.1089.0
       '@aws-sdk/client-sns':
         specifier: ^3.1053.0
-        version: 3.1088.0
+        version: 3.1089.0
       '@aws-sdk/client-sqs':
         specifier: ^3.1053.0
-        version: 3.1088.0
+        version: 3.1089.0
       '@fastify/cors':
         specifier: ^11.2.0
         version: 11.3.0
@@ -35,13 +35,13 @@ importers:
     devDependencies:
       '@aws-sdk/s3-presigned-post':
         specifier: ^3.997.0
-        version: 3.1088.0
+        version: 3.1089.0
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.993.0
-        version: 3.1088.0
+        version: 3.1089.0
       '@message-queue-toolkit/s3-payload-store':
         specifier: ^3.0.0
-        version: 3.1.1(@aws-sdk/client-s3@3.1088.0)(@message-queue-toolkit/core@25.5.0(zod@4.4.3))
+        version: 3.1.1(@aws-sdk/client-s3@3.1089.0)(@message-queue-toolkit/core@25.5.0(zod@4.4.3))
       '@types/node':
         specifier: ^25.2.3
         version: 25.9.1
@@ -70,16 +70,16 @@ packages:
     resolution: {integrity: sha512-Hc4N100RdkuWshKBnhPzmpdftfi9mCLz+OHFELHM1QIgMH4QRUUWyWgfiebta/YX2Bd62wTcm3EqAP8TeXv0gA==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-s3@3.1088.0':
-    resolution: {integrity: sha512-9ryKKxnjtJRKLDI24P+2gQZki7k28BeV6gz1AySvFDWayhjAZuh4QZjCyx55tqR8Oz0IJxWutgJRO43dDOcXoQ==}
+  '@aws-sdk/client-s3@3.1089.0':
+    resolution: {integrity: sha512-Sc+JOtNeP+v+XdP9Rb4Hh+uhiNO2hh/CZQbKYooNakhOIgK6/K0cjoDCEGeFmkG0vf2DopTmSctzKlcKwy1BPw==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-sns@3.1088.0':
-    resolution: {integrity: sha512-JKYpxX+utHyb8YlSfzAqqdEpuvIVa2fuoZc10ZkaqAu8XkWuuDuNH6FyAOlJMu9wrwdRdyJuSGiKLNfBE/8W0g==}
+  '@aws-sdk/client-sns@3.1089.0':
+    resolution: {integrity: sha512-7/1GaKWggyNqMGBWK86LJl9ifp9ZAJShjyKTzyRrlopsmNjfd8MSYYX0azjDI7aU8INm5zf6JBWSl0B/8oB7BQ==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-sqs@3.1088.0':
-    resolution: {integrity: sha512-qt9k/SBPvcrgmthtlbuVTPZ++UOmViF+Qig3MoHKBXS9ls6JY467lYXFvpPJ7GPZgGOpTATx35/07BYGnETksg==}
+  '@aws-sdk/client-sqs@3.1089.0':
+    resolution: {integrity: sha512-FniOhQM+EgcuRv7VRjkZBGlg875p+ZCjORtC7LOF2ekFZeNKa6mq4C0NVBVmx/CDJaOmtnfDnINrzWMwVyNXiA==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/core@3.976.0':
@@ -130,12 +130,12 @@ packages:
     resolution: {integrity: sha512-Y9REVrSwmLM+Qy6sZJ7ofMC2S3Hr3tPP/4CzL5U1olPP7OGoF+6+Px0E49cVQBtSxJtyeLJMf0UaBErfeSahAA==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/s3-presigned-post@3.1088.0':
-    resolution: {integrity: sha512-bFmZPLl9URh9UTZBdqkRHynmyt40zsY/KyFKs5aZc4iUDx7dZMXulkbKviYEoDk2wiE3RdRVr750TNsJM9agLA==}
+  '@aws-sdk/s3-presigned-post@3.1089.0':
+    resolution: {integrity: sha512-kOZE2edF35kHJrzBH/1q/4ImOt4YOGFR5JAXlf09AykxwH6JygqqpOwTxqKfUjXvI/Xgqhe6DP7aJiUdsD+BuA==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/s3-request-presigner@3.1088.0':
-    resolution: {integrity: sha512-NEv9O5q+IrsDNKPmNhTlZ3hjtomgfL1OEJRCmDSF06dbmZ6IUJfrLQTLO7LWbM4sxvYui1LRAFCdO2TM3Hdq4A==}
+  '@aws-sdk/s3-request-presigner@3.1089.0':
+    resolution: {integrity: sha512-NYLT340eRdqv8XIUEIEWcIYICDxBGxpgdyQ9veBkW5XxlRDNn19IZ8b46ddec+HBQea/18W+/IfogCqbac3CGQ==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/signature-v4-multi-region@3.996.41':
@@ -1136,8 +1136,8 @@ packages:
     resolution: {integrity: sha512-r34yH/GlQpKZbU1BvFFqOjhISRo1MNx1tWYsYvmj6KIRHSPMT2+yHOEb1SG6NMvRoHRF0a07kCOox/9yakl1vg==}
     hasBin: true
 
-  postcss@8.5.21:
-    resolution: {integrity: sha512-v4sDNP3fdNiWMfabO7OwOQdOX8TiQSztKyT1Wj0w+j7LDallJThJRBBBmzVGyYj0crMh7jlV4zepPkiNu9UwDQ==}
+  postcss@8.5.22:
+    resolution: {integrity: sha512-KBDEIpLrvpv16pp3K0Fw+UCoZfopFjjgeB+0tA/aaThfEE74kKDLrgg603YvOWJyg3+WYtyq3xYsQWsIyZlPqQ==}
     engines: {node: ^10 || ^12 || >=14}
 
   process-warning@4.0.1:
@@ -1393,7 +1393,7 @@ snapshots:
       '@smithy/types': 4.16.1
       tslib: 2.8.1
 
-  '@aws-sdk/client-s3@3.1088.0':
+  '@aws-sdk/client-s3@3.1089.0':
     dependencies:
       '@aws-sdk/checksums': 3.1000.19
       '@aws-sdk/core': 3.976.0
@@ -1407,7 +1407,7 @@ snapshots:
       '@smithy/types': 4.16.1
       tslib: 2.8.1
 
-  '@aws-sdk/client-sns@3.1088.0':
+  '@aws-sdk/client-sns@3.1089.0':
     dependencies:
       '@aws-sdk/core': 3.976.0
       '@aws-sdk/credential-provider-node': 3.972.71
@@ -1418,7 +1418,7 @@ snapshots:
       '@smithy/types': 4.16.1
       tslib: 2.8.1
 
-  '@aws-sdk/client-sqs@3.1088.0':
+  '@aws-sdk/client-sqs@3.1089.0':
     dependencies:
       '@aws-sdk/core': 3.976.0
       '@aws-sdk/credential-provider-node': 3.972.71
@@ -1552,9 +1552,9 @@ snapshots:
       '@smithy/types': 4.16.1
       tslib: 2.8.1
 
-  '@aws-sdk/s3-presigned-post@3.1088.0':
+  '@aws-sdk/s3-presigned-post@3.1089.0':
     dependencies:
-      '@aws-sdk/client-s3': 3.1088.0
+      '@aws-sdk/client-s3': 3.1089.0
       '@aws-sdk/core': 3.976.0
       '@aws-sdk/types': 3.974.2
       '@smithy/core': 3.29.7
@@ -1562,7 +1562,7 @@ snapshots:
       '@smithy/types': 4.16.1
       tslib: 2.8.1
 
-  '@aws-sdk/s3-request-presigner@3.1088.0':
+  '@aws-sdk/s3-request-presigner@3.1089.0':
     dependencies:
       '@aws-sdk/core': 3.976.0
       '@aws-sdk/signature-v4-multi-region': 3.996.41
@@ -1689,9 +1689,9 @@ snapshots:
       toad-cache: 3.7.4
       zod: 4.4.3
 
-  '@message-queue-toolkit/s3-payload-store@3.1.1(@aws-sdk/client-s3@3.1088.0)(@message-queue-toolkit/core@25.5.0(zod@4.4.3))':
+  '@message-queue-toolkit/s3-payload-store@3.1.1(@aws-sdk/client-s3@3.1089.0)(@message-queue-toolkit/core@25.5.0(zod@4.4.3))':
     dependencies:
-      '@aws-sdk/client-s3': 3.1088.0
+      '@aws-sdk/client-s3': 3.1089.0
       '@message-queue-toolkit/core': 25.5.0(zod@4.4.3)
 
   '@message-queue-toolkit/schemas@7.2.0(zod@4.4.3)':
@@ -2379,7 +2379,7 @@ snapshots:
       sonic-boom: 4.2.1
       thread-stream: 4.2.0
 
-  postcss@8.5.21:
+  postcss@8.5.22:
     dependencies:
       nanoid: 3.3.16
       picocolors: 1.1.1
@@ -2525,7 +2525,7 @@ snapshots:
     dependencies:
       lightningcss: 1.33.0
       picomatch: 4.0.5
-      postcss: 8.5.21
+      postcss: 8.5.22
       rolldown: 1.0.1
       tinyglobby: 0.2.17
     optionalDependencies:
