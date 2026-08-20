@@ -10,6 +10,7 @@ import { SqsStore as SqsStoreClass } from "../sqsStore.ts";
 import type { MessageAttributeValue } from "../sqsTypes.ts";
 import {
   INVALID_MESSAGE_BODY_CHAR,
+  INVALID_MESSAGE_BODY_CHAR_MESSAGE,
   SQS_MAX_MESSAGE_SIZE_BYTES,
   VALID_BATCH_ENTRY_ID,
   calculateMessageSize,
@@ -92,8 +93,7 @@ export function sendMessageBatch(
         Id: entry.Id,
         SenderFault: true,
         Code: "InvalidMessageContents",
-        Message:
-          "Invalid characters found. Valid unicode characters are #x9 | #xA | #xD | #x20 to #xD7FF and #xE000 to #xFFFD.",
+        Message: INVALID_MESSAGE_BODY_CHAR_MESSAGE,
       });
       continue;
     }

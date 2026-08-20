@@ -6,6 +6,7 @@ import { SqsStore } from "./sqs/sqsStore.ts";
 import type { MessageAttributeValue } from "./sqs/sqsTypes.ts";
 import {
   INVALID_MESSAGE_BODY_CHAR,
+  INVALID_MESSAGE_BODY_CHAR_MESSAGE,
   calculateMessageSize,
   parseOptionalMessageGroupId,
 } from "./sqs/sqsTypes.ts";
@@ -686,9 +687,7 @@ export async function startFauxqs(options?: {
 
       // Validate message body characters (same as SDK handler)
       if (INVALID_MESSAGE_BODY_CHAR.test(body)) {
-        throw new Error(
-          "Invalid characters found. Valid unicode characters are #x9 | #xA | #xD | #x20 to #xD7FF and #xE000 to #xFFFD.",
-        );
+        throw new Error(INVALID_MESSAGE_BODY_CHAR_MESSAGE);
       }
 
       const messageAttributes = opts?.messageAttributes ?? {};
