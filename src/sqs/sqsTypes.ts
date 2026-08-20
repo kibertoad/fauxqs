@@ -126,6 +126,9 @@ export const INVALID_MESSAGE_BODY_CHAR =
   // eslint-disable-next-line no-control-regex
   /[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]/u;
 
+export const INVALID_MESSAGE_BODY_CHAR_MESSAGE =
+  "Invalid characters found. Valid unicode characters are #x9 | #xA | #xD | #x20 to #xD7FF | #xE000 to #xFFFD | #x10000 to #x10FFFF.";
+
 // Max message size: 1 MiB (1,048,576 bytes) for SQS
 export const SQS_MAX_MESSAGE_SIZE_BYTES = 1_048_576;
 
