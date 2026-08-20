@@ -1,8 +1,15 @@
 ---
 name: publish
 
+# pull_request_target is used instead of pull_request because the release
+# steps push a version-bump commit and publish to npm, and on pull_request
+# events from forks the GITHUB_TOKEN is forced read-only (and id-token is
+# unavailable), which 403s the push. This is safe from the usual
+# pull_request_target pwn-request vector: the job only runs once the PR has
+# been merged by a maintainer, and it checks out and builds the base branch
+# (main), never the untrusted PR head.
 on:
-  pull_request:
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
     types:
       - closed
     branches:
