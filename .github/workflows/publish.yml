@@ -1,25 +1,73 @@
 ---
 name: publish
 
-# pull_request_target is used instead of pull_request because the release
-# steps push a version-bump commit and publish to npm, and on pull_request
-# events from forks the GITHUB_TOKEN is forced read-only (and id-token is
-# unavailable), which 403s the push. This is safe from the usual
-# pull_request_target pwn-request vector: the job only runs once the PR has
-# been merged by a maintainer, and it checks out and builds the base branch
-# (main), never the untrusted PR head.
+# Releases are cut from pushes to main (i.e. a merged PR) rather than from the
+# pull_request event, because neither PR-based trigger can complete a release:
+#
+#   * on `pull_request` from a fork the GITHUB_TOKEN is forced read-only and
+#     id-token is unavailable, so pushing the version bump commit 403s;
+#   * on `pull_request_target` the push works, but npm's trusted publishing
+#     refuses to exchange the OIDC token for that event, so `pnpm publish`
+#     falls back to anonymous and 404s (see npm/cli#8739).
+#
+# The bump commit and tag below are pushed with GITHUB_TOKEN, which by design
+# does not re-trigger this workflow, so releases do not recurse.
 on:
-  pull_request_target: # zizmor: ignore[dangerous-triggers]
-    types:
-      - closed
+  push:
     branches:
       - main
 
 permissions: {}
 
+# Serialize releases: two merges landing back to back must not race to bump
+# and publish the same version. `queue: max` retains the queued runs; the
+# default `queue: single` cancels a pending run as soon as a newer one
+# arrives, which would silently drop a release.
+concurrency:
+  group: publish
+  queue: max
+
 jobs:
+  # The push event carries no PR context, so the release labels have to be
+  # resolved from the pull request the pushed commit was merged from.
+  check:
+    name: Determine version bump
+    runs-on: ubuntu-latest
+    outputs:
+      bump: ${{ steps.version.outputs.bump }}
+
+    permissions:
+      contents: read # read the commit
+      pull-requests: read # read the merged PR's labels
+
+    steps:
+      - name: Resolve bump from merged PR labels
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          labels="$(gh api "repos/$REPOSITORY/commits/$SHA/pulls" \
+            --jq '.[] | select(.merged_at != null) | .labels[].name')"
+          echo "Labels on the merged PR: ${labels//$'\n'/, }"
+
+          if printf '%s\n' "$labels" | grep -Fxq major; then
+            bump=major
+          elif printf '%s\n' "$labels" | grep -Fxq minor; then
+            bump=minor
+          elif printf '%s\n' "$labels" | grep -Fxq patch; then
+            bump=patch
+          else
+            bump=
+            echo "No release label found, skipping release."
+          fi
+
+          echo "bump=$bump" >> "$GITHUB_OUTPUT"
+
   publish:
-    if: github.event.pull_request.merged == true && (contains(github.event.pull_request.labels.*.name, 'patch') || contains(github.event.pull_request.labels.*.name, 'minor') || contains(github.event.pull_request.labels.*.name, 'major'))
+    needs: check
+    if: needs.check.outputs.bump != ''
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.bump.outputs.tag }}
@@ -36,6 +84,11 @@ jobs:
       - name: Checkout Repository # zizmor: ignore[artipacked]
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Release the current tip of main rather than the pushed commit: a
+          # run queued behind another release would otherwise bump a
+          # package.json that the run ahead of it has already bumped, and
+          # collide on an existing tag.
+          ref: main
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -63,17 +116,6 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Determine version bump
-        id: version
-        run: |
-          if ${{ contains(github.event.pull_request.labels.*.name, 'major') }}; then
-            echo "bump=major" >> $GITHUB_OUTPUT
-          elif ${{ contains(github.event.pull_request.labels.*.name, 'minor') }}; then
-            echo "bump=minor" >> $GITHUB_OUTPUT
-          else
-            echo "bump=patch" >> $GITHUB_OUTPUT
-          fi
-
       - name: Bump version
         id: bump
         run: |
@@ -82,7 +124,7 @@ jobs:
           git push
           git push --tags
         env:
-          VERSION_BUMP: ${{ steps.version.outputs.bump }}
+          VERSION_BUMP: ${{ needs.check.outputs.bump }}
 
       - name: Publish to npm
         run: pnpm publish --provenance --access public --no-git-checks
