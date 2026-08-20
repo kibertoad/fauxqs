@@ -169,6 +169,7 @@ export class SqsQueue {
         messageAttributes: msg.messageAttributes,
         status: "published",
         timestamp: Date.now(),
+        ...(msg.messageGroupId ? { messageGroupId: msg.messageGroupId } : {}),
       });
     }
 
@@ -223,13 +224,7 @@ export class SqsQueue {
     while (collected < count && this.messages.length > 0) {
       // Standard queues give no ordering guarantee — select a random ready message
       // instead of strict FIFO. Use a FIFO queue if ordering is required.
-      let msg: SqsMessage | undefined;
-      if (this.messages.length > 1) {
-        const idx = Math.floor(this.random() * this.messages.length);
-        msg = this.messages.splice(idx, 1)[0];
-      } else {
-        msg = this.messages.shift();
-      }
+      const msg = this.takeRandomStandardMessage();
       if (!msg) break;
 
       msg.approximateReceiveCount++;
@@ -250,6 +245,7 @@ export class SqsQueue {
               messageAttributes: msg.messageAttributes,
               status: "dlq",
               timestamp: Date.now(),
+              ...(msg.messageGroupId ? { messageGroupId: msg.messageGroupId } : {}),
             });
           }
           // Persistence: delete from this queue (dlq.enqueue will insert into DLQ)
@@ -301,6 +297,43 @@ export class SqsQueue {
     return result;
   }
 
+  /**
+   * Remove and return the next ready message for a standard-queue receive.
+   *
+   * When no ready message carries a MessageGroupId the pick is uniform over
+   * messages, with exactly one PRNG draw — keeping seeded orderings stable for
+   * ungrouped queues. When group ids are present, emulate AWS fair queues:
+   * pick a uniformly random *group* first, then a random message within it, so
+   * a backlogged group cannot starve quiet groups. Messages without a group id
+   * count as one implicit group.
+   */
+  private takeRandomStandardMessage(): SqsMessage | undefined {
+    if (this.messages.length <= 1) {
+      return this.messages.shift();
+    }
+
+    const groups = new Map<string | undefined, number[]>();
+    for (let i = 0; i < this.messages.length; i++) {
+      const groupId = this.messages[i].messageGroupId;
+      const indexes = groups.get(groupId);
+      if (indexes) {
+        indexes.push(i);
+      } else {
+        groups.set(groupId, [i]);
+      }
+    }
+
+    let idx: number;
+    if (groups.size === 1 && groups.has(undefined)) {
+      idx = Math.floor(this.random() * this.messages.length);
+    } else {
+      const groupKeys = [...groups.keys()];
+      const indexes = groups.get(groupKeys[Math.floor(this.random() * groupKeys.length)])!;
+      idx = indexes[Math.floor(this.random() * indexes.length)];
+    }
+    return this.messages.splice(idx, 1)[0];
+  }
+
   private dequeueFifo(
     maxCount: number,
     visibilityTimeoutOverride?: number,
@@ -346,6 +379,7 @@ export class SqsQueue {
                 messageAttributes: msg.messageAttributes,
                 status: "dlq",
                 timestamp: Date.now(),
+                ...(msg.messageGroupId ? { messageGroupId: msg.messageGroupId } : {}),
               });
             }
             this.persistence?.deleteMessage(msg.messageId);
@@ -418,6 +452,7 @@ export class SqsQueue {
           messageAttributes: entry.message.messageAttributes,
           status: "consumed",
           timestamp: Date.now(),
+          ...(entry.message.messageGroupId ? { messageGroupId: entry.message.messageGroupId } : {}),
         });
       }
       // Decrement FIFO locked group count

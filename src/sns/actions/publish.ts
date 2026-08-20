@@ -7,9 +7,13 @@ import type { SnsSubscription } from "../snsTypes.ts";
 import type { SqsStore } from "../../sqs/sqsStore.ts";
 import { SqsStore as SqsStoreClass } from "../../sqs/sqsStore.ts";
 import type { MessageAttributeValue } from "../../sqs/sqsTypes.ts";
+import { VALID_MESSAGE_GROUP_ID } from "../../sqs/sqsTypes.ts";
 import { SNS_MAX_MESSAGE_SIZE_BYTES } from "../../common/types.ts";
 import { matchesFilterPolicy, matchesFilterPolicyOnBody } from "../filter.ts";
 import { parseSubscriptionRedrivePolicy } from "../subscriptionRedrivePolicy.ts";
+
+const INVALID_MESSAGE_GROUP_ID_MESSAGE =
+  "Invalid parameter: MessageGroupId Reason: MessageGroupId can only include alphanumeric and punctuation characters. 1 to 128 in length";
 
 export function publish(
   params: Record<string, string>,
@@ -52,27 +56,18 @@ export function publish(
   const messageId = randomUUID();
   const subject = params.Subject;
 
-  // Emit SNS spy event
-  if (snsStore.spy) {
-    snsStore.spy.addMessage({
-      service: "sns",
-      topicArn,
-      topicName: topic.name,
-      messageId,
-      body: message,
-      messageAttributes,
-      status: "published",
-      timestamp: Date.now(),
-    });
-  }
-
-  // FIFO topic handling
+  // MessageGroupId is required on FIFO topics and optional on standard topics
+  // (AWS fair queues), where it is forwarded to subscribed SQS standard queues.
+  // Either way, a provided value must satisfy the same format constraints.
   const isFifoTopic = topic.attributes.FifoTopic === "true";
-  let messageGroupId: string | undefined;
+  const messageGroupId = params.MessageGroupId;
   let messageDeduplicationId: string | undefined;
 
+  if (messageGroupId !== undefined && !VALID_MESSAGE_GROUP_ID.test(messageGroupId)) {
+    throw new SnsError("InvalidParameter", INVALID_MESSAGE_GROUP_ID_MESSAGE);
+  }
+
   if (isFifoTopic) {
-    messageGroupId = params.MessageGroupId;
     if (!messageGroupId) {
       throw new SnsError(
         "InvalidParameter",
@@ -91,6 +86,21 @@ export function publish(
         );
       }
     }
+  }
+
+  // Emit SNS spy event (after validation so rejected publishes leave no trace)
+  if (snsStore.spy) {
+    snsStore.spy.addMessage({
+      service: "sns",
+      topicArn,
+      topicName: topic.name,
+      messageId,
+      body: message,
+      messageAttributes,
+      status: "published",
+      timestamp: Date.now(),
+      ...(messageGroupId ? { messageGroupId } : {}),
+    });
   }
 
   // Fan out to subscriptions
@@ -181,11 +191,19 @@ export function publishBatch(
       continue;
     }
 
-    let messageGroupId: string | undefined;
+    // Required on FIFO topics, optional on standard topics (fair queues) —
+    // but a provided value must satisfy the format constraints on both.
+    const messageGroupId = entry.messageGroupId;
     let messageDeduplicationId: string | undefined;
 
+    if (messageGroupId !== undefined && !VALID_MESSAGE_GROUP_ID.test(messageGroupId)) {
+      failedXml.push(
+        `<member><Id>${entry.id}</Id><Code>InvalidParameter</Code><Message>${INVALID_MESSAGE_GROUP_ID_MESSAGE}</Message><SenderFault>true</SenderFault></member>`,
+      );
+      continue;
+    }
+
     if (isFifoTopic) {
-      messageGroupId = entry.messageGroupId;
       if (!messageGroupId) {
         failedXml.push(
           `<member><Id>${entry.id}</Id><Code>InvalidParameter</Code><Message>The MessageGroupId parameter is required for FIFO topics.</Message><SenderFault>true</SenderFault></member>`,
@@ -219,6 +237,7 @@ export function publishBatch(
         messageAttributes: entry.messageAttributes,
         status: "published",
         timestamp: Date.now(),
+        ...(messageGroupId ? { messageGroupId } : {}),
       });
     }
 
@@ -399,6 +418,7 @@ export function fanOutToSubscriptions(params: {
         messageAttributes: sqsAttributes,
         status: "dlq",
         timestamp: Date.now(),
+        ...(messageGroupId ? { messageGroupId } : {}),
       });
     }
   }

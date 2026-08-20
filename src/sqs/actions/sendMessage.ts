@@ -4,7 +4,12 @@ import { md5, md5OfMessageAttributes } from "../../common/md5.ts";
 import type { SqsStore } from "../sqsStore.ts";
 import { SqsStore as SqsStoreClass } from "../sqsStore.ts";
 import type { MessageAttributeValue } from "../sqsTypes.ts";
-import { INVALID_MESSAGE_BODY_CHAR, calculateMessageSize } from "../sqsTypes.ts";
+import {
+  INVALID_MESSAGE_BODY_CHAR,
+  VALID_MESSAGE_GROUP_ID,
+  calculateMessageSize,
+  invalidMessageGroupIdMessage,
+} from "../sqsTypes.ts";
 
 export function sendMessage(body: Record<string, unknown>, store: SqsStore): SendMessageResult {
   const queueUrl = body.QueueUrl as string | undefined;
@@ -40,6 +45,13 @@ export function sendMessage(body: Record<string, unknown>, store: SqsStore): Sen
     );
   }
 
+  // Optional on standard queues (fair queues), required on FIFO — but when
+  // provided it must satisfy the same format constraints on both queue types.
+  const messageGroupId = body.MessageGroupId as string | undefined;
+  if (messageGroupId !== undefined && !VALID_MESSAGE_GROUP_ID.test(messageGroupId)) {
+    throw new SqsError("InvalidParameterValue", invalidMessageGroupIdMessage(messageGroupId));
+  }
+
   if (queue.isFifo()) {
     return sendFifoMessage(body, queue, messageBody, messageAttributes);
   }
@@ -52,6 +64,7 @@ export function sendMessage(body: Record<string, unknown>, store: SqsStore): Sen
     messageBody,
     messageAttributes,
     delaySeconds > 0 ? delaySeconds : undefined,
+    messageGroupId,
   );
 
   queue.enqueue(msg);

@@ -12,6 +12,8 @@ export interface SqsSpyMessage {
   messageAttributes: Record<string, MessageAttributeValue>;
   status: SqsSpyMessageStatus;
   timestamp: number;
+  /** Present when the message was sent with a MessageGroupId (FIFO queues, or standard queues via fair queues). */
+  messageGroupId?: string;
 }
 
 /**
@@ -32,6 +34,8 @@ export interface SnsSpyMessage {
   messageAttributes: Record<string, MessageAttributeValue>;
   status: SnsSpyMessageStatus;
   timestamp: number;
+  /** Present when the message was published with a MessageGroupId (FIFO topics, or standard topics via fair queues). */
+  messageGroupId?: string;
 }
 
 /** Possible statuses for an S3 spy event. */

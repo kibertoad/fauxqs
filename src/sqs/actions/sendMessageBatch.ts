@@ -12,7 +12,9 @@ import {
   INVALID_MESSAGE_BODY_CHAR,
   SQS_MAX_MESSAGE_SIZE_BYTES,
   VALID_BATCH_ENTRY_ID,
+  VALID_MESSAGE_GROUP_ID,
   calculateMessageSize,
+  invalidMessageGroupIdMessage,
 } from "../sqsTypes.ts";
 
 interface BatchEntry {
@@ -109,6 +111,18 @@ export function sendMessageBatch(
       continue;
     }
 
+    // Optional on standard queues (fair queues), required on FIFO — but when
+    // provided it must satisfy the same format constraints on both queue types.
+    if (entry.MessageGroupId !== undefined && !VALID_MESSAGE_GROUP_ID.test(entry.MessageGroupId)) {
+      failed.push({
+        Id: entry.Id,
+        SenderFault: true,
+        Code: "InvalidParameterValue",
+        Message: invalidMessageGroupIdMessage(entry.MessageGroupId),
+      });
+      continue;
+    }
+
     if (isFifo) {
       // FIFO validations
       if (!entry.MessageGroupId) {
@@ -197,6 +211,7 @@ export function sendMessageBatch(
         entry.MessageBody,
         entry.MessageAttributes ?? {},
         delaySeconds > 0 ? delaySeconds : undefined,
+        entry.MessageGroupId,
       );
 
       queue.enqueue(msg);

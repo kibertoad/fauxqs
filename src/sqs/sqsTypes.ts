@@ -85,6 +85,16 @@ export const SETTABLE_ATTRIBUTES: ReadonlySet<string> = new Set([
 
 export const VALID_BATCH_ENTRY_ID = /^[a-zA-Z0-9_-]+$/;
 
+// MessageGroupId: 1-128 alphanumeric or punctuation characters. Required on FIFO
+// queues; optional on standard queues since AWS fair queues (2025-07), where it
+// identifies a tenant for fair delivery without any ordering guarantees.
+export const VALID_MESSAGE_GROUP_ID = /^[a-zA-Z0-9!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]{1,128}$/;
+
+/** AWS error text for a malformed MessageGroupId (shared by SendMessage and SendMessageBatch). */
+export function invalidMessageGroupIdMessage(value: string): string {
+  return `Value ${value} for parameter MessageGroupId is invalid. Reason: MessageGroupId can only include alphanumeric and punctuation characters. 1 to 128 in length.`;
+}
+
 // AWS SQS allowed unicode characters: #x9 | #xA | #xD | #x20 to #xD7FF | #xE000 to #xFFFD
 // eslint-disable-next-line no-control-regex
 export const INVALID_MESSAGE_BODY_CHAR = /[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD]/;

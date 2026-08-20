@@ -4,7 +4,12 @@ import cors from "@fastify/cors";
 import { generateS3RequestId } from "./common/errors.ts";
 import { SqsStore } from "./sqs/sqsStore.ts";
 import type { MessageAttributeValue } from "./sqs/sqsTypes.ts";
-import { INVALID_MESSAGE_BODY_CHAR, calculateMessageSize } from "./sqs/sqsTypes.ts";
+import {
+  INVALID_MESSAGE_BODY_CHAR,
+  VALID_MESSAGE_GROUP_ID,
+  calculateMessageSize,
+  invalidMessageGroupIdMessage,
+} from "./sqs/sqsTypes.ts";
 import { md5, md5OfMessageAttributes } from "./common/md5.ts";
 import { SqsRouter } from "./sqs/sqsRouter.ts";
 import { SnsStore } from "./sns/snsStore.ts";
@@ -417,7 +422,8 @@ export interface FauxqsServer {
   deleteTopic(name: string, options?: { region?: string }): void;
   /** Remove all objects from a bucket but keep the bucket itself. No-op if the bucket does not exist. */
   emptyBucket(name: string): void;
-  /** Enqueue a message into an SQS queue by name. Supports messageAttributes, delaySeconds, and FIFO fields. Spy events emitted automatically. */
+  /** Enqueue a message into an SQS queue by name. Supports messageAttributes, delaySeconds, and FIFO fields.
+   *  messageGroupId is also accepted on standard queues (AWS fair queues). Spy events emitted automatically. */
   sendMessage(
     queueName: string,
     body: string,
@@ -434,7 +440,8 @@ export interface FauxqsServer {
     md5OfMessageAttributes?: string;
     sequenceNumber?: string;
   };
-  /** Publish a message to an SNS topic by name, with full fan-out to SQS subscriptions (filter policies, raw delivery). Spy events emitted automatically. */
+  /** Publish a message to an SNS topic by name, with full fan-out to SQS subscriptions (filter policies, raw delivery).
+   *  messageGroupId is also accepted on standard topics (AWS fair queues) and forwarded to subscribed queues. Spy events emitted automatically. */
   publish(
     topicName: string,
     message: string,
@@ -689,6 +696,12 @@ export async function startFauxqs(options?: {
         throw new Error(`Message must be shorter than ${maxMessageSize} bytes.`);
       }
 
+      // Optional on standard queues (fair queues), required on FIFO — but when
+      // provided it must satisfy the same format constraints on both queue types.
+      if (opts?.messageGroupId !== undefined && !VALID_MESSAGE_GROUP_ID.test(opts.messageGroupId)) {
+        throw new Error(invalidMessageGroupIdMessage(opts.messageGroupId));
+      }
+
       if (queue.isFifo()) {
         if (!opts?.messageGroupId) {
           throw new Error("messageGroupId is required for FIFO queues");
@@ -751,6 +764,7 @@ export async function startFauxqs(options?: {
         body,
         messageAttributes,
         delaySeconds > 0 ? delaySeconds : undefined,
+        opts?.messageGroupId,
       );
       queue.enqueue(msg);
       return {
@@ -788,12 +802,17 @@ export async function startFauxqs(options?: {
       const messageId = randomUUID();
       const subject = opts?.subject;
 
+      // Required on FIFO topics, optional on standard topics (fair queues) —
+      // where it is forwarded to subscribed SQS standard queues.
       const isFifoTopic = topic.attributes.FifoTopic === "true";
-      let messageGroupId: string | undefined;
+      const messageGroupId = opts?.messageGroupId;
       let messageDeduplicationId: string | undefined;
 
+      if (messageGroupId !== undefined && !VALID_MESSAGE_GROUP_ID.test(messageGroupId)) {
+        throw new Error(invalidMessageGroupIdMessage(messageGroupId));
+      }
+
       if (isFifoTopic) {
-        messageGroupId = opts?.messageGroupId;
         if (!messageGroupId) {
           throw new Error("messageGroupId is required for FIFO topics");
         }
@@ -821,6 +840,7 @@ export async function startFauxqs(options?: {
           messageAttributes,
           status: "published",
           timestamp: Date.now(),
+          ...(messageGroupId ? { messageGroupId } : {}),
         });
       }
 

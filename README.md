@@ -421,6 +421,9 @@ server.sendMessage("my-queue", JSON.stringify({ orderId: "123" }), {
 // With delay
 server.sendMessage("my-queue", "delayed message", { delaySeconds: 10 });
 
+// Standard queue with a tenant identifier (AWS fair queues)
+server.sendMessage("my-queue", "tenant message", { messageGroupId: "tenant-1" });
+
 // FIFO queue — returns sequenceNumber
 const { sequenceNumber } = server.sendMessage("my-queue.fifo", "fifo message", {
   messageGroupId: "group-1",
@@ -821,6 +824,7 @@ interface SqsSpyMessage {
   messageAttributes: Record<string, MessageAttributeValue>;
   status: "published" | "consumed" | "dlq";
   timestamp: number;
+  messageGroupId?: string; // present when sent with a MessageGroupId (FIFO or fair queues)
 }
 
 interface SnsSpyMessage {
@@ -832,6 +836,7 @@ interface SnsSpyMessage {
   messageAttributes: Record<string, MessageAttributeValue>;
   status: "published";
   timestamp: number;
+  messageGroupId?: string; // present when published with a MessageGroupId (FIFO or fair queues)
 }
 
 interface S3SpyEvent {
@@ -1313,6 +1318,7 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Unicode character validation** — rejects messages with characters outside the AWS-allowed set
 - **KMS attributes** — `KmsMasterKeyId` and `KmsDataKeyReusePeriodSeconds` are accepted and stored (no actual encryption)
 - **FIFO queues** — `.fifo` suffix enforcement, `MessageGroupId` ordering, per-group locking (one inflight message per group), `MessageDeduplicationId`, content-based deduplication, sequence numbers, and FIFO-aware DLQ support
+- **Fair queues** — `MessageGroupId` is accepted on standard queues (SendMessage and SendMessageBatch), validated against the AWS format rules (1–128 alphanumeric or punctuation characters), returned via ReceiveMessage system attributes, and exposed in spy events and queue inspection. Delivery emulates fair dispatch: when ready messages carry group ids, a random *group* is picked before a random message within it, so a backlogged group cannot starve quiet groups
 - **Queue tags**
 
 ## SNS Features
@@ -1326,6 +1332,7 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Subscription attribute validation** — `SetSubscriptionAttributes` validates attribute names and rejects unknown or read-only attributes
 - **Topic and subscription tags**
 - **FIFO topics** — `.fifo` suffix enforcement, `MessageGroupId` and `MessageDeduplicationId` passthrough to SQS subscriptions, content-based deduplication
+- **Fair queues on standard topics** — optional `MessageGroupId` on Publish and PublishBatch, validated and forwarded to subscribed SQS standard queues
 - **Batch publish**
 
 ## S3 Features
