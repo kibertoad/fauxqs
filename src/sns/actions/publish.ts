@@ -406,11 +406,21 @@ export function fanOutToSubscriptions(params: {
       messageDeduplicationId,
     );
 
-    if (targetQueue.isFifo() && messageDeduplicationId) {
-      const dedupResult = targetQueue.checkDeduplication(messageDeduplicationId);
-      if (dedupResult.isDuplicate) continue;
+    if (targetQueue.isFifo()) {
+      if (messageDeduplicationId) {
+        const dedupResult = targetQueue.checkDeduplication(messageDeduplicationId);
+        if (dedupResult.isDuplicate) continue;
+      }
+      // Every message enqueued on a FIFO queue gets a sequence number, even
+      // from a standard topic, where no MessageDeduplicationId is present.
       sqsMsg.sequenceNumber = targetQueue.nextSequenceNumber();
-      targetQueue.recordDeduplication(messageDeduplicationId, sqsMsg.messageId);
+      if (messageDeduplicationId) {
+        targetQueue.recordDeduplication(
+          messageDeduplicationId,
+          sqsMsg.messageId,
+          sqsMsg.sequenceNumber,
+        );
+      }
     }
 
     targetQueue.enqueue(sqsMsg);

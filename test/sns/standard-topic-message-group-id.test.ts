@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import {
   CreateQueueCommand,
+  DeleteMessageCommand,
   GetQueueAttributesCommand,
   ReceiveMessageCommand,
 } from "@aws-sdk/client-sqs";
@@ -160,6 +161,74 @@ describe("SNS MessageGroupId on standard topics (fair queues)", () => {
 
     expect(groupsByBody.get("batch a")).toBe("tenant-a");
     expect(groupsByBody.get("batch b")).toBeUndefined();
+  });
+
+  it("stamps sequence numbers on grouped standard-topic publishes to a FIFO subscriber", async () => {
+    const queue = await sqs.send(
+      new CreateQueueCommand({
+        QueueName: "fair-sns-fifo-sub.fifo",
+        Attributes: { FifoQueue: "true", ContentBasedDeduplication: "true" },
+      }),
+    );
+    const attrs = await sqs.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: queue.QueueUrl!,
+        AttributeNames: ["QueueArn"],
+      }),
+    );
+    const topic = await sns.send(new CreateTopicCommand({ Name: "fair-sns-fifo-sub-topic" }));
+    await sns.send(
+      new SubscribeCommand({
+        TopicArn: topic.TopicArn!,
+        Protocol: "sqs",
+        Endpoint: attrs.Attributes!.QueueArn!,
+        Attributes: { RawMessageDelivery: "true" },
+      }),
+    );
+
+    // A standard topic carries no MessageDeduplicationId, but every message
+    // enqueued on the FIFO subscriber must still get a sequence number.
+    for (const body of ["seq-1", "seq-2"]) {
+      await sns.send(
+        new PublishCommand({
+          TopicArn: topic.TopicArn!,
+          Message: body,
+          MessageGroupId: "tenant-seq",
+        }),
+      );
+    }
+
+    // FIFO group locking delivers one inflight message per group at a time,
+    // so drain the group with receive+delete round trips.
+    const receiveNext = async () => {
+      const received = await sqs.send(
+        new ReceiveMessageCommand({
+          QueueUrl: queue.QueueUrl!,
+          MessageSystemAttributeNames: ["All"],
+        }),
+      );
+      expect(received.Messages).toHaveLength(1);
+      const msg = received.Messages![0];
+      await sqs.send(
+        new DeleteMessageCommand({
+          QueueUrl: queue.QueueUrl!,
+          ReceiptHandle: msg.ReceiptHandle!,
+        }),
+      );
+      return msg;
+    };
+
+    const first = await receiveNext();
+    const second = await receiveNext();
+
+    expect(first.Body).toBe("seq-1");
+    expect(second.Body).toBe("seq-2");
+    expect(first.Attributes?.MessageGroupId).toBe("tenant-seq");
+    expect(first.Attributes?.SequenceNumber).toBeDefined();
+    expect(second.Attributes?.SequenceNumber).toBeDefined();
+    expect(BigInt(second.Attributes!.SequenceNumber!)).toBeGreaterThan(
+      BigInt(first.Attributes!.SequenceNumber!),
+    );
   });
 
   it("rejects a malformed MessageGroupId on Publish to a standard topic", async () => {
