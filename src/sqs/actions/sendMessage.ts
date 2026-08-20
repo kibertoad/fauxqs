@@ -6,9 +6,8 @@ import { SqsStore as SqsStoreClass } from "../sqsStore.ts";
 import type { MessageAttributeValue } from "../sqsTypes.ts";
 import {
   INVALID_MESSAGE_BODY_CHAR,
-  VALID_MESSAGE_GROUP_ID,
   calculateMessageSize,
-  invalidMessageGroupIdMessage,
+  parseOptionalMessageGroupId,
 } from "../sqsTypes.ts";
 
 export function sendMessage(body: Record<string, unknown>, store: SqsStore): SendMessageResult {
@@ -47,13 +46,14 @@ export function sendMessage(body: Record<string, unknown>, store: SqsStore): Sen
 
   // Optional on standard queues (fair queues), required on FIFO — but when
   // provided it must satisfy the same format constraints on both queue types.
-  const messageGroupId = body.MessageGroupId as string | undefined;
-  if (messageGroupId !== undefined && !VALID_MESSAGE_GROUP_ID.test(messageGroupId)) {
-    throw new SqsError("InvalidParameterValue", invalidMessageGroupIdMessage(messageGroupId));
+  const groupIdResult = parseOptionalMessageGroupId(body.MessageGroupId);
+  if (!groupIdResult.ok) {
+    throw new SqsError("InvalidParameterValue", groupIdResult.message);
   }
+  const messageGroupId = groupIdResult.messageGroupId;
 
   if (queue.isFifo()) {
-    return sendFifoMessage(body, queue, messageBody, messageAttributes);
+    return sendFifoMessage(body, queue, messageBody, messageAttributes, messageGroupId);
   }
 
   // DelaySeconds: per-message override or queue default
@@ -81,8 +81,8 @@ function sendFifoMessage(
   queue: import("../sqsStore.ts").SqsQueue,
   messageBody: string,
   messageAttributes: Record<string, MessageAttributeValue>,
+  messageGroupId: string | undefined,
 ): SendMessageResult {
-  const messageGroupId = body.MessageGroupId as string | undefined;
   if (!messageGroupId) {
     throw new SqsError(
       "MissingParameter",

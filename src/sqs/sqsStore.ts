@@ -4,7 +4,7 @@ import { FifoMap } from "toad-cache";
 import { md5, md5OfMessageAttributes } from "../common/md5.ts";
 import { DEFAULT_ACCOUNT_ID } from "../common/types.ts";
 import { SqsError } from "../common/errors.ts";
-import type { MessageSpy } from "../spy.ts";
+import { buildSqsSpyMessage, type MessageSpy } from "../spy.ts";
 import type { PersistenceManager } from "../persistence.ts";
 import type {
   SqsMessage,
@@ -18,6 +18,18 @@ import { DEFAULT_QUEUE_ATTRIBUTES, ALL_ATTRIBUTE_NAMES } from "./sqsTypes.ts";
 const DEDUP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const DEDUP_CACHE_MAX_SIZE = 10_000;
 const DEFAULT_FIFO_GROUP_ID = "__default";
+
+/**
+ * Per-receive picker state for group-fair standard-queue dispatch: candidate
+ * lists per group, built once per dequeue() and maintained across picks so the
+ * backlog is not rescanned for every delivered message.
+ */
+interface StandardGroupPicker {
+  /** Group draw order; a drained group is swap-removed. */
+  keys: Array<string | undefined>;
+  members: Map<string | undefined, SqsMessage[]>;
+}
+
 /** Cap on retained message move task history, so repeated redrives don't grow unbounded. */
 const MESSAGE_MOVE_TASK_HISTORY_LIMIT = 100;
 
@@ -161,16 +173,7 @@ export class SqsQueue {
 
   enqueue(msg: SqsMessage): void {
     if (this.spy) {
-      this.spy.addMessage({
-        service: "sqs",
-        queueName: this.name,
-        messageId: msg.messageId,
-        body: msg.body,
-        messageAttributes: msg.messageAttributes,
-        status: "published",
-        timestamp: Date.now(),
-        ...(msg.messageGroupId ? { messageGroupId: msg.messageGroupId } : {}),
-      });
+      this.spy.addMessage(buildSqsSpyMessage(this.name, msg, "published"));
     }
 
     this.persistence?.insertMessage(this.name, msg);
@@ -221,10 +224,14 @@ export class SqsQueue {
     const result: ReceivedMessage[] = [];
     let collected = 0;
 
+    // Fair-dispatch state, built once per receive. Undefined when no ready
+    // message carries a group id — picks are then plain uniform.
+    const picker = this.buildGroupPicker();
+
     while (collected < count && this.messages.length > 0) {
       // Standard queues give no ordering guarantee — select a random ready message
       // instead of strict FIFO. Use a FIFO queue if ordering is required.
-      const msg = this.takeRandomStandardMessage();
+      const msg = this.takeRandomStandardMessage(picker);
       if (!msg) break;
 
       msg.approximateReceiveCount++;
@@ -237,16 +244,7 @@ export class SqsQueue {
         const dlq = dlqResolver(dlqArn);
         if (dlq) {
           if (this.spy) {
-            this.spy.addMessage({
-              service: "sqs",
-              queueName: this.name,
-              messageId: msg.messageId,
-              body: msg.body,
-              messageAttributes: msg.messageAttributes,
-              status: "dlq",
-              timestamp: Date.now(),
-              ...(msg.messageGroupId ? { messageGroupId: msg.messageGroupId } : {}),
-            });
+            this.spy.addMessage(buildSqsSpyMessage(this.name, msg, "dlq"));
           }
           // Persistence: delete from this queue (dlq.enqueue will insert into DLQ)
           this.persistence?.deleteMessage(msg.messageId);
@@ -298,40 +296,63 @@ export class SqsQueue {
   }
 
   /**
-   * Remove and return the next ready message for a standard-queue receive.
-   *
-   * When no ready message carries a MessageGroupId the pick is uniform over
-   * messages, with exactly one PRNG draw — keeping seeded orderings stable for
-   * ungrouped queues. When group ids are present, emulate AWS fair queues:
-   * pick a uniformly random *group* first, then a random message within it, so
-   * a backlogged group cannot starve quiet groups. Messages without a group id
-   * count as one implicit group.
+   * Build the group-fair picker for one standard-queue receive, or undefined
+   * when no ready message carries a MessageGroupId. Without a picker each pick
+   * is uniform over messages with exactly one PRNG draw, so seeded orderings
+   * for ungrouped queues match releases without fair dispatch. With a picker
+   * each pick consumes two draws (group, then message within it), so seeded
+   * orderings of grouped queues — and of other queues interleaved on the
+   * shared PRNG stream — differ from releases without fair dispatch.
    */
-  private takeRandomStandardMessage(): SqsMessage | undefined {
-    if (this.messages.length <= 1) {
-      return this.messages.shift();
+  private buildGroupPicker(): StandardGroupPicker | undefined {
+    if (!this.messages.some((msg) => msg.messageGroupId !== undefined)) {
+      return undefined;
     }
-
-    const groups = new Map<string | undefined, number[]>();
-    for (let i = 0; i < this.messages.length; i++) {
-      const groupId = this.messages[i].messageGroupId;
-      const indexes = groups.get(groupId);
-      if (indexes) {
-        indexes.push(i);
+    const members = new Map<string | undefined, SqsMessage[]>();
+    for (const msg of this.messages) {
+      const list = members.get(msg.messageGroupId);
+      if (list) {
+        list.push(msg);
       } else {
-        groups.set(groupId, [i]);
+        members.set(msg.messageGroupId, [msg]);
       }
     }
+    return { keys: [...members.keys()], members };
+  }
 
-    let idx: number;
-    if (groups.size === 1 && groups.has(undefined)) {
-      idx = Math.floor(this.random() * this.messages.length);
-    } else {
-      const groupKeys = [...groups.keys()];
-      const indexes = groups.get(groupKeys[Math.floor(this.random() * groupKeys.length)])!;
-      idx = indexes[Math.floor(this.random() * indexes.length)];
+  /**
+   * Remove and return the next ready message for a standard-queue receive.
+   *
+   * Without a picker the pick is uniform over messages. With one, emulate AWS
+   * fair queues: pick a uniformly random *group* first, then a random message
+   * within it, so a backlogged group cannot starve quiet groups. Messages
+   * without a group id count as one implicit group — once grouped traffic is
+   * present, an ungrouped backlog competes as a single group rather than in
+   * proportion to its size.
+   */
+  private takeRandomStandardMessage(
+    picker: StandardGroupPicker | undefined,
+  ): SqsMessage | undefined {
+    // No grouped messages — or the picker drained while messages re-entered
+    // the queue mid-receive (e.g. a DLQ that targets its own queue).
+    if (!picker || picker.keys.length === 0) {
+      if (this.messages.length <= 1) {
+        return this.messages.shift();
+      }
+      const idx = Math.floor(this.random() * this.messages.length);
+      return this.messages.splice(idx, 1)[0];
     }
-    return this.messages.splice(idx, 1)[0];
+
+    const keyIdx = Math.floor(this.random() * picker.keys.length);
+    const list = picker.members.get(picker.keys[keyIdx])!;
+    const msg = list.splice(Math.floor(this.random() * list.length), 1)[0];
+    if (list.length === 0) {
+      picker.members.delete(picker.keys[keyIdx]);
+      picker.keys[keyIdx] = picker.keys[picker.keys.length - 1];
+      picker.keys.pop();
+    }
+    this.messages.splice(this.messages.indexOf(msg), 1);
+    return msg;
   }
 
   private dequeueFifo(
@@ -371,16 +392,7 @@ export class SqsQueue {
           const dlq = dlqResolver(dlqArn);
           if (dlq) {
             if (this.spy) {
-              this.spy.addMessage({
-                service: "sqs",
-                queueName: this.name,
-                messageId: msg.messageId,
-                body: msg.body,
-                messageAttributes: msg.messageAttributes,
-                status: "dlq",
-                timestamp: Date.now(),
-                ...(msg.messageGroupId ? { messageGroupId: msg.messageGroupId } : {}),
-              });
+              this.spy.addMessage(buildSqsSpyMessage(this.name, msg, "dlq"));
             }
             this.persistence?.deleteMessage(msg.messageId);
             // Record the origin queue so a message move task can redrive it back.
@@ -444,20 +456,13 @@ export class SqsQueue {
     if (entry) {
       this.persistence?.deleteMessage(entry.message.messageId);
       if (this.spy) {
-        this.spy.addMessage({
-          service: "sqs",
-          queueName: this.name,
-          messageId: entry.message.messageId,
-          body: entry.message.body,
-          messageAttributes: entry.message.messageAttributes,
-          status: "consumed",
-          timestamp: Date.now(),
-          ...(entry.message.messageGroupId ? { messageGroupId: entry.message.messageGroupId } : {}),
-        });
+        this.spy.addMessage(buildSqsSpyMessage(this.name, entry.message, "consumed"));
       }
-      // Decrement FIFO locked group count
-      if (entry.message.messageGroupId) {
-        const groupId = entry.message.messageGroupId;
+      // Decrement FIFO locked group count. Messages without a group id lock
+      // under the default group (see dequeueFifo), so the release must not be
+      // gated on messageGroupId being present.
+      if (this.isFifo()) {
+        const groupId = entry.message.messageGroupId ?? DEFAULT_FIFO_GROUP_ID;
         const count = (this.fifoLockedGroups.get(groupId) ?? 1) - 1;
         if (count <= 0) {
           this.fifoLockedGroups.delete(groupId);
@@ -482,8 +487,10 @@ export class SqsQueue {
     if (timeoutSeconds === 0) {
       this.inflightMessages.delete(receiptHandle);
       this.persistence?.updateMessageReady(entry.message.messageId);
-      if (this.isFifo() && entry.message.messageGroupId) {
-        const groupId = entry.message.messageGroupId;
+      if (this.isFifo()) {
+        // Messages without a group id lock under the default group (see
+        // dequeueFifo) and must return to it, not to the standard-queue array.
+        const groupId = entry.message.messageGroupId ?? DEFAULT_FIFO_GROUP_ID;
         // Decrement locked group count
         const lockCount = (this.fifoLockedGroups.get(groupId) ?? 1) - 1;
         if (lockCount <= 0) {

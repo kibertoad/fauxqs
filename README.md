@@ -1318,7 +1318,7 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Unicode character validation** — rejects messages with characters outside the AWS-allowed set
 - **KMS attributes** — `KmsMasterKeyId` and `KmsDataKeyReusePeriodSeconds` are accepted and stored (no actual encryption)
 - **FIFO queues** — `.fifo` suffix enforcement, `MessageGroupId` ordering, per-group locking (one inflight message per group), `MessageDeduplicationId`, content-based deduplication, sequence numbers, and FIFO-aware DLQ support
-- **Fair queues** — `MessageGroupId` is accepted on standard queues (SendMessage and SendMessageBatch), validated against the AWS format rules (1–128 alphanumeric or punctuation characters), returned via ReceiveMessage system attributes, and exposed in spy events and queue inspection. Delivery emulates fair dispatch: when ready messages carry group ids, a random *group* is picked before a random message within it, so a backlogged group cannot starve quiet groups
+- **Fair queues** — `MessageGroupId` is accepted on standard queues (SendMessage and SendMessageBatch), validated against the AWS format rules (1–128 alphanumeric or punctuation characters), returned via ReceiveMessage system attributes, and exposed in spy events and queue inspection. Delivery emulates fair dispatch: when ready messages carry group ids, a random *group* is picked before a random message within it, so a backlogged group cannot starve quiet groups. Messages without a group id count as one implicit group, so once grouped traffic is present an ungrouped backlog competes as a single group rather than in proportion to its size. Note two behavior changes that came with fair queues: the format validation now also applies to FIFO queues and topics (which previously accepted any non-empty `MessageGroupId`), and with seeded `ordering` a queue containing grouped messages consumes two PRNG draws per pick instead of one, so seeded orderings involving grouped messages differ from earlier releases (purely ungrouped queues are unchanged)
 - **Queue tags**
 
 ## SNS Features
@@ -1332,7 +1332,7 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Subscription attribute validation** — `SetSubscriptionAttributes` validates attribute names and rejects unknown or read-only attributes
 - **Topic and subscription tags**
 - **FIFO topics** — `.fifo` suffix enforcement, `MessageGroupId` and `MessageDeduplicationId` passthrough to SQS subscriptions, content-based deduplication
-- **Fair queues on standard topics** — optional `MessageGroupId` on Publish and PublishBatch, validated and forwarded to subscribed SQS standard queues
+- **Fair queues on standard topics** — optional `MessageGroupId` on Publish and PublishBatch, validated and forwarded to subscribed SQS queues. For a FIFO-queue subscriber of a standard topic (a pairing fauxqs allows, unlike real AWS), grouped publishes shard the queue into per-group ordered streams instead of the single implicit group ungrouped publishes use
 - **Batch publish**
 
 ## S3 Features

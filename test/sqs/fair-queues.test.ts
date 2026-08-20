@@ -124,18 +124,20 @@ describe("SQS fair queues (MessageGroupId on standard queues)", () => {
     );
     expect(result.Successful).toHaveLength(3);
 
+    // All three messages are ready, so a single receive returns them all;
+    // a lost message fails here instead of hanging in a receive loop.
+    const received = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: queue.QueueUrl!,
+        MaxNumberOfMessages: 10,
+        MessageSystemAttributeNames: ["MessageGroupId"],
+      }),
+    );
+    expect(received.Messages).toHaveLength(3);
+
     const groupsByBody = new Map<string, string | undefined>();
-    while (groupsByBody.size < 3) {
-      const received = await sqs.send(
-        new ReceiveMessageCommand({
-          QueueUrl: queue.QueueUrl!,
-          MaxNumberOfMessages: 10,
-          MessageSystemAttributeNames: ["MessageGroupId"],
-        }),
-      );
-      for (const msg of received.Messages ?? []) {
-        groupsByBody.set(msg.Body!, msg.Attributes?.MessageGroupId);
-      }
+    for (const msg of received.Messages!) {
+      groupsByBody.set(msg.Body!, msg.Attributes?.MessageGroupId);
     }
 
     expect(groupsByBody.get("for tenant a")).toBe("tenant-a");
@@ -249,78 +251,120 @@ describe("SQS fair queues (MessageGroupId on standard queues)", () => {
 });
 
 describe("Fair delivery across message groups", () => {
-  let server: FauxqsServer;
+  let server: FauxqsServer | undefined;
 
   afterEach(async () => {
     await server?.stop();
+    server = undefined;
   });
 
   it("does not let a backlogged group starve a quiet group", async () => {
     server = await startFauxqs({ port: 0, logger: false, ordering: { seed: 42 } });
     const sqs = createSqsClient(server.port);
-    const queue = await sqs.send(new CreateQueueCommand({ QueueName: "fair-delivery" }));
+    try {
+      const queue = await sqs.send(new CreateQueueCommand({ QueueName: "fair-delivery" }));
 
-    // A noisy tenant backlogs the queue, then a quiet tenant sends one message.
-    for (let i = 0; i < 30; i++) {
+      // A noisy tenant backlogs the queue, then a quiet tenant sends one message.
+      for (let i = 0; i < 30; i++) {
+        await sqs.send(
+          new SendMessageCommand({
+            QueueUrl: queue.QueueUrl!,
+            MessageBody: `noisy-${i}`,
+            MessageGroupId: "noisy",
+          }),
+        );
+      }
       await sqs.send(
         new SendMessageCommand({
           QueueUrl: queue.QueueUrl!,
-          MessageBody: `noisy-${i}`,
-          MessageGroupId: "noisy",
+          MessageBody: "quiet-0",
+          MessageGroupId: "quiet",
         }),
       );
+
+      // A deterministic sample under seed 42. Group-fair selection gives the
+      // quiet group a 50% chance per pick (~99.9% within 10 picks); uniform
+      // selection would pass with ~1-in-3 odds (10 picks over 31 messages), so
+      // the statistical test below carries the discriminating power.
+      const received = await sqs.send(
+        new ReceiveMessageCommand({ QueueUrl: queue.QueueUrl!, MaxNumberOfMessages: 10 }),
+      );
+      const bodies = (received.Messages ?? []).map((m) => m.Body!);
+      expect(bodies).toContain("quiet-0");
+    } finally {
+      sqs.destroy();
     }
-    await sqs.send(
-      new SendMessageCommand({
-        QueueUrl: queue.QueueUrl!,
-        MessageBody: "quiet-0",
-        MessageGroupId: "quiet",
-      }),
-    );
+  });
 
-    // Group-fair selection gives the quiet group a 50% chance per pick, so its
-    // message surfaces in the first batch of 10 (deterministic under the seed).
-    // Plain uniform-over-messages selection would leave it buried with ~20% odds.
-    const received = await sqs.send(
-      new ReceiveMessageCommand({ QueueUrl: queue.QueueUrl!, MaxNumberOfMessages: 10 }),
-    );
-    const bodies = (received.Messages ?? []).map((m) => m.Body!);
-    expect(bodies).toContain("quiet-0");
+  it("surfaces a quiet group early far more often than uniform selection would", async () => {
+    // Statistical check that dispatch is group-fair rather than uniform over
+    // messages: with 50 noisy + 1 quiet ready messages, the quiet message
+    // lands in a 5-message receive with ~97% probability under group-fair
+    // selection (50% per pick) but only ~10% under uniform selection.
+    // Requiring 10 hits in 15 runs makes a false pass under uniform selection
+    // and a false failure under fair selection both astronomically unlikely.
+    server = await startFauxqs({ port: 0, logger: false });
+    const sqs = createSqsClient(server.port);
+    try {
+      let hits = 0;
+      for (let run = 0; run < 15; run++) {
+        const queueName = `fair-stat-${run}`;
+        const queue = await sqs.send(new CreateQueueCommand({ QueueName: queueName }));
+        for (let i = 0; i < 50; i++) {
+          server.sendMessage(queueName, `noisy-${i}`, { messageGroupId: "noisy" });
+        }
+        server.sendMessage(queueName, "quiet-0", { messageGroupId: "quiet" });
 
-    sqs.destroy();
+        const received = await sqs.send(
+          new ReceiveMessageCommand({ QueueUrl: queue.QueueUrl!, MaxNumberOfMessages: 5 }),
+        );
+        if ((received.Messages ?? []).some((m) => m.Body === "quiet-0")) {
+          hits++;
+        }
+      }
+      expect(hits).toBeGreaterThanOrEqual(10);
+    } finally {
+      sqs.destroy();
+    }
   });
 
   it("keeps seeded ordering reproducible for grouped messages", async () => {
     const runOnce = async (): Promise<string[]> => {
       const srv = await startFauxqs({ port: 0, logger: false, ordering: { seed: 7 } });
       const sqs = createSqsClient(srv.port);
-      const queue = await sqs.send(new CreateQueueCommand({ QueueName: "fair-seeded" }));
-      for (let i = 0; i < 10; i++) {
-        await sqs.send(
-          new SendMessageCommand({
-            QueueUrl: queue.QueueUrl!,
-            MessageBody: `m${i}`,
-            MessageGroupId: i % 2 === 0 ? "even" : "odd",
-          }),
-        );
-      }
-
-      const received: string[] = [];
-      while (received.length < 10) {
-        const res = await sqs.send(
-          new ReceiveMessageCommand({ QueueUrl: queue.QueueUrl!, MaxNumberOfMessages: 10 }),
-        );
-        if (!res.Messages?.length) break;
-        for (const m of res.Messages) {
-          received.push(m.Body!);
+      try {
+        const queue = await sqs.send(new CreateQueueCommand({ QueueName: "fair-seeded" }));
+        for (let i = 0; i < 10; i++) {
           await sqs.send(
-            new DeleteMessageCommand({ QueueUrl: queue.QueueUrl!, ReceiptHandle: m.ReceiptHandle! }),
+            new SendMessageCommand({
+              QueueUrl: queue.QueueUrl!,
+              MessageBody: `m${i}`,
+              MessageGroupId: i % 2 === 0 ? "even" : "odd",
+            }),
           );
         }
+
+        const received: string[] = [];
+        while (received.length < 10) {
+          const res = await sqs.send(
+            new ReceiveMessageCommand({ QueueUrl: queue.QueueUrl!, MaxNumberOfMessages: 10 }),
+          );
+          if (!res.Messages?.length) break;
+          for (const m of res.Messages) {
+            received.push(m.Body!);
+            await sqs.send(
+              new DeleteMessageCommand({
+                QueueUrl: queue.QueueUrl!,
+                ReceiptHandle: m.ReceiptHandle!,
+              }),
+            );
+          }
+        }
+        return received;
+      } finally {
+        sqs.destroy();
+        await srv.stop();
       }
-      sqs.destroy();
-      await srv.stop();
-      return received;
     };
 
     const first = await runOnce();

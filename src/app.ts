@@ -6,9 +6,8 @@ import { SqsStore } from "./sqs/sqsStore.ts";
 import type { MessageAttributeValue } from "./sqs/sqsTypes.ts";
 import {
   INVALID_MESSAGE_BODY_CHAR,
-  VALID_MESSAGE_GROUP_ID,
   calculateMessageSize,
-  invalidMessageGroupIdMessage,
+  parseOptionalMessageGroupId,
 } from "./sqs/sqsTypes.ts";
 import { md5, md5OfMessageAttributes } from "./common/md5.ts";
 import { SqsRouter } from "./sqs/sqsRouter.ts";
@@ -46,7 +45,12 @@ import { confirmSubscription } from "./sns/actions/confirmSubscription.ts";
 import { listSubscriptions, listSubscriptionsByTopic } from "./sns/actions/listSubscriptions.ts";
 import { getSubscriptionAttributes } from "./sns/actions/getSubscriptionAttributes.ts";
 import { setSubscriptionAttributes } from "./sns/actions/setSubscriptionAttributes.ts";
-import { publish, publishBatch, fanOutToSubscriptions } from "./sns/actions/publish.ts";
+import {
+  publish,
+  publishBatch,
+  fanOutToSubscriptions,
+  INVALID_MESSAGE_GROUP_ID_MESSAGE,
+} from "./sns/actions/publish.ts";
 import { tagResource, untagResource, listTagsForResource } from "./sns/actions/tagResource.ts";
 import { S3Store } from "./s3/s3Store.ts";
 import { registerS3Routes } from "./s3/s3Router.ts";
@@ -56,7 +60,7 @@ import { sqsQueueArn, snsTopicArn } from "./common/arnHelper.ts";
 import { DEFAULT_REGION, SNS_MAX_MESSAGE_SIZE_BYTES } from "./common/types.ts";
 import { mulberry32 } from "./common/prng.ts";
 import { loadInitConfig, applyInitConfig } from "./initConfig.ts";
-import { MessageSpy, type MessageSpyReader } from "./spy.ts";
+import { MessageSpy, buildSnsSpyMessage, type MessageSpyReader } from "./spy.ts";
 import { PersistenceManager } from "./persistence.ts";
 import { FileS3Persistence } from "./s3/fileS3Persistence.ts";
 import type { S3PersistenceProvider } from "./s3/s3Persistence.ts";
@@ -698,12 +702,14 @@ export async function startFauxqs(options?: {
 
       // Optional on standard queues (fair queues), required on FIFO — but when
       // provided it must satisfy the same format constraints on both queue types.
-      if (opts?.messageGroupId !== undefined && !VALID_MESSAGE_GROUP_ID.test(opts.messageGroupId)) {
-        throw new Error(invalidMessageGroupIdMessage(opts.messageGroupId));
+      const groupIdResult = parseOptionalMessageGroupId(opts?.messageGroupId);
+      if (!groupIdResult.ok) {
+        throw new Error(groupIdResult.message);
       }
+      const messageGroupId = groupIdResult.messageGroupId;
 
       if (queue.isFifo()) {
-        if (!opts?.messageGroupId) {
+        if (!messageGroupId) {
           throw new Error("messageGroupId is required for FIFO queues");
         }
 
@@ -742,7 +748,7 @@ export async function startFauxqs(options?: {
           body,
           messageAttributes,
           queueDelay > 0 ? queueDelay : undefined,
-          opts.messageGroupId,
+          messageGroupId,
           dedupId,
         );
         msg.sequenceNumber = queue.nextSequenceNumber();
@@ -764,7 +770,7 @@ export async function startFauxqs(options?: {
         body,
         messageAttributes,
         delaySeconds > 0 ? delaySeconds : undefined,
-        opts?.messageGroupId,
+        messageGroupId,
       );
       queue.enqueue(msg);
       return {
@@ -805,12 +811,13 @@ export async function startFauxqs(options?: {
       // Required on FIFO topics, optional on standard topics (fair queues) —
       // where it is forwarded to subscribed SQS standard queues.
       const isFifoTopic = topic.attributes.FifoTopic === "true";
-      const messageGroupId = opts?.messageGroupId;
-      let messageDeduplicationId: string | undefined;
-
-      if (messageGroupId !== undefined && !VALID_MESSAGE_GROUP_ID.test(messageGroupId)) {
-        throw new Error(invalidMessageGroupIdMessage(messageGroupId));
+      const groupIdResult = parseOptionalMessageGroupId(opts?.messageGroupId);
+      if (!groupIdResult.ok) {
+        // Same SNS-worded error the HTTP Publish path raises.
+        throw new Error(INVALID_MESSAGE_GROUP_ID_MESSAGE);
       }
+      const messageGroupId = groupIdResult.messageGroupId;
+      let messageDeduplicationId: string | undefined;
 
       if (isFifoTopic) {
         if (!messageGroupId) {
@@ -831,17 +838,14 @@ export async function startFauxqs(options?: {
 
       // Emit SNS spy event
       if (snsStore.spy) {
-        snsStore.spy.addMessage({
-          service: "sns",
-          topicArn,
-          topicName: topic.name,
-          messageId,
-          body: message,
-          messageAttributes,
-          status: "published",
-          timestamp: Date.now(),
-          ...(messageGroupId ? { messageGroupId } : {}),
-        });
+        snsStore.spy.addMessage(
+          buildSnsSpyMessage(
+            topicArn,
+            topic.name,
+            { messageId, body: message, messageAttributes, messageGroupId },
+            "published",
+          ),
+        );
       }
 
       fanOutToSubscriptions({
