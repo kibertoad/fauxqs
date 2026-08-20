@@ -293,6 +293,33 @@ describe("SQS Send/Receive/Delete", () => {
     expect(sent.MessageId).toBeDefined();
   });
 
+  it("accepts supplementary-plane characters (emoji), like AWS SQS does", async () => {
+    const body = "\u{1F527} What you’ll need \u{1F4A1}";
+    const sent = await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: queueUrl,
+        MessageBody: body,
+      }),
+    );
+    expect(sent.MessageId).toBeDefined();
+
+    const received = await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: queueUrl, MaxNumberOfMessages: 1 }),
+    );
+    expect(received.Messages?.[0]?.Body).toBe(body);
+  });
+
+  it("rejects a lone surrogate", async () => {
+    await expect(
+      sqs.send(
+        new SendMessageCommand({
+          QueueUrl: queueUrl,
+          MessageBody: "broken \uD83D pair",
+        }),
+      ),
+    ).rejects.toThrow("Invalid characters");
+  });
+
   it("rejects message exceeding 1 MiB size limit", async () => {
     const largeBody = "x".repeat(1_048_577); // 1 byte over limit
     await expect(

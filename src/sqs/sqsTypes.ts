@@ -85,9 +85,14 @@ export const SETTABLE_ATTRIBUTES: ReadonlySet<string> = new Set([
 
 export const VALID_BATCH_ENTRY_ID = /^[a-zA-Z0-9_-]+$/;
 
-// AWS SQS allowed unicode characters: #x9 | #xA | #xD | #x20 to #xD7FF | #xE000 to #xFFFD
-// eslint-disable-next-line no-control-regex
-export const INVALID_MESSAGE_BODY_CHAR = /[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD]/;
+// AWS SQS allowed unicode characters:
+// #x9 | #xA | #xD | #x20 to #xD7FF | #xE000 to #xFFFD | #x10000 to #x10FFFF
+// https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SendMessage.html
+// The `u` flag makes the class operate on code points, so well-formed surrogate
+// pairs (emoji etc.) are allowed while lone surrogates are still rejected.
+export const INVALID_MESSAGE_BODY_CHAR =
+  // eslint-disable-next-line no-control-regex
+  /[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]/u;
 
 // Max message size: 1 MiB (1,048,576 bytes) for SQS
 export const SQS_MAX_MESSAGE_SIZE_BYTES = 1_048_576;
