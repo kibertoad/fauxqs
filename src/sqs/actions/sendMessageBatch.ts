@@ -92,7 +92,7 @@ export function sendMessageBatch(
         SenderFault: true,
         Code: "InvalidMessageContents",
         Message:
-          "Invalid characters found. Valid unicode characters are #x9 | #xA | #xD | #x20 to #xD7FF and #xE000 to #xFFFD.",
+          "Invalid characters found. Valid unicode characters are #x9 | #xA | #xD | #x20 to #xD7FF | #xE000 to #xFFFD | #x10000 to #x10FFFF.",
       });
       continue;
     }
