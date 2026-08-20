@@ -296,6 +296,42 @@ describe("Fair delivery across message groups", () => {
     }
   });
 
+  it("does not let a backlogged group starve an ungrouped message", async () => {
+    server = await startFauxqs({ port: 0, logger: false, ordering: { seed: 42 } });
+    const sqs = createSqsClient(server.port);
+    try {
+      const queue = await sqs.send(new CreateQueueCommand({ QueueName: "fair-ungrouped-quiet" }));
+
+      // A noisy tenant backlogs the queue, then one message arrives without a
+      // MessageGroupId. AWS treats each ungrouped message as its own tenant,
+      // so the noisy group must not delay it.
+      for (let i = 0; i < 30; i++) {
+        await sqs.send(
+          new SendMessageCommand({
+            QueueUrl: queue.QueueUrl!,
+            MessageBody: `noisy-${i}`,
+            MessageGroupId: "noisy",
+          }),
+        );
+      }
+      await sqs.send(
+        new SendMessageCommand({ QueueUrl: queue.QueueUrl!, MessageBody: "quiet-0" }),
+      );
+
+      // A deterministic sample under seed 42. The ungrouped message is its
+      // own tenant, so it has a 50% chance per pick (~99.9% within 10 picks);
+      // uniform selection would pass with only ~1-in-3 odds. Per-message
+      // tenancy for ungrouped backlogs is asserted statistically below.
+      const received = await sqs.send(
+        new ReceiveMessageCommand({ QueueUrl: queue.QueueUrl!, MaxNumberOfMessages: 10 }),
+      );
+      const bodies = (received.Messages ?? []).map((m) => m.Body!);
+      expect(bodies).toContain("quiet-0");
+    } finally {
+      sqs.destroy();
+    }
+  });
+
   it("surfaces a quiet group early far more often than uniform selection would", async () => {
     // Statistical check that dispatch is group-fair rather than uniform over
     // messages: with 50 noisy + 1 quiet ready messages, the quiet message
@@ -319,6 +355,41 @@ describe("Fair delivery across message groups", () => {
           new ReceiveMessageCommand({ QueueUrl: queue.QueueUrl!, MaxNumberOfMessages: 5 }),
         );
         if ((received.Messages ?? []).some((m) => m.Body === "quiet-0")) {
+          hits++;
+        }
+      }
+      expect(hits).toBeGreaterThanOrEqual(10);
+    } finally {
+      sqs.destroy();
+    }
+  });
+
+  it("treats each ungrouped message as its own tenant rather than one implicit group", async () => {
+    // Statistical check of per-message tenancy: with 50 noisy grouped + 20
+    // ungrouped ready messages there are 21 tenants, so a 5-message receive
+    // contains at most one noisy message with ~96% probability. If all
+    // ungrouped messages shared one implicit tenant the noisy group would win
+    // ~50% of picks, passing only ~19% of runs; uniform selection ~2%.
+    // Requiring 10 hits in 15 runs separates these regimes decisively.
+    server = await startFauxqs({ port: 0, logger: false });
+    const sqs = createSqsClient(server.port);
+    try {
+      let hits = 0;
+      for (let run = 0; run < 15; run++) {
+        const queueName = `fair-tenant-${run}`;
+        const queue = await sqs.send(new CreateQueueCommand({ QueueName: queueName }));
+        for (let i = 0; i < 50; i++) {
+          server.sendMessage(queueName, `noisy-${i}`, { messageGroupId: "noisy" });
+        }
+        for (let i = 0; i < 20; i++) {
+          server.sendMessage(queueName, `quiet-${i}`);
+        }
+
+        const received = await sqs.send(
+          new ReceiveMessageCommand({ QueueUrl: queue.QueueUrl!, MaxNumberOfMessages: 5 }),
+        );
+        const noisy = (received.Messages ?? []).filter((m) => m.Body!.startsWith("noisy")).length;
+        if (noisy <= 1) {
           hits++;
         }
       }

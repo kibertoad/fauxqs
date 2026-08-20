@@ -21,13 +21,15 @@ const DEFAULT_FIFO_GROUP_ID = "__default";
 
 /**
  * Per-receive picker state for group-fair standard-queue dispatch: candidate
- * lists per group, built once per dequeue() and maintained across picks so the
- * backlog is not rescanned for every delivered message.
+ * lists per tenant, built once per dequeue() and maintained across picks so
+ * the backlog is not rescanned for every delivered message. String keys are
+ * MessageGroupIds; numeric keys are backlog indexes standing in for ungrouped
+ * messages, each of which AWS treats as its own distinct tenant.
  */
 interface StandardGroupPicker {
-  /** Group draw order; a drained group is swap-removed. */
-  keys: Array<string | undefined>;
-  members: Map<string | undefined, SqsMessage[]>;
+  /** Tenant draw order; a drained tenant is swap-removed. */
+  keys: Array<string | number>;
+  members: Map<string | number, SqsMessage[]>;
 }
 
 /** Cap on retained message move task history, so repeated redrives don't grow unbounded. */
@@ -308,13 +310,14 @@ export class SqsQueue {
     if (!this.messages.some((msg) => msg.messageGroupId !== undefined)) {
       return undefined;
     }
-    const members = new Map<string | undefined, SqsMessage[]>();
-    for (const msg of this.messages) {
-      const list = members.get(msg.messageGroupId);
+    const members = new Map<string | number, SqsMessage[]>();
+    for (let i = 0; i < this.messages.length; i++) {
+      const key = this.messages[i].messageGroupId ?? i;
+      const list = members.get(key);
       if (list) {
-        list.push(msg);
+        list.push(this.messages[i]);
       } else {
-        members.set(msg.messageGroupId, [msg]);
+        members.set(key, [this.messages[i]]);
       }
     }
     return { keys: [...members.keys()], members };
@@ -324,11 +327,10 @@ export class SqsQueue {
    * Remove and return the next ready message for a standard-queue receive.
    *
    * Without a picker the pick is uniform over messages. With one, emulate AWS
-   * fair queues: pick a uniformly random *group* first, then a random message
-   * within it, so a backlogged group cannot starve quiet groups. Messages
-   * without a group id count as one implicit group — once grouped traffic is
-   * present, an ungrouped backlog competes as a single group rather than in
-   * proportion to its size.
+   * fair queues: pick a uniformly random *tenant* first, then a random message
+   * within it, so a backlogged group cannot starve quiet groups. Each message
+   * without a group id is its own tenant (as on AWS), so a noisy group cannot
+   * delay ungrouped messages either.
    */
   private takeRandomStandardMessage(
     picker: StandardGroupPicker | undefined,
