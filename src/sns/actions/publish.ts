@@ -7,9 +7,17 @@ import type { SnsSubscription } from "../snsTypes.ts";
 import type { SqsStore } from "../../sqs/sqsStore.ts";
 import { SqsStore as SqsStoreClass } from "../../sqs/sqsStore.ts";
 import type { MessageAttributeValue } from "../../sqs/sqsTypes.ts";
+import {
+  INVALID_MESSAGE_GROUP_ID_REASON,
+  parseOptionalMessageGroupId,
+} from "../../sqs/sqsTypes.ts";
+import { buildSnsSpyMessage } from "../../spy.ts";
 import { SNS_MAX_MESSAGE_SIZE_BYTES } from "../../common/types.ts";
 import { matchesFilterPolicy, matchesFilterPolicyOnBody } from "../filter.ts";
 import { parseSubscriptionRedrivePolicy } from "../subscriptionRedrivePolicy.ts";
+
+/** AWS error text for a malformed MessageGroupId on the SNS paths (Publish, PublishBatch, and the programmatic publish). */
+export const INVALID_MESSAGE_GROUP_ID_MESSAGE = `Invalid parameter: MessageGroupId Reason: ${INVALID_MESSAGE_GROUP_ID_REASON}`;
 
 export function publish(
   params: Record<string, string>,
@@ -52,27 +60,18 @@ export function publish(
   const messageId = randomUUID();
   const subject = params.Subject;
 
-  // Emit SNS spy event
-  if (snsStore.spy) {
-    snsStore.spy.addMessage({
-      service: "sns",
-      topicArn,
-      topicName: topic.name,
-      messageId,
-      body: message,
-      messageAttributes,
-      status: "published",
-      timestamp: Date.now(),
-    });
-  }
-
-  // FIFO topic handling
+  // MessageGroupId is required on FIFO topics and optional on standard topics
+  // (AWS fair queues), where it is forwarded to subscribed SQS standard queues.
+  // Either way, a provided value must satisfy the same format constraints.
   const isFifoTopic = topic.attributes.FifoTopic === "true";
-  let messageGroupId: string | undefined;
+  const groupIdResult = parseOptionalMessageGroupId(params.MessageGroupId);
+  if (!groupIdResult.ok) {
+    throw new SnsError("InvalidParameter", INVALID_MESSAGE_GROUP_ID_MESSAGE);
+  }
+  const messageGroupId = groupIdResult.messageGroupId;
   let messageDeduplicationId: string | undefined;
 
   if (isFifoTopic) {
-    messageGroupId = params.MessageGroupId;
     if (!messageGroupId) {
       throw new SnsError(
         "InvalidParameter",
@@ -91,6 +90,18 @@ export function publish(
         );
       }
     }
+  }
+
+  // Emit SNS spy event (after validation so rejected publishes leave no trace)
+  if (snsStore.spy) {
+    snsStore.spy.addMessage(
+      buildSnsSpyMessage(
+        topicArn,
+        topic.name,
+        { messageId, body: message, messageAttributes, messageGroupId },
+        "published",
+      ),
+    );
   }
 
   // Fan out to subscriptions
@@ -181,11 +192,19 @@ export function publishBatch(
       continue;
     }
 
-    let messageGroupId: string | undefined;
+    // Required on FIFO topics, optional on standard topics (fair queues) —
+    // but a provided value must satisfy the format constraints on both.
+    const groupIdResult = parseOptionalMessageGroupId(entry.messageGroupId);
+    if (!groupIdResult.ok) {
+      failedXml.push(
+        `<member><Id>${entry.id}</Id><Code>InvalidParameter</Code><Message>${INVALID_MESSAGE_GROUP_ID_MESSAGE}</Message><SenderFault>true</SenderFault></member>`,
+      );
+      continue;
+    }
+    const messageGroupId = groupIdResult.messageGroupId;
     let messageDeduplicationId: string | undefined;
 
     if (isFifoTopic) {
-      messageGroupId = entry.messageGroupId;
       if (!messageGroupId) {
         failedXml.push(
           `<member><Id>${entry.id}</Id><Code>InvalidParameter</Code><Message>The MessageGroupId parameter is required for FIFO topics.</Message><SenderFault>true</SenderFault></member>`,
@@ -210,16 +229,19 @@ export function publishBatch(
 
     // Emit SNS spy event
     if (snsStore.spy) {
-      snsStore.spy.addMessage({
-        service: "sns",
-        topicArn,
-        topicName: topic.name,
-        messageId,
-        body: entry.message,
-        messageAttributes: entry.messageAttributes,
-        status: "published",
-        timestamp: Date.now(),
-      });
+      snsStore.spy.addMessage(
+        buildSnsSpyMessage(
+          topicArn,
+          topic.name,
+          {
+            messageId,
+            body: entry.message,
+            messageAttributes: entry.messageAttributes,
+            messageGroupId,
+          },
+          "published",
+        ),
+      );
     }
 
     // Fan out each entry
@@ -372,6 +394,10 @@ export function fanOutToSubscriptions(params: {
       };
     }
 
+    // The publisher's MessageGroupId is forwarded as-is. For a FIFO-queue
+    // subscriber of a standard topic (a pairing fauxqs allows, unlike real
+    // AWS), grouped publishes therefore shard the queue into per-group ordered
+    // streams instead of the single implicit group ungrouped publishes use.
     const sqsMsg = SqsStoreClass.createMessage(
       sqsBody,
       sqsAttributes,
@@ -380,26 +406,34 @@ export function fanOutToSubscriptions(params: {
       messageDeduplicationId,
     );
 
-    if (targetQueue.isFifo() && messageDeduplicationId) {
-      const dedupResult = targetQueue.checkDeduplication(messageDeduplicationId);
-      if (dedupResult.isDuplicate) continue;
+    if (targetQueue.isFifo()) {
+      if (messageDeduplicationId) {
+        const dedupResult = targetQueue.checkDeduplication(messageDeduplicationId);
+        if (dedupResult.isDuplicate) continue;
+      }
+      // Every message enqueued on a FIFO queue gets a sequence number, even
+      // from a standard topic, where no MessageDeduplicationId is present.
       sqsMsg.sequenceNumber = targetQueue.nextSequenceNumber();
-      targetQueue.recordDeduplication(messageDeduplicationId, sqsMsg.messageId);
+      if (messageDeduplicationId) {
+        targetQueue.recordDeduplication(
+          messageDeduplicationId,
+          sqsMsg.messageId,
+          sqsMsg.sequenceNumber,
+        );
+      }
     }
 
     targetQueue.enqueue(sqsMsg);
 
     if (routedToDlq && snsStore.spy) {
-      snsStore.spy.addMessage({
-        service: "sns",
-        topicArn,
-        topicName: topic.name,
-        messageId,
-        body: sqsBody,
-        messageAttributes: sqsAttributes,
-        status: "dlq",
-        timestamp: Date.now(),
-      });
+      snsStore.spy.addMessage(
+        buildSnsSpyMessage(
+          topicArn,
+          topic.name,
+          { messageId, body: sqsBody, messageAttributes: sqsAttributes, messageGroupId },
+          "dlq",
+        ),
+      );
     }
   }
 }

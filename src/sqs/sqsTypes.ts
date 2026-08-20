@@ -85,6 +85,38 @@ export const SETTABLE_ATTRIBUTES: ReadonlySet<string> = new Set([
 
 export const VALID_BATCH_ENTRY_ID = /^[a-zA-Z0-9_-]+$/;
 
+// MessageGroupId: 1-128 alphanumeric or punctuation characters. Required on FIFO
+// queues; optional on standard queues since AWS fair queues (2025-07), where it
+// identifies a tenant for fair delivery without any ordering guarantees.
+export const VALID_MESSAGE_GROUP_ID = /^[a-zA-Z0-9!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]{1,128}$/;
+
+/** AWS reason clause for a malformed MessageGroupId, shared by the SQS and SNS error texts. */
+export const INVALID_MESSAGE_GROUP_ID_REASON =
+  "MessageGroupId can only include alphanumeric and punctuation characters. 1 to 128 in length";
+
+/** AWS error text for a malformed MessageGroupId on the SQS paths (SendMessage, SendMessageBatch, and the programmatic sendMessage). */
+export function invalidMessageGroupIdMessage(value: unknown): string {
+  return `Value ${value} for parameter MessageGroupId is invalid. Reason: ${INVALID_MESSAGE_GROUP_ID_REASON}.`;
+}
+
+/**
+ * Validate and normalize an optional MessageGroupId from an unvalidated request
+ * body. Absent or empty values normalize to `undefined` so FIFO paths raise
+ * their own MissingParameter error, matching real AWS error precedence.
+ * Non-string values are rejected rather than coerced by `RegExp.test`.
+ */
+export function parseOptionalMessageGroupId(
+  raw: unknown,
+): { ok: true; messageGroupId?: string } | { ok: false; message: string } {
+  if (raw === undefined || raw === null || raw === "") {
+    return { ok: true };
+  }
+  if (typeof raw !== "string" || !VALID_MESSAGE_GROUP_ID.test(raw)) {
+    return { ok: false, message: invalidMessageGroupIdMessage(raw) };
+  }
+  return { ok: true, messageGroupId: raw };
+}
+
 // AWS SQS allowed unicode characters: #x9 | #xA | #xD | #x20 to #xD7FF | #xE000 to #xFFFD
 // eslint-disable-next-line no-control-regex
 export const INVALID_MESSAGE_BODY_CHAR = /[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD]/;

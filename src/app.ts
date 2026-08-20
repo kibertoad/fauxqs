@@ -4,7 +4,11 @@ import cors from "@fastify/cors";
 import { generateS3RequestId } from "./common/errors.ts";
 import { SqsStore } from "./sqs/sqsStore.ts";
 import type { MessageAttributeValue } from "./sqs/sqsTypes.ts";
-import { INVALID_MESSAGE_BODY_CHAR, calculateMessageSize } from "./sqs/sqsTypes.ts";
+import {
+  INVALID_MESSAGE_BODY_CHAR,
+  calculateMessageSize,
+  parseOptionalMessageGroupId,
+} from "./sqs/sqsTypes.ts";
 import { md5, md5OfMessageAttributes } from "./common/md5.ts";
 import { SqsRouter } from "./sqs/sqsRouter.ts";
 import { SnsStore } from "./sns/snsStore.ts";
@@ -41,7 +45,12 @@ import { confirmSubscription } from "./sns/actions/confirmSubscription.ts";
 import { listSubscriptions, listSubscriptionsByTopic } from "./sns/actions/listSubscriptions.ts";
 import { getSubscriptionAttributes } from "./sns/actions/getSubscriptionAttributes.ts";
 import { setSubscriptionAttributes } from "./sns/actions/setSubscriptionAttributes.ts";
-import { publish, publishBatch, fanOutToSubscriptions } from "./sns/actions/publish.ts";
+import {
+  publish,
+  publishBatch,
+  fanOutToSubscriptions,
+  INVALID_MESSAGE_GROUP_ID_MESSAGE,
+} from "./sns/actions/publish.ts";
 import { tagResource, untagResource, listTagsForResource } from "./sns/actions/tagResource.ts";
 import { S3Store } from "./s3/s3Store.ts";
 import { registerS3Routes } from "./s3/s3Router.ts";
@@ -51,7 +60,7 @@ import { sqsQueueArn, snsTopicArn } from "./common/arnHelper.ts";
 import { DEFAULT_REGION, SNS_MAX_MESSAGE_SIZE_BYTES } from "./common/types.ts";
 import { mulberry32 } from "./common/prng.ts";
 import { loadInitConfig, applyInitConfig } from "./initConfig.ts";
-import { MessageSpy, type MessageSpyReader } from "./spy.ts";
+import { MessageSpy, buildSnsSpyMessage, type MessageSpyReader } from "./spy.ts";
 import { PersistenceManager } from "./persistence.ts";
 import { FileS3Persistence } from "./s3/fileS3Persistence.ts";
 import type { S3PersistenceProvider } from "./s3/s3Persistence.ts";
@@ -417,7 +426,8 @@ export interface FauxqsServer {
   deleteTopic(name: string, options?: { region?: string }): void;
   /** Remove all objects from a bucket but keep the bucket itself. No-op if the bucket does not exist. */
   emptyBucket(name: string): void;
-  /** Enqueue a message into an SQS queue by name. Supports messageAttributes, delaySeconds, and FIFO fields. Spy events emitted automatically. */
+  /** Enqueue a message into an SQS queue by name. Supports messageAttributes, delaySeconds, and FIFO fields.
+   *  messageGroupId is also accepted on standard queues (AWS fair queues). Spy events emitted automatically. */
   sendMessage(
     queueName: string,
     body: string,
@@ -434,7 +444,8 @@ export interface FauxqsServer {
     md5OfMessageAttributes?: string;
     sequenceNumber?: string;
   };
-  /** Publish a message to an SNS topic by name, with full fan-out to SQS subscriptions (filter policies, raw delivery). Spy events emitted automatically. */
+  /** Publish a message to an SNS topic by name, with full fan-out to SQS subscriptions (filter policies, raw delivery).
+   *  messageGroupId is also accepted on standard topics (AWS fair queues) and forwarded to subscribed queues. Spy events emitted automatically. */
   publish(
     topicName: string,
     message: string,
@@ -689,8 +700,16 @@ export async function startFauxqs(options?: {
         throw new Error(`Message must be shorter than ${maxMessageSize} bytes.`);
       }
 
+      // Optional on standard queues (fair queues), required on FIFO — but when
+      // provided it must satisfy the same format constraints on both queue types.
+      const groupIdResult = parseOptionalMessageGroupId(opts?.messageGroupId);
+      if (!groupIdResult.ok) {
+        throw new Error(groupIdResult.message);
+      }
+      const messageGroupId = groupIdResult.messageGroupId;
+
       if (queue.isFifo()) {
-        if (!opts?.messageGroupId) {
+        if (!messageGroupId) {
           throw new Error("messageGroupId is required for FIFO queues");
         }
 
@@ -729,7 +748,7 @@ export async function startFauxqs(options?: {
           body,
           messageAttributes,
           queueDelay > 0 ? queueDelay : undefined,
-          opts.messageGroupId,
+          messageGroupId,
           dedupId,
         );
         msg.sequenceNumber = queue.nextSequenceNumber();
@@ -751,6 +770,7 @@ export async function startFauxqs(options?: {
         body,
         messageAttributes,
         delaySeconds > 0 ? delaySeconds : undefined,
+        messageGroupId,
       );
       queue.enqueue(msg);
       return {
@@ -788,12 +808,18 @@ export async function startFauxqs(options?: {
       const messageId = randomUUID();
       const subject = opts?.subject;
 
+      // Required on FIFO topics, optional on standard topics (fair queues) —
+      // where it is forwarded to subscribed SQS standard queues.
       const isFifoTopic = topic.attributes.FifoTopic === "true";
-      let messageGroupId: string | undefined;
+      const groupIdResult = parseOptionalMessageGroupId(opts?.messageGroupId);
+      if (!groupIdResult.ok) {
+        // Same SNS-worded error the HTTP Publish path raises.
+        throw new Error(INVALID_MESSAGE_GROUP_ID_MESSAGE);
+      }
+      const messageGroupId = groupIdResult.messageGroupId;
       let messageDeduplicationId: string | undefined;
 
       if (isFifoTopic) {
-        messageGroupId = opts?.messageGroupId;
         if (!messageGroupId) {
           throw new Error("messageGroupId is required for FIFO topics");
         }
@@ -812,16 +838,14 @@ export async function startFauxqs(options?: {
 
       // Emit SNS spy event
       if (snsStore.spy) {
-        snsStore.spy.addMessage({
-          service: "sns",
-          topicArn,
-          topicName: topic.name,
-          messageId,
-          body: message,
-          messageAttributes,
-          status: "published",
-          timestamp: Date.now(),
-        });
+        snsStore.spy.addMessage(
+          buildSnsSpyMessage(
+            topicArn,
+            topic.name,
+            { messageId, body: message, messageAttributes, messageGroupId },
+            "published",
+          ),
+        );
       }
 
       fanOutToSubscriptions({

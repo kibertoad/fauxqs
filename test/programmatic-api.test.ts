@@ -361,6 +361,33 @@ describe("programmatic API", () => {
       expect(delayed.Messages![0].Body).toBe("delayed");
     });
 
+    it("sends with messageGroupId to a standard queue (fair queues)", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const { queueUrl } = server.createQueue("send-fair-q");
+
+      server.sendMessage("send-fair-q", "grouped", { messageGroupId: "tenant-1" });
+
+      const sqs = createSqsClient(server.port);
+      const msgs = await sqs.send(
+        new ReceiveMessageCommand({
+          QueueUrl: queueUrl,
+          WaitTimeSeconds: 1,
+          MessageSystemAttributeNames: ["MessageGroupId"],
+        }),
+      );
+      expect(msgs.Messages).toHaveLength(1);
+      expect(msgs.Messages![0].Attributes?.MessageGroupId).toBe("tenant-1");
+    });
+
+    it("rejects a malformed messageGroupId on a standard queue", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createQueue("send-fair-invalid-q");
+
+      expect(() =>
+        server.sendMessage("send-fair-invalid-q", "grouped", { messageGroupId: "not valid" }),
+      ).toThrow("MessageGroupId can only include alphanumeric and punctuation characters");
+    });
+
     it("sends to FIFO queue and returns sequenceNumber", async () => {
       server = await startFauxqs({ port: 0, logger: false });
       const { queueUrl } = server.createQueue("send-fifo-q.fifo", {
@@ -580,6 +607,39 @@ describe("programmatic API", () => {
     it("throws for non-existent topic", async () => {
       server = await startFauxqs({ port: 0, logger: false });
       expect(() => server.publish("no-such-topic", "hello")).toThrow("not found");
+    });
+
+    it("forwards messageGroupId from a standard topic to subscribed queues (fair queues)", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const { queueUrl } = server.createQueue("fair-pub-q");
+      server.createTopic("fair-pub-t");
+      server.subscribe({
+        topic: "fair-pub-t",
+        queue: "fair-pub-q",
+        attributes: { RawMessageDelivery: "true" },
+      });
+
+      server.publish("fair-pub-t", "fair body", { messageGroupId: "tenant-1" });
+
+      const sqs = createSqsClient(server.port);
+      const msgs = await sqs.send(
+        new ReceiveMessageCommand({
+          QueueUrl: queueUrl,
+          WaitTimeSeconds: 1,
+          MessageSystemAttributeNames: ["MessageGroupId"],
+        }),
+      );
+      expect(msgs.Messages).toHaveLength(1);
+      expect(msgs.Messages![0].Attributes?.MessageGroupId).toBe("tenant-1");
+    });
+
+    it("rejects a malformed messageGroupId on a standard topic", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      server.createTopic("fair-pub-invalid-t");
+
+      expect(() =>
+        server.publish("fair-pub-invalid-t", "body", { messageGroupId: "g".repeat(129) }),
+      ).toThrow("MessageGroupId can only include alphanumeric and punctuation characters");
     });
 
     it("emits spy events", async () => {

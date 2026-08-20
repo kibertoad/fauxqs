@@ -12,6 +12,8 @@ export interface SqsSpyMessage {
   messageAttributes: Record<string, MessageAttributeValue>;
   status: SqsSpyMessageStatus;
   timestamp: number;
+  /** Present when the message was sent with a MessageGroupId (FIFO queues, or standard queues via fair queues). */
+  messageGroupId?: string;
 }
 
 /**
@@ -32,6 +34,8 @@ export interface SnsSpyMessage {
   messageAttributes: Record<string, MessageAttributeValue>;
   status: SnsSpyMessageStatus;
   timestamp: number;
+  /** Present when the message was published with a MessageGroupId (FIFO topics, or standard topics via fair queues). */
+  messageGroupId?: string;
 }
 
 /** Possible statuses for an S3 spy event. */
@@ -48,6 +52,52 @@ export interface S3SpyEvent {
 
 /** Discriminated union of all spy event types, keyed by the `service` field. */
 export type SpyMessage = SqsSpyMessage | SnsSpyMessage | S3SpyEvent;
+
+/** Message-shaped fields shared by every SQS/SNS spy event source. */
+interface SpyMessageSource {
+  messageId: string;
+  body: string;
+  messageAttributes: Record<string, MessageAttributeValue>;
+  messageGroupId?: string;
+}
+
+/** Build the SQS spy event for `msg`, including `messageGroupId` only when present. */
+export function buildSqsSpyMessage(
+  queueName: string,
+  msg: SpyMessageSource,
+  status: SqsSpyMessageStatus,
+): SqsSpyMessage {
+  return {
+    service: "sqs",
+    queueName,
+    messageId: msg.messageId,
+    body: msg.body,
+    messageAttributes: msg.messageAttributes,
+    status,
+    timestamp: Date.now(),
+    ...(msg.messageGroupId ? { messageGroupId: msg.messageGroupId } : {}),
+  };
+}
+
+/** Build the SNS spy event for `msg`, including `messageGroupId` only when present. */
+export function buildSnsSpyMessage(
+  topicArn: string,
+  topicName: string,
+  msg: SpyMessageSource,
+  status: SnsSpyMessageStatus,
+): SnsSpyMessage {
+  return {
+    service: "sns",
+    topicArn,
+    topicName,
+    messageId: msg.messageId,
+    body: msg.body,
+    messageAttributes: msg.messageAttributes,
+    status,
+    timestamp: Date.now(),
+    ...(msg.messageGroupId ? { messageGroupId: msg.messageGroupId } : {}),
+  };
+}
 
 /** @deprecated Use SqsSpyMessageStatus instead */
 export type SpyMessageStatus = SqsSpyMessageStatus;
