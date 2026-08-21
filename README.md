@@ -15,6 +15,7 @@ All state is in-memory by default. Optional SQLite-based persistence is availabl
   - [Running the server](#running-the-server)
   - [Running in the background](#running-in-the-background)
   - [Running with Docker](#running-with-docker)
+    - [Container user](#container-user)
   - [Running in Docker Compose](#running-in-docker-compose)
     - [Container-to-container S3 virtual-hosted-style](#container-to-container-s3-virtual-hosted-style)
   - [Configuring AWS SDK clients](#configuring-aws-sdk-clients)
@@ -96,6 +97,8 @@ The server starts on port `4566` and handles SQS, SNS, and S3 on a single endpoi
 | `FAUXQS_ORDERING_SEED` | Seed for the standard-queue reordering PRNG, for deterministic delivery order (see [Message ordering](#message-ordering)). Omit for non-deterministic ordering. | (none) |
 | `FAUXQS_DNS_NAME` | Domain that dnsmasq resolves (including all subdomains) to the container IP. Only needed when the container hostname doesn't match the docker-compose service name — e.g., when using `container_name` or running with plain `docker run`. In docker-compose the hostname is set to the service name automatically, so this is rarely needed. (Docker only) | container hostname |
 | `FAUXQS_DNS_UPSTREAM` | Where dnsmasq forwards non-fauxqs DNS queries (e.g., `registry.npmjs.org`). Change this if you're in a corporate network with an internal DNS server, or if you prefer a different public resolver like `1.1.1.1`. (Docker only) | `8.8.8.8` |
+| `FAUXQS_RUN_USER` | User the server process runs as (see [Container user](#container-user)). Accepts a name, a uid, or `uid:gid`. (Docker only) | `node` (uid 1000) |
+| `FAUXQS_RUN_AS_ROOT` | Set to `true` to keep the server running as root instead of dropping privileges (see [Container user](#container-user)). (Docker only) | `false` |
 
 ```bash
 FAUXQS_PORT=3000 FAUXQS_INIT=init.json npx fauxqs
@@ -158,6 +161,27 @@ docker run -p 4566:4566 \
   -e FAUXQS_INIT=/app/init.json \
   kibertoad/fauxqs
 ```
+
+#### Container user
+
+The server does not run as root. The entrypoint starts as root only to do what needs privileges — binding dnsmasq to port 53 and taking ownership of the mounted directories — and then drops to the unprivileged `node` user (uid 1000) before starting the server.
+
+This keeps bind mounts working: `-v ./volume:/data` gives you a root-owned host directory, which the entrypoint hands over to `node` on startup. Nothing to prepare on the host.
+
+Two knobs, both for Docker only:
+
+- `FAUXQS_RUN_USER` — run as a different user, e.g. `FAUXQS_RUN_USER=1001` or `FAUXQS_RUN_USER=501:20`. Useful when a host directory must keep a specific owner, so you'd rather match it than have it chowned.
+- `FAUXQS_RUN_AS_ROOT=true` — keep the server as root. An escape hatch for setups that need it; not recommended.
+
+If you'd rather have no root phase at all, start the container as a non-root user:
+
+```bash
+docker run -p 4566:4566 --user 1000:1000 -v fauxqs-data:/data -e FAUXQS_PERSISTENCE=true kibertoad/fauxqs
+```
+
+dnsmasq carries `cap_net_bind_service` as a file capability, so wildcard DNS still works this way. With an *empty* named volume, Docker copies the image's ownership of `/data` (uid 1000), so persistence works out of the box. A bind-mounted host directory, on the other hand, has to be writable by the uid you pass — the container can no longer fix the ownership itself.
+
+If a directory the server writes to cannot be made writable (a read-only mount, or a filesystem that ignores `chown`), the entrypoint logs a warning explaining which directory is at fault and stays root rather than starting into a broken state.
 
 ### Running in Docker Compose
 
