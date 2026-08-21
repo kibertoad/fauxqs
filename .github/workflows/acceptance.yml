@@ -46,3 +46,6 @@ jobs:
 
       - name: Run Docker S3 file storage acceptance test
         run: pnpm test:docker:s3-storage
+
+      - name: Run Docker non-root acceptance test
+        run: pnpm test:docker:nonroot

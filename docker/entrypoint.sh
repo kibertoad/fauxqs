@@ -1,6 +1,10 @@
 #!/bin/sh
 set -e
 
+# User the server process runs as once the privileged setup below is done.
+# Accepts a name, a uid, or uid:gid — anything su-exec and chown understand.
+RUN_USER=${FAUXQS_RUN_USER:-node}
+
 CONTAINER_IP=$(hostname -i | awk '{print $1}')
 DNS_NAME=${FAUXQS_DNS_NAME:-$(hostname)}
 UPSTREAM=${FAUXQS_DNS_UPSTREAM:-8.8.8.8}
@@ -43,4 +47,51 @@ else
   echo "Tenant management: OFF"
 fi
 
-exec tini -- node dist/server.js
+# Directories the server actually writes to — these must be writable by RUN_USER.
+# Mirrors src/server.ts: dataDir is only used when FAUXQS_PERSISTENCE=true.
+# Collected as positional parameters so that paths containing spaces survive.
+set --
+if [ "$FAUXQS_PERSISTENCE" = "true" ] && [ -n "$FAUXQS_DATA_DIR" ]; then
+  set -- "$@" "$FAUXQS_DATA_DIR"
+fi
+if [ -n "$FAUXQS_S3_STORAGE_DIR" ]; then
+  set -- "$@" "$FAUXQS_S3_STORAGE_DIR"
+fi
+
+start_server() {
+  echo "Server user: $1"
+  shift
+  exec "$@"
+}
+
+# Already unprivileged (docker run --user, Kubernetes runAsUser): nothing to drop.
+# dnsmasq carries cap_net_bind_service as a file capability so port 53 still works.
+if [ "$(id -u)" != "0" ]; then
+  start_server "$(id -un 2>/dev/null || id -u) (container started as non-root)" \
+    tini -- node dist/server.js
+fi
+
+# Escape hatch for setups where the server genuinely needs root.
+if [ "$FAUXQS_RUN_AS_ROOT" = "true" ]; then
+  start_server "root (FAUXQS_RUN_AS_ROOT=true)" tini -- node dist/server.js
+fi
+
+# Hand the mounted directories over to RUN_USER. Bind-mounted host directories
+# are typically root-owned, so this is what keeps `-v ./volume:/data` working.
+for dir in "$@"; do
+  chown -R "$RUN_USER" "$dir" 2>/dev/null || true
+done
+
+# If a directory still isn't writable (read-only mount, remote filesystem that
+# ignores chown), keep running as root rather than crash-looping on startup.
+for dir in "$@"; do
+  if ! su-exec "$RUN_USER" sh -c "[ -w \"$dir\" ]" 2>/dev/null; then
+    echo "WARNING: $dir is not writable by '$RUN_USER' and could not be chowned."
+    echo "WARNING: Falling back to running the server as root. Fix the ownership on"
+    echo "WARNING: the host, or set FAUXQS_RUN_USER to a user that can write to it."
+    start_server "root (fallback: $dir not writable by '$RUN_USER')" \
+      tini -- node dist/server.js
+  fi
+done
+
+start_server "$RUN_USER" su-exec "$RUN_USER" tini -- node dist/server.js

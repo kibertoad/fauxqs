@@ -101,6 +101,20 @@ Alternatively, use `forcePathStyle: true` on the S3 client if you prefer path-st
 | `FAUXQS_PERSISTENCE` | Enable SQLite persistence (requires a volume mounted at `/data`) | `false` |
 | `FAUXQS_DATA_DIR` | Directory for the SQLite database | `/data` (preset in image) |
 | `FAUXQS_S3_STORAGE_DIR` | Store S3 objects as files on disk instead of SQLite blobs | (none) |
+| `FAUXQS_RUN_USER` | User the server runs as — name, uid, or `uid:gid` | `node` (uid 1000) |
+| `FAUXQS_RUN_AS_ROOT` | Keep the server running as root instead of dropping privileges | `false` |
+
+## Container User
+
+The server runs as the unprivileged `node` user (uid 1000). The entrypoint starts as root only to bind dnsmasq to port 53 and to hand the mounted directories over to that user, so root-owned bind mounts like `-v ./volume:/data` keep working with nothing to prepare on the host.
+
+To avoid the root phase entirely, start the container as non-root — dnsmasq carries `cap_net_bind_service` as a file capability, so wildcard DNS still works:
+
+```bash
+docker run -p 4566:4566 --user 1000:1000 -v fauxqs-data:/data -e FAUXQS_PERSISTENCE=true kibertoad/fauxqs
+```
+
+In that mode a bind-mounted directory must already be writable by the uid you pass.
 
 ## Persistence
 
