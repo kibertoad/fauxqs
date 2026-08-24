@@ -2,7 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { S3Error } from "../../common/errors.ts";
 import type { S3Store } from "../s3Store.ts";
 import { decodeAwsChunked } from "../chunkedEncoding.ts";
-import { extractChecksumFromHeaders, checksumHeaderName } from "../checksum.ts";
+import { extractChecksumFromHeaders, checksumHeaderName, validateChecksum } from "../checksum.ts";
 
 export function uploadPart(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
@@ -88,6 +88,10 @@ export function uploadPart(
   const cksum =
     extractChecksumFromHeaders(trailers) ??
     extractChecksumFromHeaders(request.headers as Record<string, string | string[] | undefined>);
+
+  if (cksum && store.strictRules?.validateChecksums) {
+    validateChecksum(cksum.algorithm, cksum.value, body);
+  }
 
   const result = store.uploadPart(uploadId, partNumber, body, cksum?.value);
 

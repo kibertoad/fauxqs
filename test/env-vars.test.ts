@@ -11,6 +11,7 @@ import { ListTopicsCommand } from "@aws-sdk/client-sns";
 import {
   ListBucketsCommand,
 } from "@aws-sdk/client-s3";
+import { computeChecksum } from "../src/s3/checksum.js";
 
 describe("env vars", () => {
   let server: FauxqsServer;
@@ -97,6 +98,41 @@ describe("env vars", () => {
     } catch {
       // ignore
     }
+  });
+
+  it("FAUXQS_VALIDATE_CHECKSUMS=true rejects a body that does not match its checksum", async () => {
+    setEnv("FAUXQS_VALIDATE_CHECKSUMS", "true");
+    server = await startFauxqs({ port: 0, logger: false });
+    server.createBucket("env-checksum-b");
+
+    const response = await fetch(`http://127.0.0.1:${server.port}/env-checksum-b/object.txt`, {
+      method: "PUT",
+      // Base64 CRC32 of "other", not of the body being sent.
+      headers: { "x-amz-checksum-crc32": computeChecksum("CRC32", Buffer.from("other")) },
+      body: "the real body",
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("<Code>BadDigest</Code>");
+  });
+
+  it("programmatic strictRules take precedence over FAUXQS_VALIDATE_CHECKSUMS", async () => {
+    setEnv("FAUXQS_VALIDATE_CHECKSUMS", "true");
+    server = await startFauxqs({
+      port: 0,
+      logger: false,
+      strictRules: { validateChecksums: false },
+    });
+    server.createBucket("env-checksum-off-b");
+
+    const response = await fetch(`http://127.0.0.1:${server.port}/env-checksum-off-b/object.txt`, {
+      method: "PUT",
+      headers: { "x-amz-checksum-crc32": computeChecksum("CRC32", Buffer.from("other")) },
+      body: "the real body",
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
   });
 
   it("programmatic options take precedence over env vars", async () => {

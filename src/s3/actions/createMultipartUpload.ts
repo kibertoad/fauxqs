@@ -2,9 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import type { CreateMultipartUploadOutput } from "@aws-sdk/client-s3";
 import { escapeXml } from "../../common/xml.ts";
 import type { S3Store } from "../s3Store.ts";
-import type { ChecksumAlgorithm } from "../s3Types.ts";
-
-const SUPPORTED_CHECKSUM_ALGORITHMS = new Set(["CRC32", "CRC32C", "CRC64NVME", "SHA1", "SHA256"]);
+import { isChecksumAlgorithm } from "../checksum.ts";
 
 function extractMetadata(
   headers: Record<string, string | string[] | undefined>,
@@ -60,9 +58,7 @@ export function createMultipartUpload(
     request.headers["x-amz-checksum-algorithm"] as string | undefined
   )?.toUpperCase();
   const checksumAlgorithm =
-    checksumAlgoHeader && SUPPORTED_CHECKSUM_ALGORITHMS.has(checksumAlgoHeader)
-      ? (checksumAlgoHeader as ChecksumAlgorithm)
-      : undefined;
+    checksumAlgoHeader && isChecksumAlgorithm(checksumAlgoHeader) ? checksumAlgoHeader : undefined;
   const uploadId = store.createMultipartUpload(
     bucket,
     key,

@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import * as zlib from "node:zlib";
-import type { ChecksumAlgorithm } from "./s3Types.ts";
+import { S3Error } from "../common/errors.ts";
+import { CHECKSUM_ALGORITHMS, type ChecksumAlgorithm } from "./s3Types.ts";
+import { xxh3_64, xxh3_128, xxh64 } from "./xxhash.ts";
 
 /**
  * Compute CRC32 (IEEE) of a buffer, returning a uint32.
@@ -99,6 +101,13 @@ export function crc64nvme(data: Buffer): bigint {
   return (BigInt(hi) << 32n) | BigInt(lo);
 }
 
+const NODE_HASH_NAMES: Partial<Record<ChecksumAlgorithm, string>> = {
+  SHA1: "sha1",
+  SHA256: "sha256",
+  SHA512: "sha512",
+  MD5: "md5",
+};
+
 /** Compute a base64-encoded checksum of data. */
 export function computeChecksum(algorithm: ChecksumAlgorithm, data: Buffer): string {
   if (algorithm === "CRC32") {
@@ -116,8 +125,36 @@ export function computeChecksum(algorithm: ChecksumAlgorithm, data: Buffer): str
     buf.writeBigUInt64BE(crc64nvme(data));
     return buf.toString("base64");
   }
-  const hashName = algorithm === "SHA1" ? "sha1" : "sha256";
-  return createHash(hashName).update(data).digest("base64");
+  if (algorithm === "XXHASH64" || algorithm === "XXHASH3") {
+    const buf = Buffer.alloc(8);
+    buf.writeBigUInt64BE(algorithm === "XXHASH64" ? xxh64(data) : xxh3_64(data));
+    return buf.toString("base64");
+  }
+  if (algorithm === "XXHASH128") {
+    const { high, low } = xxh3_128(data);
+    const buf = Buffer.alloc(16);
+    buf.writeBigUInt64BE(high, 0);
+    buf.writeBigUInt64BE(low, 8);
+    return buf.toString("base64");
+  }
+  return createHash(NODE_HASH_NAMES[algorithm]!).update(data).digest("base64");
+}
+
+/**
+ * Verify a client-supplied checksum against the body it describes, the way real
+ * S3 does. Opt-in via the `validateChecksums` strict rule: fauxqs otherwise
+ * stores checksums as-is, which lets a corrupt upload pass locally and fail in
+ * production.
+ */
+export function validateChecksum(algorithm: ChecksumAlgorithm, value: string, data: Buffer): void {
+  if (computeChecksum(algorithm, data) === value) {
+    return;
+  }
+  throw new S3Error(
+    "BadDigest",
+    `The ${algorithm} you specified did not match the calculated checksum.`,
+    400,
+  );
 }
 
 /** Compute composite checksum for multipart uploads. */
@@ -137,7 +174,21 @@ const CHECKSUM_HEADERS: { header: string; algorithm: ChecksumAlgorithm }[] = [
   { header: "x-amz-checksum-crc32c", algorithm: "CRC32C" },
   { header: "x-amz-checksum-sha1", algorithm: "SHA1" },
   { header: "x-amz-checksum-sha256", algorithm: "SHA256" },
+  { header: "x-amz-checksum-sha512", algorithm: "SHA512" },
+  // Note: this is `x-amz-checksum-md5`, the flexible-checksum header added in
+  // 2026 — not the legacy `Content-MD5` header, which is unrelated.
+  { header: "x-amz-checksum-md5", algorithm: "MD5" },
+  { header: "x-amz-checksum-xxhash64", algorithm: "XXHASH64" },
+  { header: "x-amz-checksum-xxhash3", algorithm: "XXHASH3" },
+  { header: "x-amz-checksum-xxhash128", algorithm: "XXHASH128" },
 ];
+
+const CHECKSUM_ALGORITHM_NAMES = new Set<string>(CHECKSUM_ALGORITHMS);
+
+/** Narrow an `x-amz-checksum-algorithm` header value to a supported algorithm. */
+export function isChecksumAlgorithm(value: string): value is ChecksumAlgorithm {
+  return CHECKSUM_ALGORITHM_NAMES.has(value);
+}
 
 /** Extract checksum algorithm+value from request headers or trailing headers. */
 export function extractChecksumFromHeaders(

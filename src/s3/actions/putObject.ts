@@ -4,7 +4,7 @@ import { S3Error } from "../../common/errors.ts";
 import type { S3Store } from "../s3Store.ts";
 import type { ChecksumAlgorithm } from "../s3Types.ts";
 import { decodeAwsChunked } from "../chunkedEncoding.ts";
-import { extractChecksumFromHeaders, checksumHeaderName } from "../checksum.ts";
+import { extractChecksumFromHeaders, checksumHeaderName, validateChecksum } from "../checksum.ts";
 import { checkConditionalWrite } from "../conditionalWrites.ts";
 
 interface ChecksumData {
@@ -96,6 +96,9 @@ export function putObject(
         request.headers as Record<string, string | string[] | undefined>,
       );
       if (cksum) {
+        if (store.strictRules?.validateChecksums) {
+          validateChecksum(cksum.algorithm, cksum.value, srcObj.body);
+        }
         checksumData = { algorithm: cksum.algorithm, value: cksum.value, type: "FULL_OBJECT" };
       }
     } else if (srcObj.checksumAlgorithm && srcObj.checksumValue && srcObj.checksumType) {
@@ -178,6 +181,9 @@ export function putObject(
   const cksum =
     extractChecksumFromHeaders(trailers) ??
     extractChecksumFromHeaders(request.headers as Record<string, string | string[] | undefined>);
+  if (cksum && store.strictRules?.validateChecksums) {
+    validateChecksum(cksum.algorithm, cksum.value, body);
+  }
   const checksumData = cksum
     ? { algorithm: cksum.algorithm, value: cksum.value, type: "FULL_OBJECT" as const }
     : undefined;

@@ -21,6 +21,7 @@ export class S3Store {
   spy?: MessageSpy;
   persistence?: S3PersistenceProvider;
   relaxedRules?: { disableMinCopySourceSize?: boolean };
+  strictRules?: { validateChecksums?: boolean };
   /** Dispatches S3 object events to SQS/SNS. Set by buildApp; undefined disables notifications. */
   notificationDispatcher?: S3EventDispatcher;
   private bucketNotificationConfigurations = new Map<string, S3NotificationConfiguration>();
