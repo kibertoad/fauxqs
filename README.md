@@ -168,9 +168,11 @@ The server does not run as root. The entrypoint starts as root only to do what n
 
 This keeps bind mounts working: `-v ./volume:/data` gives you a root-owned host directory, which the entrypoint hands over to `node` on startup. Nothing to prepare on the host.
 
+The handover only happens when it is needed. A directory the unprivileged user can already write to — because you prepared it, or because a previous run already did — is left with its ownership untouched, so `chown -R` never rewrites host files behind your back and restarts stay quick no matter how many objects are stored.
+
 Two knobs, both for Docker only:
 
-- `FAUXQS_RUN_USER` — run as a different user, e.g. `FAUXQS_RUN_USER=1001` or `FAUXQS_RUN_USER=501:20`. Useful when a host directory must keep a specific owner, so you'd rather match it than have it chowned.
+- `FAUXQS_RUN_USER` — run as a different user, e.g. `FAUXQS_RUN_USER=1001` or `FAUXQS_RUN_USER=501:20`. Useful when a host directory must keep a specific owner, so you'd rather match it than have it chowned. A value that cannot be used to run the server is reported at startup rather than quietly falling back to root.
 - `FAUXQS_RUN_AS_ROOT=true` — keep the server as root. An escape hatch for setups that need it; not recommended.
 
 If you'd rather have no root phase at all, start the container as a non-root user:
@@ -179,9 +181,22 @@ If you'd rather have no root phase at all, start the container as a non-root use
 docker run -p 4566:4566 --user 1000:1000 -v fauxqs-data:/data -e FAUXQS_PERSISTENCE=true kibertoad/fauxqs
 ```
 
-dnsmasq carries `cap_net_bind_service` as a file capability, so wildcard DNS still works this way. With an *empty* named volume, Docker copies the image's ownership of `/data` (uid 1000), so persistence works out of the box. A bind-mounted host directory, on the other hand, has to be writable by the uid you pass — the container can no longer fix the ownership itself.
+dnsmasq carries `cap_net_bind_service` as a file capability, so wildcard DNS still works this way. With an *empty* named volume, Docker copies the image's ownership of `/data` (uid 1000), so persistence works out of the box. A bind-mounted host directory, on the other hand, has to be writable by the uid you pass — the container can no longer fix the ownership itself, so it reports the problem at startup instead of serving a healthy `/health` while every write fails.
 
-If a directory the server writes to cannot be made writable (a read-only mount, or a filesystem that ignores `chown`), the entrypoint logs a warning explaining which directory is at fault and stays root rather than starting into a broken state.
+Wildcard DNS needs the `NET_BIND_SERVICE` capability wherever port 53 counts as privileged, which includes most Kubernetes clusters. Under Kubernetes' `restricted` Pod Security Standard, which drops every capability, add it back:
+
+```yaml
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop: ["ALL"]
+    add: ["NET_BIND_SERVICE"]   # omit if you don't need wildcard DNS
+```
+
+Without it the container still starts and the API works normally — `*.fauxqs` names just won't resolve inside the container, which the logs point out, and S3 clients need `forcePathStyle: true`.
+
+If a directory the server writes to cannot be made writable at all — a read-only mount, most often — the entrypoint says which directory is at fault and refuses to start, because a server that starts anyway would fail on its first write. When `chown` is merely ineffective (some remote filesystems ignore it) but root can still write, it stays root instead, and says so.
 
 ### Running in Docker Compose
 

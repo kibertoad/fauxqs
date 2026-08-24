@@ -15,8 +15,17 @@ FROM node:24-alpine
 
 # su-exec: drop privileges in the entrypoint after the root-only setup
 # libcap:  give dnsmasq the capability to bind port 53 without being root,
-#          so the image also works when started with --user / runAsUser
+#          so the image also works when started with --user / runAsUser.
+#
+# The effective bit in +ep is what actually delivers the capability, but it also
+# makes execve of dnsmasq fail with EPERM whenever NET_BIND_SERVICE is missing
+# from the bounding set — as it is under --cap-drop=ALL and Kubernetes'
+# restricted policy. dnsmasq-nocap is the same binary without the file
+# capability, which the entrypoint falls back to: it cannot ask for the
+# capability, but it does not need it wherever port 53 is unprivileged, which is
+# the default in Docker. Copy it before setcap so the copy stays uncapped.
 RUN apk add --no-cache tini dnsmasq su-exec \
+  && cp /usr/sbin/dnsmasq /usr/sbin/dnsmasq-nocap \
   && apk add --no-cache --virtual .caps libcap \
   && setcap cap_net_bind_service+ep /usr/sbin/dnsmasq \
   && apk del .caps

@@ -106,7 +106,7 @@ Alternatively, use `forcePathStyle: true` on the S3 client if you prefer path-st
 
 ## Container User
 
-The server runs as the unprivileged `node` user (uid 1000). The entrypoint starts as root only to bind dnsmasq to port 53 and to hand the mounted directories over to that user, so root-owned bind mounts like `-v ./volume:/data` keep working with nothing to prepare on the host.
+The server runs as the unprivileged `node` user (uid 1000). The entrypoint starts as root only to bind dnsmasq to port 53 and to hand the mounted directories over to that user, so root-owned bind mounts like `-v ./volume:/data` keep working with nothing to prepare on the host. Directories that are already writable by that user keep their ownership — the handover only happens where it is needed.
 
 To avoid the root phase entirely, start the container as non-root — dnsmasq carries `cap_net_bind_service` as a file capability, so wildcard DNS still works:
 
@@ -114,7 +114,9 @@ To avoid the root phase entirely, start the container as non-root — dnsmasq ca
 docker run -p 4566:4566 --user 1000:1000 -v fauxqs-data:/data -e FAUXQS_PERSISTENCE=true kibertoad/fauxqs
 ```
 
-In that mode a bind-mounted directory must already be writable by the uid you pass.
+In that mode a bind-mounted directory must already be writable by the uid you pass; if it is not, the container reports which directory is at fault and refuses to start rather than failing every write at runtime.
+
+Wildcard DNS needs the `NET_BIND_SERVICE` capability wherever port 53 counts as privileged, which includes most Kubernetes clusters. If you drop all capabilities (`--cap-drop=ALL`, or Kubernetes' `restricted` policy), add that one back to keep it. Without it the container still starts and the API works — `*.fauxqs` names just won't resolve inside the container, so S3 clients need `forcePathStyle: true`.
 
 ## Persistence
 
