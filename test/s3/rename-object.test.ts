@@ -271,6 +271,39 @@ describe("S3 RenameObject", () => {
       expect(res.status).toBe(412);
     });
 
+    it("accepts an unquoted or weak-validator ETag, as the other operations do", async () => {
+      server.createBucket("rename-ifm-shapes", { type: "directory" });
+      await s3.send(
+        new PutObjectCommand({ Bucket: "rename-ifm-shapes", Key: "src.txt", Body: "new content" }),
+      );
+      await s3.send(
+        new PutObjectCommand({ Bucket: "rename-ifm-shapes", Key: "dest.txt", Body: "old content" }),
+      );
+      const head = await s3.send(
+        new HeadObjectCommand({ Bucket: "rename-ifm-shapes", Key: "dest.txt" }),
+      );
+
+      // RenameObject shares the ETag comparison with PutObject and DeleteObject,
+      // so a tag stripped of its quotes or carrying a weak-validator prefix means
+      // the same thing on all three.
+      const unquoted = await renameObject(server.port, "rename-ifm-shapes", "dest.txt", "src.txt", {
+        "if-match": head.ETag!.replaceAll('"', ""),
+      });
+      expect(unquoted.status).toBe(200);
+
+      await s3.send(
+        new PutObjectCommand({ Bucket: "rename-ifm-shapes", Key: "src2.txt", Body: "newer" }),
+      );
+      // The rename above replaced the destination, so re-read its current ETag.
+      const overwritten = await s3.send(
+        new HeadObjectCommand({ Bucket: "rename-ifm-shapes", Key: "dest.txt" }),
+      );
+      const weak = await renameObject(server.port, "rename-ifm-shapes", "dest.txt", "src2.txt", {
+        "if-match": `W/${overwritten.ETag!}`,
+      });
+      expect(weak.status).toBe(200);
+    });
+
     it("If-Match fails when destination does not exist", async () => {
       server.createBucket("rename-ifm3", { type: "directory" });
       await s3.send(

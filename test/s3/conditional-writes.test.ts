@@ -207,5 +207,59 @@ describe("S3 Conditional Writes", () => {
       );
       expect(await getBody("copy-dst2.txt")).toBe("payload");
     });
+
+    it("If-Match fails with 412 when the destination ETag does not match", async () => {
+      await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "copy-src3.txt", Body: "payload" }));
+      await s3.send(
+        new PutObjectCommand({ Bucket: bucket, Key: "copy-dst3.txt", Body: "old dest" }),
+      );
+
+      await expect(
+        s3.send(
+          new CopyObjectCommand({
+            Bucket: bucket,
+            Key: "copy-dst3.txt",
+            CopySource: `${bucket}/copy-src3.txt`,
+            IfMatch: '"00000000000000000000000000000000"',
+          }),
+        ),
+      ).rejects.toMatchObject({ $metadata: { httpStatusCode: 412 } });
+
+      expect(await getBody("copy-dst3.txt")).toBe("old dest");
+    });
+
+    it("If-Match fails with 412 when the destination does not exist", async () => {
+      await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "copy-src4.txt", Body: "payload" }));
+
+      await expect(
+        s3.send(
+          new CopyObjectCommand({
+            Bucket: bucket,
+            Key: "copy-dst4.txt",
+            CopySource: `${bucket}/copy-src4.txt`,
+            IfMatch: '"00000000000000000000000000000000"',
+          }),
+        ),
+      ).rejects.toMatchObject({ $metadata: { httpStatusCode: 412 } });
+
+      // The precondition must fail before the copy, not alongside it.
+      await expect(getBody("copy-dst4.txt")).rejects.toMatchObject({
+        $metadata: { httpStatusCode: 404 },
+      });
+    });
+
+    it("If-None-Match: * succeeds when the destination does not exist", async () => {
+      await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "copy-src5.txt", Body: "payload" }));
+
+      await s3.send(
+        new CopyObjectCommand({
+          Bucket: bucket,
+          Key: "copy-dst5.txt",
+          CopySource: `${bucket}/copy-src5.txt`,
+          IfNoneMatch: "*",
+        }),
+      );
+      expect(await getBody("copy-dst5.txt")).toBe("payload");
+    });
   });
 });

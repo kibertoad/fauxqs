@@ -1,6 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { S3Error } from "../../common/errors.ts";
 import type { S3Store } from "../s3Store.ts";
+import { etagEquals, preconditionFailed } from "../conditionalWrites.ts";
 
 export function renameObject(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
@@ -31,22 +32,14 @@ export function renameObject(
   const sourceObj = store.headObject(bucket, sourceKey);
 
   const srcIfMatch = request.headers["x-amz-rename-source-if-match"] as string | undefined;
-  if (srcIfMatch && srcIfMatch !== sourceObj.etag) {
-    throw new S3Error(
-      "PreconditionFailed",
-      "At least one of the pre-conditions you specified did not hold",
-      412,
-    );
+  if (srcIfMatch && !etagEquals(srcIfMatch, sourceObj.etag)) {
+    throw preconditionFailed();
   }
 
   const srcIfNoneMatch = request.headers["x-amz-rename-source-if-none-match"] as string | undefined;
   if (srcIfNoneMatch) {
-    if (srcIfNoneMatch === "*" || srcIfNoneMatch === sourceObj.etag) {
-      throw new S3Error(
-        "PreconditionFailed",
-        "At least one of the pre-conditions you specified did not hold",
-        412,
-      );
+    if (srcIfNoneMatch === "*" || etagEquals(srcIfNoneMatch, sourceObj.etag)) {
+      throw preconditionFailed();
     }
   }
 
@@ -56,11 +49,7 @@ export function renameObject(
   if (srcIfModifiedSince) {
     const since = new Date(srcIfModifiedSince);
     if (sourceObj.lastModified <= since) {
-      throw new S3Error(
-        "PreconditionFailed",
-        "At least one of the pre-conditions you specified did not hold",
-        412,
-      );
+      throw preconditionFailed();
     }
   }
 
@@ -70,11 +59,7 @@ export function renameObject(
   if (srcIfUnmodifiedSince) {
     const since = new Date(srcIfUnmodifiedSince);
     if (sourceObj.lastModified > since) {
-      throw new S3Error(
-        "PreconditionFailed",
-        "At least one of the pre-conditions you specified did not hold",
-        412,
-      );
+      throw preconditionFailed();
     }
   }
 
@@ -93,50 +78,30 @@ export function renameObject(
     // Destination exists
     if (!hasDestConditionals) {
       // No conditionals provided — AWS rejects overwrite by default
-      throw new S3Error(
-        "PreconditionFailed",
-        "At least one of the pre-conditions you specified did not hold",
-        412,
-      );
+      throw preconditionFailed();
     }
 
-    if (ifMatch && ifMatch !== destObj.etag) {
-      throw new S3Error(
-        "PreconditionFailed",
-        "At least one of the pre-conditions you specified did not hold",
-        412,
-      );
+    if (ifMatch && !etagEquals(ifMatch, destObj.etag)) {
+      throw preconditionFailed();
     }
 
     if (ifNoneMatch) {
-      if (ifNoneMatch === "*" || ifNoneMatch === destObj.etag) {
-        throw new S3Error(
-          "PreconditionFailed",
-          "At least one of the pre-conditions you specified did not hold",
-          412,
-        );
+      if (ifNoneMatch === "*" || etagEquals(ifNoneMatch, destObj.etag)) {
+        throw preconditionFailed();
       }
     }
 
     if (ifModifiedSince) {
       const since = new Date(ifModifiedSince);
       if (destObj.lastModified <= since) {
-        throw new S3Error(
-          "PreconditionFailed",
-          "At least one of the pre-conditions you specified did not hold",
-          412,
-        );
+        throw preconditionFailed();
       }
     }
 
     if (ifUnmodifiedSince) {
       const since = new Date(ifUnmodifiedSince);
       if (destObj.lastModified > since) {
-        throw new S3Error(
-          "PreconditionFailed",
-          "At least one of the pre-conditions you specified did not hold",
-          412,
-        );
+        throw preconditionFailed();
       }
     }
   } catch (err) {
@@ -144,11 +109,7 @@ export function renameObject(
       // Destination doesn't exist — this is the happy path for most renames.
       // If-Match requires the destination to exist, so fail if it was provided.
       if (ifMatch) {
-        throw new S3Error(
-          "PreconditionFailed",
-          "At least one of the pre-conditions you specified did not hold",
-          412,
-        );
+        throw preconditionFailed();
       }
     } else {
       throw err;

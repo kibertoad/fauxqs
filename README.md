@@ -1388,7 +1388,7 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **CopyObject** — same-bucket and cross-bucket copy via `x-amz-copy-source` header, with metadata preservation
 - **PostObject** — presigned POST form uploads (`multipart/form-data`). Supports `key` field with `${filename}` substitution, `Content-Type`, `success_action_status` (200/201/204), `success_action_redirect`, and user metadata via `x-amz-meta-*` fields. Policy signature validation is skipped (mock server).
 - **User metadata** — `x-amz-meta-*` headers are stored and returned on GetObject and HeadObject
-- **Bulk delete** — DeleteObjects for batch key deletion with proper XML entity handling
+- **Bulk delete** — DeleteObjects for batch key deletion with proper XML entity handling and optional per-object conditional preconditions
 - **Keys with slashes** — full support for slash-delimited keys (e.g., `path/to/file.txt`)
 - **Stream uploads** — handles AWS chunked transfer encoding (`Content-Encoding: aws-chunked`) for stream bodies, including trailing header parsing for checksums
 - **Checksums** — all ten algorithms S3 supports: CRC32, CRC32C, CRC64NVME, SHA1, SHA256, and the five [added in April 2026](https://aws.amazon.com/about-aws/whats-new/2026/04/s3-five-additional-checksum-algorithms/) — SHA512, MD5, XXHASH64, XXHASH3 and XXHASH128. Checksums are stored on upload (PutObject, UploadPart, CopyObject) and returned on download (GetObject, HeadObject with `x-amz-checksum-mode: ENABLED`). A client may either send the value itself in an `x-amz-checksum-*` header or just name an algorithm with `x-amz-checksum-algorithm` and let fauxqs compute it. Multipart uploads compute composite checksums, except CRC64NVME which is always a full-object checksum; part checksums are computed for you when the client doesn't send one (as with UploadPartCopy). GetObjectAttributes supports the `Checksum` attribute, including per-part checksums. Note that flexible-checksum MD5 is requested with `x-amz-checksum-md5`; the legacy `Content-MD5` header is a separate integrity header and does not store or return a flexible checksum, though a mismatch on it is rejected with `BadDigest` too. Uploaded bodies **are** validated against the checksum the client sent — set [`disableChecksumValidation`](#relaxed-rules) to store it unchecked instead.
@@ -1398,7 +1398,21 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Lifecycle configuration** — PutBucketLifecycleConfiguration, GetBucketLifecycleConfiguration, and DeleteBucketLifecycle. Lifecycle configs are stored and returned as-is (rules are not enforced — fauxqs is a mock). Persisted across restarts. Can also be set declaratively via init config.
 - **Path-style and virtual-hosted-style** — both S3 URL styles are supported (see below)
 - **CORS** — permissive CORS headers are enabled by default, allowing browser-based presigned URL uploads (see below)
-- **Conditional writes** — `If-None-Match` and `If-Match` preconditions on PutObject, CompleteMultipartUpload, and CopyObject (compare-and-swap and overwrite prevention), returning `412 Precondition Failed` when a precondition does not hold. Conditional reads (`If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`) are supported on GetObject.
+- **Conditional operations** — the full precondition matrix. A single-object operation whose precondition does not hold fails with `412 Precondition Failed`; `DeleteObjects` answers `200 OK` and reports the failure as an `<Error>` entry against the object that carried it:
+
+  | Operation | Preconditions | Notes |
+  | --- | --- | --- |
+  | PutObject | `If-None-Match`, `If-Match` | Overwrite prevention and compare-and-swap |
+  | CompleteMultipartUpload | `If-None-Match`, `If-Match` | Evaluated against the destination key |
+  | CopyObject | `If-None-Match`, `If-Match` | Destination-side, per the [Oct 2025 launch](https://aws.amazon.com/about-aws/whats-new/2025/10/amazon-s3-conditional-write-functionality-copy-operations) |
+  | DeleteObject | `If-Match` | [Conditional deletes](https://aws.amazon.com/about-aws/whats-new/2025/09/amazon-s3-conditional-deletes-s3-general-purpose-buckets); `*` asserts existence, a concrete ETag against a missing key answers `404 NoSuchKey` |
+  | DeleteObject (directory buckets) | `x-amz-if-match-last-modified-time`, `x-amz-if-match-size` | Combinable with `If-Match`; an already-deleted key still answers `204`. Sending either on a general-purpose bucket is rejected with `501 NotImplemented`, as AWS scopes them to directory buckets |
+  | DeleteObjects | per-object `<ETag>`, plus `<LastModifiedTime>` / `<Size>` on directory buckets | Failures land in the response's `<Error>` entries (reported in quiet mode too) while the rest of the batch proceeds — including the `NotImplemented` a directory-only element earns on a general-purpose bucket. A malformed value is a `400 InvalidArgument` for the whole request instead, raised before any key is deleted, and a truncated body is a `400 MalformedXML` that deletes nothing |
+  | GetObject | `If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since` | Conditional reads |
+  | RenameObject | source and destination conditionals | See RenameObject above |
+
+  ETag comparison is shared across all of these, so an unquoted tag and a weak validator (`W/"..."`) mean the same thing everywhere. `x-amz-if-match-last-modified-time` takes an HTTP-date, and the `<LastModifiedTime>` element an RFC-3339 date-time whose UTC offset is required — an offset-less timestamp is rejected rather than silently read in the server's own timezone, as is a day that never existed (`2026-02-29`) rather than rolling it over into March.
+
 - **Event notifications** — `PutBucketNotificationConfiguration` / `GetBucketNotificationConfiguration` wire object events (`ObjectCreated:*`, `ObjectRemoved:*`) to SQS queues and SNS topics, with optional prefix/suffix key filters. Events are delivered as the standard S3 `{"Records":[...]}` JSON envelope, with the object key URL-encoded as real S3 does. Destination ARNs and event names are validated when the configuration is set, and the configuration is persisted across restarts. Lambda and EventBridge destinations are not supported.
 
 ### S3 URL styles
