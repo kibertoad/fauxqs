@@ -1,11 +1,11 @@
 import assert from "node:assert";
-import { execSync } from "node:child_process";
 import {
   S3Client,
   CreateBucketCommand,
   PutObjectCommand,
   GetObjectCommand,
 } from "@aws-sdk/client-s3";
+import { pollHealth, run } from "./dockerTestUtils.ts";
 
 const CONTAINER_NAME = `fauxqs-acceptance-${Date.now()}`;
 const HOST_PORT = 14566;
@@ -13,33 +13,6 @@ const ENDPOINT = `http://s3.localhost.fauxqs.dev:${HOST_PORT}`;
 const BUCKET = "test-bucket";
 const KEY = "hello.txt";
 const BODY = "Hello from Docker acceptance test!";
-
-function run(cmd: string): string {
-  return execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
-}
-
-async function pollHealth(timeoutMs = 30_000): Promise<void> {
-  const start = Date.now();
-  // Use plain localhost for health check — no wildcard DNS dependency
-  const url = `http://localhost:${HOST_PORT}/health`;
-  let lastError: unknown;
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-      lastError = new Error(`Health check returned ${res.status}`);
-    } catch (err) {
-      lastError = err;
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  // Dump container logs for debugging
-  try {
-    const logs = run(`docker logs ${CONTAINER_NAME}`);
-    console.error("Container logs:\n" + logs);
-  } catch { /* container may be gone */ }
-  throw new Error(`Health check timed out after ${timeoutMs}ms (last error: ${lastError})`);
-}
 
 async function main() {
   console.log("Building Docker image...");
@@ -51,7 +24,7 @@ async function main() {
   );
 
   console.log("Waiting for health check...");
-  await pollHealth();
+  await pollHealth(HOST_PORT, CONTAINER_NAME);
   console.log("Server is healthy.");
 
   // S3 client with virtual-hosted-style (no forcePathStyle)
