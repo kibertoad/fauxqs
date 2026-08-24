@@ -4,7 +4,15 @@ import { S3Error } from "../../common/errors.ts";
 import type { S3Store } from "../s3Store.ts";
 import type { ChecksumAlgorithm } from "../s3Types.ts";
 import { decodeAwsChunked } from "../chunkedEncoding.ts";
-import { extractChecksumFromHeaders, checksumHeaderName, validateChecksum } from "../checksum.ts";
+import {
+  checksumHeaderName,
+  computeChecksum,
+  extractChecksumFromHeaders,
+  requestedChecksumAlgorithm,
+  resolveUploadChecksum,
+  validateChecksum,
+  validateContentMd5,
+} from "../checksum.ts";
 import { checkConditionalWrite } from "../conditionalWrites.ts";
 
 interface ChecksumData {
@@ -49,6 +57,17 @@ function extractSystemMetadata(headers: Record<string, string | string[] | undef
   return result;
 }
 
+/**
+ * Resolve the destination bucket before anything that inspects the body. Real
+ * S3 answers NoSuchBucket first; deferring it to store.putObject would let a
+ * checksum or precondition failure mask a typo'd bucket name.
+ */
+function requireBucket(store: S3Store, bucket: string): void {
+  if (!store.hasBucket(bucket)) {
+    throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
+  }
+}
+
 export function putObject(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
   reply: FastifyReply,
@@ -58,6 +77,8 @@ export function putObject(
   const key = request.params["*"];
   const contentType = request.headers["content-type"] ?? "application/octet-stream";
   const copySource = request.headers["x-amz-copy-source"] as string | undefined;
+  const headers = request.headers as Record<string, string | string[] | undefined>;
+  const validateChecksums = !store.relaxedRules?.disableChecksumValidation;
 
   if (copySource) {
     // CopyObject: copy from source bucket/key
@@ -73,15 +94,12 @@ export function putObject(
     const srcObj = store.getObject(srcBucket, srcKey);
     const metadataDirective =
       (request.headers["x-amz-metadata-directive"] as string | undefined) ?? "COPY";
-    const metadata =
-      metadataDirective === "REPLACE"
-        ? extractMetadata(request.headers as Record<string, string | string[] | undefined>)
-        : srcObj.metadata;
+    const metadata = metadataDirective === "REPLACE" ? extractMetadata(headers) : srcObj.metadata;
 
     const destContentType = metadataDirective === "REPLACE" ? contentType : srcObj.contentType;
     const systemMeta =
       metadataDirective === "REPLACE"
-        ? extractSystemMetadata(request.headers as Record<string, string | string[] | undefined>)
+        ? extractSystemMetadata(headers)
         : {
             ...(srcObj.contentLanguage && { contentLanguage: srcObj.contentLanguage }),
             ...(srcObj.contentDisposition && { contentDisposition: srcObj.contentDisposition }),
@@ -89,33 +107,41 @@ export function putObject(
             ...(srcObj.contentEncoding && { contentEncoding: srcObj.contentEncoding }),
           };
 
-    // Checksum: COPY preserves source checksum, REPLACE reads from request headers
+    requireBucket(store, bucket);
+
+    // Conditional write (If-None-Match / If-Match) against the destination key.
+    checkConditionalWrite(headers, store.peekObject(bucket, key));
+
+    // Checksum, in the order real S3 resolves it: an explicit value on a
+    // REPLACE, else an algorithm the client asked S3 to compute, else the
+    // source object's own checksum (COPY only).
     let checksumData: ChecksumData | undefined;
-    if (metadataDirective === "REPLACE") {
-      const cksum = extractChecksumFromHeaders(
-        request.headers as Record<string, string | string[] | undefined>,
-      );
-      if (cksum) {
-        if (store.strictRules?.validateChecksums) {
-          validateChecksum(cksum.algorithm, cksum.value, srcObj.body);
-        }
-        checksumData = { algorithm: cksum.algorithm, value: cksum.value, type: "FULL_OBJECT" };
+    const supplied =
+      metadataDirective === "REPLACE" ? extractChecksumFromHeaders(headers) : undefined;
+    const requested = requestedChecksumAlgorithm(headers);
+    if (supplied) {
+      if (validateChecksums) {
+        validateChecksum(supplied.algorithm, supplied.value, srcObj.body);
       }
-    } else if (srcObj.checksumAlgorithm && srcObj.checksumValue && srcObj.checksumType) {
+      checksumData = { algorithm: supplied.algorithm, value: supplied.value, type: "FULL_OBJECT" };
+    } else if (requested) {
+      checksumData = {
+        algorithm: requested,
+        value: computeChecksum(requested, srcObj.body),
+        type: "FULL_OBJECT",
+      };
+    } else if (
+      metadataDirective !== "REPLACE" &&
+      srcObj.checksumAlgorithm &&
+      srcObj.checksumValue &&
+      srcObj.checksumType
+    ) {
       checksumData = {
         algorithm: srcObj.checksumAlgorithm,
         value: srcObj.checksumValue,
         type: srcObj.checksumType,
         ...(srcObj.partChecksums && { partChecksums: srcObj.partChecksums }),
       };
-    }
-
-    // Conditional write (If-None-Match / If-Match) against the destination key.
-    if (store.hasBucket(bucket)) {
-      checkConditionalWrite(
-        request.headers as Record<string, string | string[] | undefined>,
-        store.peekObject(bucket, key),
-      );
     }
 
     const obj = store.putObject(
@@ -151,6 +177,13 @@ export function putObject(
       `<CopyObjectResult>`,
       `  <ETag>${result.CopyObjectResult!.ETag}</ETag>`,
       `  <LastModified>${result.CopyObjectResult!.LastModified!.toISOString()}</LastModified>`,
+      // Real S3 reports the destination checksum inside CopyObjectResult.
+      ...(obj.checksumAlgorithm && obj.checksumValue
+        ? [
+            `  <Checksum${obj.checksumAlgorithm}>${obj.checksumValue}</Checksum${obj.checksumAlgorithm}>`,
+            `  <ChecksumType>${obj.checksumType ?? "FULL_OBJECT"}</ChecksumType>`,
+          ]
+        : []),
       `</CopyObjectResult>`,
     ].join("\n");
 
@@ -170,31 +203,22 @@ export function putObject(
     trailers = decoded.trailers;
   }
 
-  const metadata = extractMetadata(
-    request.headers as Record<string, string | string[] | undefined>,
-  );
-  const systemMeta = extractSystemMetadata(
-    request.headers as Record<string, string | string[] | undefined>,
-  );
+  const metadata = extractMetadata(headers);
+  const systemMeta = extractSystemMetadata(headers);
 
-  // Extract checksum from trailing headers first, then regular headers
-  const cksum =
-    extractChecksumFromHeaders(trailers) ??
-    extractChecksumFromHeaders(request.headers as Record<string, string | string[] | undefined>);
-  if (cksum && store.strictRules?.validateChecksums) {
-    validateChecksum(cksum.algorithm, cksum.value, body);
+  requireBucket(store, bucket);
+
+  // Conditional write (If-None-Match / If-Match) against the destination key.
+  checkConditionalWrite(headers, store.peekObject(bucket, key));
+
+  if (validateChecksums) {
+    validateContentMd5(headers, body);
   }
+  // Trailing headers first, then regular headers, then the algorithm-only form.
+  const cksum = resolveUploadChecksum(headers, trailers, body, validateChecksums);
   const checksumData = cksum
     ? { algorithm: cksum.algorithm, value: cksum.value, type: "FULL_OBJECT" as const }
     : undefined;
-
-  // Conditional write (If-None-Match / If-Match) against the destination key.
-  if (store.hasBucket(bucket)) {
-    checkConditionalWrite(
-      request.headers as Record<string, string | string[] | undefined>,
-      store.peekObject(bucket, key),
-    );
-  }
 
   const obj = store.putObject(bucket, key, body, contentType, metadata, systemMeta, checksumData);
 

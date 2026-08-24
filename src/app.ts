@@ -99,11 +99,10 @@ export type {
 export interface RelaxedRules {
   /** Disable the 5 MiB minimum source size requirement for UploadPartCopy byte-range copies. */
   disableMinCopySourceSize?: boolean;
-}
-
-export interface StrictRules {
-  /** Verify uploaded bodies against the `x-amz-checksum-*` header the client sent, rejecting mismatches with `BadDigest`. */
-  validateChecksums?: boolean;
+  /** Stop verifying uploaded bodies against the `x-amz-checksum-*`/`Content-MD5` header the client
+   *  sent. fauxqs validates by default, the way real S3 does; disabling that lets a corrupted upload
+   *  succeed locally and fail against AWS. */
+  disableChecksumValidation?: boolean;
 }
 
 export interface BuildAppOptions {
@@ -112,7 +111,6 @@ export interface BuildAppOptions {
   defaultRegion?: string;
   stores?: { sqsStore: SqsStore; snsStore: SnsStore; s3Store: S3Store };
   relaxedRules?: RelaxedRules;
-  strictRules?: StrictRules;
   tenantManager?: TenantManager;
   /** Seed for the standard-queue reordering PRNG. Standard queues always reorder (real SQS/SNS give no
    *  ordering guarantee); a seed only makes that reordering deterministic. Use a FIFO queue if you need ordering. */
@@ -278,9 +276,6 @@ export function buildApp(options?: BuildAppOptions) {
   const s3Store = options?.stores?.s3Store ?? new S3Store();
   if (options?.relaxedRules) {
     s3Store.relaxedRules = options.relaxedRules;
-  }
-  if (options?.strictRules) {
-    s3Store.strictRules = options.strictRules;
   }
   // Wire S3 object events to SQS queues and SNS topics (bucket notification configs).
   s3Store.notificationDispatcher = new S3NotificationDispatcher(
@@ -490,11 +485,9 @@ export async function startFauxqs(options?: {
   init?: string | import("./initConfig.ts").FauxqsInitConfig;
   /** Enable message spying. Pass `true` for defaults or `MessageSpyParams` to configure buffer size. */
   messageSpies?: boolean | import("./spy.ts").MessageSpyParams;
-  /** Relax certain AWS-strict validations for local development convenience. */
+  /** Relax certain AWS-strict validations for local development convenience.
+   *  Env fallback for `disableChecksumValidation`: FAUXQS_DISABLE_CHECKSUM_VALIDATION. */
   relaxedRules?: RelaxedRules;
-  /** Enable extra AWS-accurate validations that fauxqs skips by default, so local runs fail the way production would.
-   *  Env fallback for `validateChecksums`: FAUXQS_VALIDATE_CHECKSUMS. */
-  strictRules?: StrictRules;
   /** Directory for SQLite persistence. When set, state survives restarts. No env var fallback — explicit opt-in only. */
   dataDir?: string;
   /** Directory for file-based S3 object storage. When set, S3 objects are stored as inspectable files on disk instead of in SQLite. Independent of dataDir. */
@@ -512,9 +505,13 @@ export async function startFauxqs(options?: {
   const loggerEnv = process.env.FAUXQS_LOGGER;
   const logger = options?.logger ?? (loggerEnv !== undefined ? loggerEnv !== "false" : true);
   const init = options?.init ?? process.env.FAUXQS_INIT;
-  const strictRules: StrictRules = {
-    validateChecksums:
-      options?.strictRules?.validateChecksums ?? process.env.FAUXQS_VALIDATE_CHECKSUMS === "true",
+  // Spread rather than rebuild, so a rule added to RelaxedRules is forwarded
+  // without having to be repeated here.
+  const relaxedRules: RelaxedRules = {
+    ...options?.relaxedRules,
+    disableChecksumValidation:
+      options?.relaxedRules?.disableChecksumValidation ??
+      process.env.FAUXQS_DISABLE_CHECKSUM_VALIDATION === "true",
   };
 
   // When tenant management is enabled, use tracked store subclasses that record
@@ -603,8 +600,7 @@ export async function startFauxqs(options?: {
     host,
     defaultRegion,
     stores: { sqsStore, snsStore, s3Store },
-    relaxedRules: options?.relaxedRules,
-    strictRules,
+    relaxedRules,
     tenantManager,
   });
 

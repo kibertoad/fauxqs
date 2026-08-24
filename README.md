@@ -21,7 +21,6 @@ All state is in-memory by default. Optional SQLite-based persistence is availabl
   - [Configuring AWS SDK clients](#configuring-aws-sdk-clients)
   - [Programmatic usage](#programmatic-usage)
     - [Relaxed rules](#relaxed-rules)
-    - [Strict rules](#strict-rules)
     - [Programmatic state setup](#programmatic-state-setup)
     - [Sending messages programmatically](#sending-messages-programmatically)
     - [Init config file](#init-config-file)
@@ -95,7 +94,7 @@ The server starts on port `4566` and handles SQS, SNS, and S3 on a single endpoi
 | `FAUXQS_DATA_DIR` | Directory for SQLite persistence (see [Persistence](#persistence)). Omit to keep all state in-memory. | (none) |
 | `FAUXQS_PERSISTENCE` | Set to `true` to enable persistence when `FAUXQS_DATA_DIR` is set | `false` |
 | `FAUXQS_S3_STORAGE_DIR` | Directory for file-based S3 object storage (see [File-based S3 storage](#file-based-s3-storage)). Independent of `FAUXQS_DATA_DIR`. | (none) |
-| `FAUXQS_VALIDATE_CHECKSUMS` | Set to `true` to verify uploaded bodies against the `x-amz-checksum-*` header and reject mismatches with `BadDigest` (see [Strict rules](#strict-rules)) | `false` |
+| `FAUXQS_DISABLE_CHECKSUM_VALIDATION` | Set to `true` to stop verifying uploaded bodies against the `x-amz-checksum-*`/`Content-MD5` header the client sent (see [Relaxed rules](#relaxed-rules)) | `false` |
 | `FAUXQS_ORDERING_SEED` | Seed for the standard-queue reordering PRNG, for deterministic delivery order (see [Message ordering](#message-ordering)). Omit for non-deterministic ordering. | (none) |
 | `FAUXQS_DNS_NAME` | Domain that dnsmasq resolves (including all subdomains) to the container IP. Only needed when the container hostname doesn't match the docker-compose service name — e.g., when using `container_name` or running with plain `docker run`. In docker-compose the hostname is set to the service name automatically, so this is rarely needed. (Docker only) | container hostname |
 | `FAUXQS_DNS_UPSTREAM` | Where dnsmasq forwards non-fauxqs DNS queries (e.g., `registry.npmjs.org`). Change this if you're in a corporate network with an internal DNS server, or if you prefer a different public resolver like `1.1.1.1`. (Docker only) | `8.8.8.8` |
@@ -365,6 +364,7 @@ const server = await startFauxqs({
   port: 0,
   relaxedRules: {
     disableMinCopySourceSize: true,
+    disableChecksumValidation: true,
   },
 });
 ```
@@ -372,23 +372,7 @@ const server = await startFauxqs({
 | Rule | Default | Description |
 |------|---------|-------------|
 | `disableMinCopySourceSize` | `false` | AWS requires the source object to be [larger than 5 MiB](https://docs.aws.amazon.com/AmazonS3/latest/API/API_UploadPartCopy.html) for byte-range `UploadPartCopy`. Set to `true` to allow byte-range copies from smaller sources. |
-
-#### Strict rules
-
-A few AWS behaviours are *skipped* rather than relaxed, because a mock server has no reason to be authoritative about them. Where skipping one can hide a bug that only shows up in production, you can opt into the strict version:
-
-```typescript
-const server = await startFauxqs({
-  port: 0,
-  strictRules: {
-    validateChecksums: true,
-  },
-});
-```
-
-| Rule | Default | Description |
-|------|---------|-------------|
-| `validateChecksums` | `false` | Recompute the body checksum on `PutObject`, `UploadPart` and `CopyObject`, and reject a mismatch with `400 BadDigest` the way real S3 does. By default fauxqs stores whatever `x-amz-checksum-*` value the client sends, so a corrupted upload succeeds locally and fails against AWS. Env fallback: `FAUXQS_VALIDATE_CHECKSUMS=true`. |
+| `disableChecksumValidation` | `false` | fauxqs recomputes the body checksum on `PutObject`, `UploadPart` and `CopyObject` and rejects a mismatch with `400 BadDigest`, the way real S3 does — a corrupted upload should not succeed locally and fail against AWS. Set to `true` to store whatever `x-amz-checksum-*`/`Content-MD5` value the client sends without checking it. Env fallback: `FAUXQS_DISABLE_CHECKSUM_VALIDATION=true`. |
 
 #### Message ordering
 
@@ -1407,7 +1391,7 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Bulk delete** — DeleteObjects for batch key deletion with proper XML entity handling
 - **Keys with slashes** — full support for slash-delimited keys (e.g., `path/to/file.txt`)
 - **Stream uploads** — handles AWS chunked transfer encoding (`Content-Encoding: aws-chunked`) for stream bodies, including trailing header parsing for checksums
-- **Checksums** — all ten algorithms S3 supports: CRC32, CRC32C, CRC64NVME, SHA1, SHA256, and the five [added in April 2026](https://aws.amazon.com/about-aws/whats-new/2026/04/s3-five-additional-checksum-algorithms/) — SHA512, MD5, XXHASH64, XXHASH3 and XXHASH128. Checksums are stored on upload (PutObject, UploadPart, CopyObject) and returned on download (GetObject, HeadObject with `x-amz-checksum-mode: ENABLED`). Multipart uploads compute composite checksums, except CRC64NVME which is always a full-object checksum. GetObjectAttributes supports the `Checksum` attribute, including per-part checksums. Note that flexible-checksum MD5 is requested with `x-amz-checksum-md5`; the legacy `Content-MD5` header is a separate integrity header and does not store or return a flexible checksum. Bodies are **not** validated against the checksum by default — set [`validateChecksums`](#strict-rules) to have fauxqs recompute them and reject mismatches with `BadDigest`.
+- **Checksums** — all ten algorithms S3 supports: CRC32, CRC32C, CRC64NVME, SHA1, SHA256, and the five [added in April 2026](https://aws.amazon.com/about-aws/whats-new/2026/04/s3-five-additional-checksum-algorithms/) — SHA512, MD5, XXHASH64, XXHASH3 and XXHASH128. Checksums are stored on upload (PutObject, UploadPart, CopyObject) and returned on download (GetObject, HeadObject with `x-amz-checksum-mode: ENABLED`). A client may either send the value itself in an `x-amz-checksum-*` header or just name an algorithm with `x-amz-checksum-algorithm` and let fauxqs compute it. Multipart uploads compute composite checksums, except CRC64NVME which is always a full-object checksum; part checksums are computed for you when the client doesn't send one (as with UploadPartCopy). GetObjectAttributes supports the `Checksum` attribute, including per-part checksums. Note that flexible-checksum MD5 is requested with `x-amz-checksum-md5`; the legacy `Content-MD5` header is a separate integrity header and does not store or return a flexible checksum, though a mismatch on it is rejected with `BadDigest` too. Uploaded bodies **are** validated against the checksum the client sent — set [`disableChecksumValidation`](#relaxed-rules) to store it unchecked instead.
 - **GetObjectAttributes** — selective metadata retrieval via `x-amz-object-attributes` header: ETag, StorageClass, ObjectSize, ObjectParts (with pagination), and Checksum (including per-part checksums for multipart objects)
 - **RenameObject** — atomic rename within directory buckets (`PUT /:bucket/:key?renameObject`). Preserves all metadata, ETag, timestamps, and checksums. Rejects general-purpose buckets. Default no-overwrite (412 if destination exists unless `If-Match` is provided). Supports source and destination conditional headers.
 - **Directory buckets** — `CreateBucket` accepts `<Type>Directory</Type>` in the body. Programmatic API: `server.createBucket("name", { type: "directory" })`. Init config supports `{ name, type, lifecycleConfiguration }` objects in the `buckets` array.

@@ -302,14 +302,14 @@ describe("S3 checksum algorithms added in 2026", () => {
   });
 });
 
-describe("opt-in checksum validation", () => {
+describe("checksum validation", () => {
   let server: FauxqsServer;
   let s3: ReturnType<typeof createS3Client>;
   let baseUrl: string;
   const bucket = "validated-bucket";
 
   beforeAll(async () => {
-    server = await startFauxqsTestServer({ strictRules: { validateChecksums: true } });
+    server = await startFauxqsTestServer();
     s3 = createS3Client(server.port);
     baseUrl = `http://127.0.0.1:${server.port}`;
     await s3.send(new CreateBucketCommand({ Bucket: bucket }));
@@ -418,13 +418,15 @@ describe("opt-in checksum validation", () => {
   });
 });
 
-describe("checksum validation is off by default", () => {
+describe("checksum validation disabled by relaxed rule", () => {
   let server: FauxqsServer;
   let s3: ReturnType<typeof createS3Client>;
   const bucket = "unvalidated-bucket";
 
   beforeAll(async () => {
-    server = await startFauxqsTestServer();
+    server = await startFauxqsTestServer({
+      relaxedRules: { disableChecksumValidation: true },
+    });
     s3 = createS3Client(server.port);
     await s3.send(new CreateBucketCommand({ Bucket: bucket }));
   });
@@ -452,4 +454,248 @@ describe("checksum validation is off by default", () => {
     expect(stored.headers.get("x-amz-checksum-sha256")).toBe(wrong);
     await stored.text();
   });
+});
+
+describe("checksum request handling", () => {
+  let server: FauxqsServer;
+  let s3: ReturnType<typeof createS3Client>;
+  let baseUrl: string;
+  const bucket = "checksum-requests";
+
+  beforeAll(async () => {
+    server = await startFauxqsTestServer();
+    s3 = createS3Client(server.port);
+    baseUrl = `http://127.0.0.1:${server.port}`;
+    await s3.send(new CreateBucketCommand({ Bucket: bucket }));
+  });
+
+  afterAll(async () => {
+    s3.destroy();
+    await server.stop();
+  });
+
+  const put = (key: string, body: string, headers: Record<string, string>) =>
+    fetch(`${baseUrl}/${bucket}/${key}`, { method: "PUT", headers, body });
+
+  it("rejects a request carrying two different checksum headers", async () => {
+    const body = "two headers";
+    const response = await put("two-headers.txt", body, {
+      "x-amz-checksum-crc32": computeChecksum("CRC32", Buffer.from(body)),
+      "x-amz-checksum-sha256": computeChecksum("SHA256", Buffer.from("something else")),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("<Code>InvalidRequest</Code>");
+  });
+
+  it("rejects a Content-MD5 that does not match the body", async () => {
+    const response = await put("bad-content-md5.txt", "the real body", {
+      "content-md5": createHash("md5").update("other").digest("base64"),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("<Code>BadDigest</Code>");
+  });
+
+  it("rejects a Content-MD5 that is not a 16-byte digest", async () => {
+    const response = await put("invalid-content-md5.txt", "body", { "content-md5": "not-base64!" });
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("<Code>InvalidDigest</Code>");
+  });
+
+  it("reports a missing bucket before validating the checksum", async () => {
+    const response = await fetch(`${baseUrl}/no-such-bucket-here/object.txt`, {
+      method: "PUT",
+      headers: { "x-amz-checksum-crc32": computeChecksum("CRC32", Buffer.from("other")) },
+      body: "the real body",
+    });
+    expect(response.status).toBe(404);
+    expect(await response.text()).toContain("<Code>NoSuchBucket</Code>");
+  });
+
+  it("computes the checksum when the client only names an algorithm", async () => {
+    const body = "let S3 compute it";
+    const response = await put("algorithm-only.txt", body, {
+      "x-amz-checksum-algorithm": "SHA256",
+    });
+    const expected = computeChecksum("SHA256", Buffer.from(body));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-amz-checksum-sha256")).toBe(expected);
+    await response.text();
+
+    const head = await s3.send(
+      new HeadObjectCommand({
+        Bucket: bucket,
+        Key: "algorithm-only.txt",
+        ChecksumMode: ChecksumMode.ENABLED,
+      }),
+    );
+    expect(head.ChecksumSHA256).toBe(expected);
+  });
+
+  it("computes the destination checksum on CopyObject when an algorithm is named", async () => {
+    const body = "copy me";
+    await (await put("copy-source.txt", body, {})).text();
+
+    const response = await fetch(`${baseUrl}/${bucket}/copy-dest.txt`, {
+      method: "PUT",
+      headers: {
+        "x-amz-copy-source": `/${bucket}/copy-source.txt`,
+        "x-amz-checksum-algorithm": "SHA256",
+      },
+    });
+    const expected = computeChecksum("SHA256", Buffer.from(body));
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain(`<ChecksumSHA256>${expected}</ChecksumSHA256>`);
+
+    const head = await s3.send(
+      new HeadObjectCommand({
+        Bucket: bucket,
+        Key: "copy-dest.txt",
+        ChecksumMode: ChecksumMode.ENABLED,
+      }),
+    );
+    expect(head.ChecksumSHA256).toBe(expected);
+  });
+
+  it("computes the destination checksum on an SDK CopyObject", async () => {
+    const body = "sdk copy";
+    await (await put("sdk-copy-source.txt", body, {})).text();
+    await s3.send(
+      new CopyObjectCommand({
+        Bucket: bucket,
+        Key: "sdk-copy-dest.txt",
+        CopySource: `${bucket}/sdk-copy-source.txt`,
+        ChecksumAlgorithm: "SHA256",
+      }),
+    );
+    const head = await s3.send(
+      new HeadObjectCommand({
+        Bucket: bucket,
+        Key: "sdk-copy-dest.txt",
+        ChecksumMode: ChecksumMode.ENABLED,
+      }),
+    );
+    expect(head.ChecksumSHA256).toBe(computeChecksum("SHA256", Buffer.from(body)));
+  });
+});
+
+describe("multipart part checksums", () => {
+  let server: FauxqsServer;
+  let s3: ReturnType<typeof createS3Client>;
+  let baseUrl: string;
+  const bucket = "multipart-checksums";
+
+  beforeAll(async () => {
+    server = await startFauxqsTestServer();
+    s3 = createS3Client(server.port);
+    baseUrl = `http://127.0.0.1:${server.port}`;
+    await s3.send(new CreateBucketCommand({ Bucket: bucket }));
+  });
+
+  afterAll(async () => {
+    s3.destroy();
+    await server.stop();
+  });
+
+  const createUpload = async (key: string, algorithm: ChecksumAlgorithm) => {
+    const response = await fetch(`${baseUrl}/${bucket}/${key}?uploads`, {
+      method: "POST",
+      headers: { "x-amz-checksum-algorithm": algorithm },
+    });
+    const xml = await response.text();
+    return xml.match(/<UploadId>([^<]+)<\/UploadId>/)![1];
+  };
+
+  const complete = async (
+    key: string,
+    uploadId: string,
+    parts: { etag: string; partNumber: number }[],
+  ) => {
+    const body = [
+      "<CompleteMultipartUpload>",
+      ...parts.map(
+        (p) => `<Part><PartNumber>${p.partNumber}</PartNumber><ETag>${p.etag}</ETag></Part>`,
+      ),
+      "</CompleteMultipartUpload>",
+    ].join("");
+    const response = await fetch(`${baseUrl}/${bucket}/${key}?uploadId=${uploadId}`, {
+      method: "POST",
+      body,
+    });
+    return { status: response.status, xml: await response.text() };
+  };
+
+  it("rejects a part whose checksum algorithm is not the upload's", async () => {
+    const key = "algorithm-mismatch";
+    const uploadId = await createUpload(key, "SHA256");
+    const part = Buffer.from("a part");
+    const response = await fetch(
+      `${baseUrl}/${bucket}/${key}?partNumber=1&uploadId=${uploadId}`,
+      {
+        method: "PUT",
+        headers: { "x-amz-checksum-crc32": computeChecksum("CRC32", part) },
+        body: part,
+      },
+    );
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("<Code>InvalidRequest</Code>");
+  });
+
+  it("computes a part checksum the client did not send", async () => {
+    const key = "part-checksum-computed";
+    const uploadId = await createUpload(key, "SHA512");
+    const part = Buffer.from("no checksum header on this part");
+    const response = await fetch(
+      `${baseUrl}/${bucket}/${key}?partNumber=1&uploadId=${uploadId}`,
+      { method: "PUT", body: part },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-amz-checksum-sha512")).toBe(computeChecksum("SHA512", part));
+    await response.text();
+  });
+
+  it("completes an upload whose first part came from UploadPartCopy", async () => {
+    const source = Buffer.alloc(5 * 1024 * 1024, "s");
+    await (
+      await fetch(`${baseUrl}/${bucket}/copy-part-source`, { method: "PUT", body: source })
+    ).text();
+
+    const key = "upload-part-copy";
+    const uploadId = await createUpload(key, "SHA512");
+
+    const copied = await fetch(`${baseUrl}/${bucket}/${key}?partNumber=1&uploadId=${uploadId}`, {
+      method: "PUT",
+      headers: { "x-amz-copy-source": `/${bucket}/copy-part-source` },
+    });
+    expect(copied.status).toBe(200);
+    const copyXml = await copied.text();
+    const part1Checksum = computeChecksum("SHA512", source);
+    // Real S3 reports the checksum it computed for the copied range.
+    expect(copyXml).toContain(`<ChecksumSHA512>${part1Checksum}</ChecksumSHA512>`);
+    const part1Etag = copyXml.match(/<ETag>([^<]+)<\/ETag>/)![1];
+
+    const part2 = Buffer.from("uploaded normally");
+    const uploaded = await fetch(
+      `${baseUrl}/${bucket}/${key}?partNumber=2&uploadId=${uploadId}`,
+      {
+        method: "PUT",
+        headers: { "x-amz-checksum-sha512": computeChecksum("SHA512", part2) },
+        body: part2,
+      },
+    );
+    const part2Etag = uploaded.headers.get("etag")!;
+    await uploaded.text();
+
+    const { status, xml } = await complete(key, uploadId, [
+      { partNumber: 1, etag: part1Etag },
+      { partNumber: 2, etag: part2Etag },
+    ]);
+    expect(status).toBe(200);
+    const expected = `${computeChecksum(
+      "SHA512",
+      Buffer.concat(
+        [part1Checksum, computeChecksum("SHA512", part2)].map((c) => Buffer.from(c, "base64")),
+      ),
+    )}-2`;
+    expect(xml).toContain(`<ChecksumSHA512>${expected}</ChecksumSHA512>`);
+  }, 30_000);
 });

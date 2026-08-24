@@ -100,8 +100,8 @@ describe("env vars", () => {
     }
   });
 
-  it("FAUXQS_VALIDATE_CHECKSUMS=true rejects a body that does not match its checksum", async () => {
-    setEnv("FAUXQS_VALIDATE_CHECKSUMS", "true");
+  it("FAUXQS_DISABLE_CHECKSUM_VALIDATION=true accepts a body that does not match its checksum", async () => {
+    setEnv("FAUXQS_DISABLE_CHECKSUM_VALIDATION", "true");
     server = await startFauxqs({ port: 0, logger: false });
     server.createBucket("env-checksum-b");
 
@@ -112,16 +112,16 @@ describe("env vars", () => {
       body: "the real body",
     });
 
-    expect(response.status).toBe(400);
-    expect(await response.text()).toContain("<Code>BadDigest</Code>");
+    expect(response.status).toBe(200);
+    await response.text();
   });
 
-  it("programmatic strictRules take precedence over FAUXQS_VALIDATE_CHECKSUMS", async () => {
-    setEnv("FAUXQS_VALIDATE_CHECKSUMS", "true");
+  it("programmatic relaxedRules take precedence over FAUXQS_DISABLE_CHECKSUM_VALIDATION", async () => {
+    setEnv("FAUXQS_DISABLE_CHECKSUM_VALIDATION", "true");
     server = await startFauxqs({
       port: 0,
       logger: false,
-      strictRules: { validateChecksums: false },
+      relaxedRules: { disableChecksumValidation: false },
     });
     server.createBucket("env-checksum-off-b");
 
@@ -131,8 +131,8 @@ describe("env vars", () => {
       body: "the real body",
     });
 
-    expect(response.status).toBe(200);
-    await response.text();
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("<Code>BadDigest</Code>");
   });
 
   it("programmatic options take precedence over env vars", async () => {
