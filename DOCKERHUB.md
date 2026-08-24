@@ -101,29 +101,29 @@ Alternatively, use `forcePathStyle: true` on the S3 client if you prefer path-st
 | `FAUXQS_PERSISTENCE` | Enable SQLite persistence (requires a volume mounted at `/data`) | `false` |
 | `FAUXQS_DATA_DIR` | Directory for the SQLite database | `/data` (preset in image) |
 | `FAUXQS_S3_STORAGE_DIR` | Store S3 objects as files on disk instead of SQLite blobs | (none) |
-| `FAUXQS_RUN_USER` | User the server runs as — name, uid, or `uid:gid` | `node` (uid 1000) |
+| `FAUXQS_RUN_USER` | User the server runs as (name, uid, or `uid:gid`) | `node` (uid 1000) |
 | `FAUXQS_RUN_AS_ROOT` | Keep the server running as root instead of dropping privileges | `false` |
 
 ## Container User
 
-By default the server runs as the unprivileged `node` user (uid 1000). The entrypoint starts as root only to bind dnsmasq to port 53 and to hand the mounted directories over to that user, so root-owned bind mounts like `-v ./volume:/data` keep working with nothing to prepare on the host. Directories that are already writable by that user keep their ownership — the handover only happens where it is needed.
+By default the server runs as the unprivileged `node` user (uid 1000). The entrypoint starts as root to bind dnsmasq to port 53 and to hand the mounted directories over to that user, so root-owned bind mounts like `-v ./volume:/data` keep working with nothing to prepare on the host. Directories `node` can already write to keep their ownership; the handover only happens where it is needed.
 
-Non-root is the default, not a guarantee. Two supported cases keep the server as root, both of them logged:
+Two situations leave the server running as root, and both are visible in the log, so non-root is the default rather than a guarantee:
 
 - `FAUXQS_RUN_AS_ROOT=true`, which selects root deliberately.
-- A write directory that `chown` cannot hand over while root can still write to it — some remote filesystems ignore `chown`. The entrypoint prints `WARNING: Keeping the server as root, which can write to <dir>` and names the directory. If *neither* the unprivileged user nor root can write to it (a read-only mount), it refuses to start instead of failing on the first write.
+- A write directory that `chown` cannot hand over while root can still write to it. Some remote filesystems accept a `chown` without applying it; there the entrypoint logs `WARNING: Keeping the server as root, which can write to <dir>`. If neither the unprivileged user nor root can write to it, as on a read-only mount, the container names the directory and refuses to start instead of failing on its first write.
 
-To avoid the root phase entirely, start the container as non-root — dnsmasq carries `cap_net_bind_service` as a file capability, so wildcard DNS still works:
+To avoid the root phase entirely, start the container as non-root. dnsmasq carries `cap_net_bind_service` as a file capability, so wildcard DNS still works:
 
 ```bash
 docker run -p 4566:4566 --user 1000:1000 -v fauxqs-data:/data -e FAUXQS_PERSISTENCE=true kibertoad/fauxqs
 ```
 
-In that mode a bind-mounted directory must already be writable by the uid you pass; if it is not, the container reports which directory is at fault and refuses to start rather than failing every write at runtime.
+In that mode a bind-mounted directory must already be writable by the uid you pass. The container cannot fix the ownership itself, so it names the directory and refuses to start.
 
-Wildcard DNS needs the `NET_BIND_SERVICE` capability only where port 53 counts as privileged. Docker sets `net.ipv4.ip_unprivileged_port_start=0` by default, so it works there even under `--cap-drop=ALL`; most Kubernetes clusters leave port 53 privileged, so under the `restricted` policy add that one capability back to keep wildcard DNS. Where it is missing and the port is privileged, the container still starts and the API works normally — the log says wildcard DNS is unavailable.
+Wildcard DNS needs the `NET_BIND_SERVICE` capability only where port 53 counts as privileged. Docker sets `net.ipv4.ip_unprivileged_port_start=0` by default, so it keeps working there even under `--cap-drop=ALL`. Most Kubernetes clusters leave port 53 privileged, so under the `restricted` policy add that one capability back to keep wildcard DNS. Without it on a privileged-port runtime, dnsmasq does not start; the container and the API are unaffected, and the log says wildcard DNS is unavailable.
 
-That only affects clients resolving `<bucket>.s3.<container-hostname>` through the container's own DNS, i.e. other containers on the same network. Clients on the host using `*.localhost.fauxqs.dev` are unaffected, since that wildcard is public DNS. For an affected container client, point the endpoint at a name its own resolver can reach — the compose service name, e.g. `http://fauxqs:4566` — and set `forcePathStyle: true`; `forcePathStyle` alone does not change the endpoint host.
+The only clients that lose anything are the ones resolving `<bucket>.s3.<container-hostname>` through the container's own DNS, which means other containers on the same network. Clients on the host use the public `*.localhost.fauxqs.dev` wildcard, so they are unaffected. For a container client, give it an endpoint its own resolver can reach, such as the compose service name `http://fauxqs:4566`, and set `forcePathStyle: true`. Setting `forcePathStyle` on its own does not help, because it does not change the endpoint host.
 
 ## Persistence
 
