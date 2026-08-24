@@ -170,10 +170,10 @@ This keeps bind mounts working: `-v ./volume:/data` gives you a root-owned host 
 
 The handover only happens when it is needed. If the unprivileged user can already write to a directory, because you prepared it or because a previous run did, its ownership is left alone. So `chown -R` never touches host files that do not need it, and restart time does not grow with the number of stored objects.
 
-Two knobs, both for Docker only:
+Two environment variables, both Docker only:
 
 - **`FAUXQS_RUN_USER`** — run as a different user, e.g. `FAUXQS_RUN_USER=1001` or `FAUXQS_RUN_USER=501:20`. Useful when a host directory must keep a specific owner, so you'd rather match it than have it chowned. A value the server cannot run as is reported at startup; it does not quietly fall back to root.
-- **`FAUXQS_RUN_AS_ROOT=true`** — keep the server as root. An escape hatch for setups that need it; not recommended.
+- **`FAUXQS_RUN_AS_ROOT=true`** — keep the server as root. For setups that genuinely need it; not recommended.
 
 If you'd rather have no root phase at all, start the container as a non-root user:
 
