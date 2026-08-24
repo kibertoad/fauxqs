@@ -7,6 +7,11 @@ import { computeChecksum } from "../../src/s3/checksum.js";
  * (Cyan4973/xxHash v0.8.3, cli/xsum_sanity_check.c). The reference fills one
  * 2367-byte pseudorandom buffer and hashes prefixes of it, so the same PRNG is
  * reproduced here and every vector is taken over `sanityBuffer.subarray(0, len)`.
+ *
+ * That table has no entry between 97 and 128 bytes, which is a branch of its
+ * own in both XXH3 variants, so the vectors at those lengths were generated
+ * with hash-wasm 4.x after cross-checking it against every length the upstream
+ * table does cover.
  */
 const MASK64 = 0xffffffffffffffffn;
 const PRIME32 = 2654435761n;
@@ -53,6 +58,10 @@ describe("xxHash reference vectors", () => {
     [24, 0xa3fe70bf9d3510ebn],
     [48, 0x397da259ecba1f11n],
     [80, 0xbcdefbbb2c47c90an],
+    // 97-128 bytes: the one XXH3 branch the upstream sanity table skips.
+    [97, 0xca4ca268fd3c3a6cn],
+    [112, 0xd13d8f57931eef19n],
+    [128, 0xfcff24126754d861n],
     [195, 0xcd94217ee362ec3an],
     [403, 0xcdeb804d65c6dea4n],
     [512, 0x617e49599013cb6bn],
@@ -75,6 +84,10 @@ describe("xxHash reference vectors", () => {
     [24, 0x1e7044d28b1b901dn, 0x0ce966e4678d3761n],
     [48, 0xf942219aed80f67bn, 0xa002ac4e5478227en],
     [81, 0x5e8bafb9f95fb803n, 0x4952f58181ab0042n],
+    // 97-128 bytes: the one XXH3 branch the upstream sanity table skips.
+    [97, 0x7c87228ae9671ba7n, 0x09dff37faa6b284cn],
+    [112, 0xcbfd9024e4b6c79dn, 0xd1b2cf3831d419adn],
+    [128, 0xebb15e34a7fb5ab1n, 0x39992220e045260an],
     [222, 0xf1aebd597cec6b3an, 0x337e09641b948717n],
     [403, 0xcdeb804d65c6dea4n, 0x1b6de21e332dd73dn],
     [512, 0x617e49599013cb6bn, 0x18d2d110dcc9bca1n],
@@ -92,10 +105,10 @@ describe("computeChecksum encoding", () => {
   it("encodes XXHASH64 and XXHASH3 as 8 big-endian bytes", () => {
     const data = prefix(403);
     expect(Buffer.from(computeChecksum("XXHASH64", data), "base64")).toEqual(
-      bigintToBuffer(xxh64(data), 8),
+      bigintToBuffer(xxh64(data)),
     );
     expect(Buffer.from(computeChecksum("XXHASH3", data), "base64")).toEqual(
-      bigintToBuffer(xxh3_64(data), 8),
+      bigintToBuffer(xxh3_64(data)),
     );
   });
 
@@ -103,7 +116,7 @@ describe("computeChecksum encoding", () => {
     const data = prefix(403);
     const { high, low } = xxh3_128(data);
     expect(Buffer.from(computeChecksum("XXHASH128", data), "base64")).toEqual(
-      Buffer.concat([bigintToBuffer(high, 8), bigintToBuffer(low, 8)]),
+      Buffer.concat([bigintToBuffer(high), bigintToBuffer(low)]),
     );
   });
 
@@ -127,8 +140,9 @@ describe("computeChecksum encoding", () => {
   });
 });
 
-function bigintToBuffer(value: bigint, bytes: number): Buffer {
-  const buf = Buffer.alloc(bytes);
+/** A single 64-bit value as 8 big-endian bytes. */
+function bigintToBuffer(value: bigint): Buffer {
+  const buf = Buffer.alloc(8);
   buf.writeBigUInt64BE(value);
   return buf;
 }

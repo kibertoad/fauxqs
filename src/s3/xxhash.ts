@@ -10,6 +10,13 @@
  *
  * Only the default seed (0) and the default secret are supported — that is all
  * S3 uses.
+ *
+ * The loops that scale with input length keep their 64-bit state as pairs of
+ * 32-bit halves, for the same reason `crc64nvme` in checksum.ts does: a
+ * per-word BigInt operation is roughly an order of magnitude slower than the
+ * equivalent integer math, and checksums are computed on the request path.
+ * Everything that runs a bounded number of times (short inputs, finalization)
+ * stays on BigInt, where it reads much closer to the reference source.
  */
 
 const MASK64 = 0xffffffffffffffffn;
@@ -57,11 +64,79 @@ function mul128Fold64(lhs: bigint, rhs: bigint): bigint {
 }
 
 // ---------------------------------------------------------------------------
+// 64-bit arithmetic on 32-bit halves, for the length-scaling loops
+// ---------------------------------------------------------------------------
+
+const hi32 = (v: bigint): number => Number(v >> 32n);
+const lo32 = (v: bigint): number => Number(v & 0xffffffffn);
+const join64 = (hi: number, lo: number): bigint => (BigInt(hi) << 32n) | BigInt(lo);
+
+const PRIME64_1_HI = hi32(PRIME64_1);
+const PRIME64_1_LO = lo32(PRIME64_1);
+const PRIME64_2_HI = hi32(PRIME64_2);
+const PRIME64_2_LO = lo32(PRIME64_2);
+const PRIME32_1_N = Number(PRIME32_1);
+
+/**
+ * Result of the integer 64-bit helpers, returned through module state so the
+ * hot loops stay allocation-free. Every read happens immediately after the
+ * call that produced it.
+ */
+let rHi = 0;
+let rLo = 0;
+
+/** Read a little-endian uint32. Cheaper than Buffer#readUInt32LE in these loops. */
+function readU32LE(b: Buffer, o: number): number {
+  return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
+}
+
+/**
+ * rHi:rLo = a * b, the exact 64-bit product of two uint32s (XXH_mult32to64).
+ * Accumulates in 16-bit limbs so every intermediate stays below 2^32.
+ */
+function mult32to64(a: number, b: number): void {
+  const a0 = a & 0xffff;
+  const a1 = a >>> 16;
+  const b0 = b & 0xffff;
+  const b1 = b >>> 16;
+  const c0 = a0 * b0;
+  let c1 = (c0 >>> 16) + a1 * b0;
+  let c2 = c1 >>> 16;
+  c1 = (c1 & 0xffff) + a0 * b1;
+  c2 += c1 >>> 16;
+  rLo = (((c1 & 0xffff) << 16) | (c0 & 0xffff)) >>> 0;
+  rHi = (c2 + a1 * b1) >>> 0;
+}
+
+/** rHi:rLo = (aHi:aLo * bHi:bLo) mod 2^64. */
+function mulLow64(aHi: number, aLo: number, bHi: number, bLo: number): void {
+  mult32to64(aLo, bLo);
+  // aHi*bHi lands entirely above bit 63, so of the two cross products only
+  // their low 32 bits survive the truncation to 64 bits.
+  rHi = (rHi + Math.imul(aLo, bHi) + Math.imul(aHi, bLo)) >>> 0;
+}
+
+// ---------------------------------------------------------------------------
 // XXH64
 // ---------------------------------------------------------------------------
 
 function xxh64Round(acc: bigint, input: bigint): bigint {
   return mul(rotl64(add(acc, mul(input, PRIME64_2)), 31n), PRIME64_1);
+}
+
+/** rHi:rLo = xxh64Round(accHi:accLo, inputHi:inputLo). */
+function xxh64Round32(accHi: number, accLo: number, inputHi: number, inputLo: number): void {
+  mulLow64(inputHi, inputLo, PRIME64_2_HI, PRIME64_2_LO);
+  const sumLo = accLo + rLo;
+  const lo = sumLo >>> 0;
+  const hi = (accHi + rHi + (sumLo > 0xffffffff ? 1 : 0)) >>> 0;
+  // rotl64(_, 31), then multiply by PRIME64_1
+  mulLow64(
+    ((hi << 31) | (lo >>> 1)) >>> 0,
+    ((lo << 31) | (hi >>> 1)) >>> 0,
+    PRIME64_1_HI,
+    PRIME64_1_LO,
+  );
 }
 
 function xxh64MergeRound(acc: bigint, val: bigint): bigint {
@@ -109,19 +184,40 @@ export function xxh64(data: Buffer, seed: bigint = 0n): bigint {
   let p = 0;
 
   if (len >= 32) {
-    let acc0 = add(add(s, PRIME64_1), PRIME64_2);
-    let acc1 = add(s, PRIME64_2);
-    let acc2 = s;
-    let acc3 = sub(s, PRIME64_1);
+    // The striped loop runs once per 8 bytes, so it carries the four
+    // accumulators as 32-bit halves and rejoins them for the merge below.
+    const init0 = add(add(s, PRIME64_1), PRIME64_2);
+    const init1 = add(s, PRIME64_2);
+    const init3 = sub(s, PRIME64_1);
+    let a0Hi = hi32(init0);
+    let a0Lo = lo32(init0);
+    let a1Hi = hi32(init1);
+    let a1Lo = lo32(init1);
+    let a2Hi = hi32(s);
+    let a2Lo = lo32(s);
+    let a3Hi = hi32(init3);
+    let a3Lo = lo32(init3);
     const limit = len - 31;
     do {
-      acc0 = xxh64Round(acc0, data.readBigUInt64LE(p));
-      acc1 = xxh64Round(acc1, data.readBigUInt64LE(p + 8));
-      acc2 = xxh64Round(acc2, data.readBigUInt64LE(p + 16));
-      acc3 = xxh64Round(acc3, data.readBigUInt64LE(p + 24));
+      xxh64Round32(a0Hi, a0Lo, readU32LE(data, p + 4), readU32LE(data, p));
+      a0Hi = rHi;
+      a0Lo = rLo;
+      xxh64Round32(a1Hi, a1Lo, readU32LE(data, p + 12), readU32LE(data, p + 8));
+      a1Hi = rHi;
+      a1Lo = rLo;
+      xxh64Round32(a2Hi, a2Lo, readU32LE(data, p + 20), readU32LE(data, p + 16));
+      a2Hi = rHi;
+      a2Lo = rLo;
+      xxh64Round32(a3Hi, a3Lo, readU32LE(data, p + 28), readU32LE(data, p + 24));
+      a3Hi = rHi;
+      a3Lo = rLo;
       p += 32;
     } while (p < limit);
 
+    const acc0 = join64(a0Hi, a0Lo);
+    const acc1 = join64(a1Hi, a1Lo);
+    const acc2 = join64(a2Hi, a2Lo);
+    const acc3 = join64(a3Hi, a3Lo);
     h64 = add(add(rotl64(acc0, 1n), rotl64(acc1, 7n)), add(rotl64(acc2, 12n), rotl64(acc3, 18n)));
     h64 = xxh64MergeRound(h64, acc0);
     h64 = xxh64MergeRound(h64, acc1);
@@ -173,6 +269,9 @@ const SECRET64: bigint[] = Array.from({ length: SECRET.length - 7 }, (_, i) =>
 const SECRET32: number[] = Array.from({ length: SECRET.length - 3 }, (_, i) =>
   SECRET.readUInt32LE(i),
 );
+/** The same secret words split into halves, for the striped long path. */
+const SECRET_HI = new Uint32Array(SECRET64.map(hi32));
+const SECRET_LO = new Uint32Array(SECRET64.map(lo32));
 
 function xxh3Avalanche(h: bigint): bigint {
   let x = xorshift64(h, 37n);
@@ -273,25 +372,58 @@ const INIT_ACC: readonly bigint[] = [
   PRIME32_1,
 ];
 
-function accumulate512(acc: bigint[], input: Buffer, inputOffset: number, secretOffset: number) {
+const INIT_ACC_HI = new Uint32Array(INIT_ACC.map(hi32));
+const INIT_ACC_LO = new Uint32Array(INIT_ACC.map(lo32));
+
+/**
+ * Consume one 64-byte stripe into the eight accumulators. Runs once per 64
+ * bytes of input, so it stays on 32-bit halves throughout; Uint32Array stores
+ * wrap at 2^32, which is exactly the modular arithmetic the 64-bit adds need.
+ */
+function accumulate512(
+  accHi: Uint32Array,
+  accLo: Uint32Array,
+  input: Buffer,
+  inputOffset: number,
+  secretOffset: number,
+): void {
   for (let lane = 0; lane < ACC_NB; lane++) {
-    const dataVal = input.readBigUInt64LE(inputOffset + lane * 8);
-    const dataKey = dataVal ^ SECRET64[secretOffset + lane * 8];
-    acc[lane ^ 1] = add(acc[lane ^ 1], dataVal);
-    acc[lane] = add(acc[lane], (dataKey & 0xffffffffn) * (dataKey >> 32n));
+    const io = inputOffset + lane * 8;
+    const dataLo = readU32LE(input, io);
+    const dataHi = readU32LE(input, io + 4);
+    const so = secretOffset + lane * 8;
+
+    // acc[lane ^ 1] += dataVal
+    const swapped = lane ^ 1;
+    const sumLo = accLo[swapped] + dataLo;
+    accLo[swapped] = sumLo;
+    accHi[swapped] = accHi[swapped] + dataHi + (sumLo > 0xffffffff ? 1 : 0);
+
+    // acc[lane] += (dataKey & 0xffffffff) * (dataKey >> 32)
+    mult32to64((dataLo ^ SECRET_LO[so]) >>> 0, (dataHi ^ SECRET_HI[so]) >>> 0);
+    const mixLo = accLo[lane] + rLo;
+    accLo[lane] = mixLo;
+    accHi[lane] = accHi[lane] + rHi + (mixLo > 0xffffffff ? 1 : 0);
   }
 }
 
-function scrambleAcc(acc: bigint[], secretOffset: number) {
+function scrambleAcc(accHi: Uint32Array, accLo: Uint32Array, secretOffset: number): void {
   for (let lane = 0; lane < ACC_NB; lane++) {
-    let acc64 = xorshift64(acc[lane], 47n);
-    acc64 ^= SECRET64[secretOffset + lane * 8];
-    acc[lane] = mul(acc64, PRIME32_1);
+    const hi = accHi[lane];
+    const so = secretOffset + lane * 8;
+    // xorshift64(acc, 47) shifts everything out of the high half, so only the
+    // low half of the accumulator changes.
+    const keyLo = (accLo[lane] ^ (hi >>> 15) ^ SECRET_LO[so]) >>> 0;
+    const keyHi = (hi ^ SECRET_HI[so]) >>> 0;
+    mulLow64(keyHi, keyLo, 0, PRIME32_1_N);
+    accLo[lane] = rLo;
+    accHi[lane] = rHi;
   }
 }
 
-function hashLongAccumulate(input: Buffer): bigint[] {
-  const acc = INIT_ACC.slice();
+function hashLongAccumulate(input: Buffer): { accHi: Uint32Array; accLo: Uint32Array } {
+  const accHi = INIT_ACC_HI.slice();
+  const accLo = INIT_ACC_LO.slice();
   const len = input.length;
   const nbStripesPerBlock = (SECRET.length - STRIPE_LEN) / SECRET_CONSUME_RATE;
   const blockLen = STRIPE_LEN * nbStripesPerBlock;
@@ -299,33 +431,51 @@ function hashLongAccumulate(input: Buffer): bigint[] {
 
   for (let n = 0; n < nbBlocks; n++) {
     for (let stripe = 0; stripe < nbStripesPerBlock; stripe++) {
-      accumulate512(acc, input, n * blockLen + stripe * STRIPE_LEN, stripe * SECRET_CONSUME_RATE);
+      accumulate512(
+        accHi,
+        accLo,
+        input,
+        n * blockLen + stripe * STRIPE_LEN,
+        stripe * SECRET_CONSUME_RATE,
+      );
     }
-    scrambleAcc(acc, SECRET.length - STRIPE_LEN);
+    scrambleAcc(accHi, accLo, SECRET.length - STRIPE_LEN);
   }
 
   const nbStripes = Math.floor((len - 1 - blockLen * nbBlocks) / STRIPE_LEN);
   for (let stripe = 0; stripe < nbStripes; stripe++) {
     accumulate512(
-      acc,
+      accHi,
+      accLo,
       input,
       nbBlocks * blockLen + stripe * STRIPE_LEN,
       stripe * SECRET_CONSUME_RATE,
     );
   }
 
-  accumulate512(acc, input, len - STRIPE_LEN, SECRET.length - STRIPE_LEN - SECRET_LASTACC_START);
-  return acc;
+  accumulate512(
+    accHi,
+    accLo,
+    input,
+    len - STRIPE_LEN,
+    SECRET.length - STRIPE_LEN - SECRET_LASTACC_START,
+  );
+  return { accHi, accLo };
 }
 
-function mergeAccs(acc: bigint[], secretOffset: number, start: bigint): bigint {
+function mergeAccs(
+  accHi: Uint32Array,
+  accLo: Uint32Array,
+  secretOffset: number,
+  start: bigint,
+): bigint {
   let result = start;
   for (let i = 0; i < 4; i++) {
     result = add(
       result,
       mul128Fold64(
-        acc[2 * i] ^ SECRET64[secretOffset + 16 * i],
-        acc[2 * i + 1] ^ SECRET64[secretOffset + 16 * i + 8],
+        join64(accHi[2 * i], accLo[2 * i]) ^ SECRET64[secretOffset + 16 * i],
+        join64(accHi[2 * i + 1], accLo[2 * i + 1]) ^ SECRET64[secretOffset + 16 * i + 8],
       ),
     );
   }
@@ -338,8 +488,8 @@ export function xxh3_64(input: Buffer): bigint {
   if (len <= 16) return len0to16_64b(input, len);
   if (len <= 128) return len17to128_64b(input, len);
   if (len <= MIDSIZE_MAX) return len129to240_64b(input, len);
-  const acc = hashLongAccumulate(input);
-  return mergeAccs(acc, SECRET_MERGEACCS_START, mul(BigInt(len), PRIME64_1));
+  const { accHi, accLo } = hashLongAccumulate(input);
+  return mergeAccs(accHi, accLo, SECRET_MERGEACCS_START, mul(BigInt(len), PRIME64_1));
 }
 
 // --- 128-bit variants ---
@@ -479,12 +629,13 @@ export function xxh3_128(input: Buffer): Uint128 {
   if (len <= 128) return len17to128_128b(input, len);
   if (len <= MIDSIZE_MAX) return len129to240_128b(input, len);
 
-  const acc = hashLongAccumulate(input);
+  const { accHi, accLo } = hashLongAccumulate(input);
   const lenBig = BigInt(len);
   return {
-    low: mergeAccs(acc, SECRET_MERGEACCS_START, mul(lenBig, PRIME64_1)),
+    low: mergeAccs(accHi, accLo, SECRET_MERGEACCS_START, mul(lenBig, PRIME64_1)),
     high: mergeAccs(
-      acc,
+      accHi,
+      accLo,
       SECRET.length - STRIPE_LEN - SECRET_MERGEACCS_START,
       mul(lenBig, PRIME64_2) ^ MASK64,
     ),
