@@ -476,6 +476,39 @@ describe("S3 Conditional Deletes", () => {
       expect(await exists(bucket, "keyless-sibling.txt")).toBe(true);
     });
 
+    it("rejects a body whose root element is not closed, deleting nothing", async () => {
+      await put(bucket, "truncated-root.txt", "v1");
+
+      // Element extraction alone reads this as a complete one-key request, so the
+      // key would be deleted under a 200 OK. Real S3 answers MalformedXML.
+      const res = await rawDeleteObjects(
+        bucket,
+        "<Delete><Object><Key>truncated-root.txt</Key></Object>",
+      );
+
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("MalformedXML");
+      expect(await exists(bucket, "truncated-root.txt")).toBe(true);
+    });
+
+    it("rejects a body whose last <Object> entry is truncated, deleting nothing", async () => {
+      await put(bucket, "truncated-first.txt", "v1");
+      await put(bucket, "truncated-last.txt", "v1");
+
+      const res = await rawDeleteObjects(
+        bucket,
+        "<Delete><Object><Key>truncated-first.txt</Key></Object>" +
+          "<Object><Key>truncated-last.txt</Key></Delete>",
+      );
+
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("MalformedXML");
+      // Deleting the entries that did survive the truncation would report a
+      // partial success with no sign the rest of the batch was dropped.
+      expect(await exists(bucket, "truncated-first.txt")).toBe(true);
+      expect(await exists(bucket, "truncated-last.txt")).toBe(true);
+    });
+
     it("fails the whole request on a malformed <Size>, deleting nothing", async () => {
       await put(dirBucket, "batch-bad-size.txt", "v1");
       await put(dirBucket, "batch-bad-size-sibling.txt", "v1");

@@ -1398,20 +1398,20 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Lifecycle configuration** — PutBucketLifecycleConfiguration, GetBucketLifecycleConfiguration, and DeleteBucketLifecycle. Lifecycle configs are stored and returned as-is (rules are not enforced — fauxqs is a mock). Persisted across restarts. Can also be set declaratively via init config.
 - **Path-style and virtual-hosted-style** — both S3 URL styles are supported (see below)
 - **CORS** — permissive CORS headers are enabled by default, allowing browser-based presigned URL uploads (see below)
-- **Conditional operations** — the full precondition matrix, returning `412 Precondition Failed` when a precondition does not hold:
+- **Conditional operations** — the full precondition matrix. A single-object operation whose precondition does not hold fails with `412 Precondition Failed`; `DeleteObjects` answers `200 OK` and reports the failure as an `<Error>` entry against the object that carried it:
 
   | Operation | Preconditions | Notes |
   | --- | --- | --- |
   | PutObject | `If-None-Match`, `If-Match` | Overwrite prevention and compare-and-swap |
   | CompleteMultipartUpload | `If-None-Match`, `If-Match` | Evaluated against the destination key |
   | CopyObject | `If-None-Match`, `If-Match` | Destination-side, per the [Oct 2025 launch](https://aws.amazon.com/about-aws/whats-new/2025/10/amazon-s3-conditional-write-functionality-copy-operations) |
-  | DeleteObject | `If-Match` | [Conditional deletes](https://aws.amazon.com/about-aws/whats-new/2025/09/amazon-s3-conditional-deletes-s3-general-purpose-buckets); `*` asserts existence, a concrete ETag against an empty key answers `404 NoSuchKey` |
+  | DeleteObject | `If-Match` | [Conditional deletes](https://aws.amazon.com/about-aws/whats-new/2025/09/amazon-s3-conditional-deletes-s3-general-purpose-buckets); `*` asserts existence, a concrete ETag against a missing key answers `404 NoSuchKey` |
   | DeleteObject (directory buckets) | `x-amz-if-match-last-modified-time`, `x-amz-if-match-size` | Combinable with `If-Match`; an already-deleted key still answers `204`. Sending either on a general-purpose bucket is rejected with `501 NotImplemented`, as AWS scopes them to directory buckets |
-  | DeleteObjects | per-object `<ETag>`, plus `<LastModifiedTime>` / `<Size>` on directory buckets | Failures land in the response's `<Error>` entries (reported in quiet mode too) while the rest of the batch proceeds — including the `NotImplemented` a directory-only element earns on a general-purpose bucket. A malformed value is a `400 InvalidArgument` for the whole request instead, raised before any key is deleted |
+  | DeleteObjects | per-object `<ETag>`, plus `<LastModifiedTime>` / `<Size>` on directory buckets | Failures land in the response's `<Error>` entries (reported in quiet mode too) while the rest of the batch proceeds — including the `NotImplemented` a directory-only element earns on a general-purpose bucket. A malformed value is a `400 InvalidArgument` for the whole request instead, raised before any key is deleted, and a truncated body is a `400 MalformedXML` that deletes nothing |
   | GetObject | `If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since` | Conditional reads |
   | RenameObject | source and destination conditionals | See RenameObject above |
 
-  ETag comparison is shared across all of these, so an unquoted tag and a weak validator (`W/"..."`) mean the same thing everywhere. `x-amz-if-match-last-modified-time` takes an HTTP-date, and the `<LastModifiedTime>` element an RFC-3339 date-time whose UTC offset is required — an offset-less timestamp is rejected rather than silently read in the server's own timezone.
+  ETag comparison is shared across all of these, so an unquoted tag and a weak validator (`W/"..."`) mean the same thing everywhere. `x-amz-if-match-last-modified-time` takes an HTTP-date, and the `<LastModifiedTime>` element an RFC-3339 date-time whose UTC offset is required — an offset-less timestamp is rejected rather than silently read in the server's own timezone, as is a day that never existed (`2026-02-29`) rather than rolling it over into March.
 
 - **Event notifications** — `PutBucketNotificationConfiguration` / `GetBucketNotificationConfiguration` wire object events (`ObjectCreated:*`, `ObjectRemoved:*`) to SQS queues and SNS topics, with optional prefix/suffix key filters. Events are delivered as the standard S3 `{"Records":[...]}` JSON envelope, with the object key URL-encoded as real S3 does. Destination ARNs and event names are validated when the configuration is set, and the configuration is persisted across restarts. Lambda and EventBridge destinations are not supported.
 

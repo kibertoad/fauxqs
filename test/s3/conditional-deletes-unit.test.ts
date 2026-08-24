@@ -64,9 +64,21 @@ describe("conditional delete last-modified-time precision", () => {
     ["epoch seconds", "1787577443"],
     ["a date with no time", "2026-08-24"],
     ["an impossible month", "2026-13-24T13:17:23Z"],
+    // Date.parse rolls each of these into the following month rather than
+    // refusing it, so the precondition would be compared against an instant the
+    // caller never named.
+    ["a day the month never had", "2026-02-29T13:17:23Z"],
+    ["a day the month never had, as an HTTP-date", "Sun, 29 Feb 2026 13:17:23 GMT"],
+    ["a 31st in a 30-day month", "2026-04-31T13:17:23Z"],
+    ["a month name that does not exist", "Mon, 24 Foo 2026 13:17:23 GMT"],
     ["prose", "yesterday"],
     ["a blank value", ""],
   ])("rejects %s as InvalidArgument", (_label, value) => {
     expect(() => check(value)).toThrow(/Invalid last modified time precondition/);
+  });
+
+  it("accepts a leap day that did exist, failing only the comparison", () => {
+    // The guard against rolled-over dates must not swallow a real 29 February.
+    expect(() => check("2024-02-29T13:17:23Z")).toThrow(/pre-conditions/);
   });
 });

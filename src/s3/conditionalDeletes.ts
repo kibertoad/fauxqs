@@ -119,11 +119,11 @@ export function parseDeletePreconditions(
  * stored at the target key (`undefined` when the key holds nothing).
  *
  * - `If-Match: *`    — asserts only that the object exists; 412 when it does not.
- * - `If-Match: etag` — 404 NoSuchKey when the key is empty (AWS answers "Not
+ * - `If-Match: etag` — 404 NoSuchKey when the key holds nothing (AWS answers "Not
  *   Found" there rather than 412), 412 when the stored ETag differs.
  * - `x-amz-if-match-last-modified-time` / `x-amz-if-match-size` — 412 only when a
  *   stored object disagrees. AWS documents a 204 when the object is already gone,
- *   so these two pass on an empty key.
+ *   so these two pass on a missing key.
  *
  * Applies to DeleteObject and to each object in a DeleteObjects batch.
  */
@@ -159,7 +159,24 @@ export function checkConditionalDelete(
 }
 
 /** An HTTP-date, the wire format of `x-amz-if-match-last-modified-time`. */
-const HTTP_DATE = /^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+const HTTP_DATE =
+  /^[A-Za-z]{3}, (?<day>\d{2}) (?<month>[A-Za-z]{3}) (?<year>\d{4}) \d{2}:\d{2}:\d{2} GMT$/;
+
+/** The month names an HTTP-date spells, lowercased for a case-tolerant lookup. */
+const HTTP_DATE_MONTHS = [
+  "jan",
+  "feb",
+  "mar",
+  "apr",
+  "may",
+  "jun",
+  "jul",
+  "aug",
+  "sep",
+  "oct",
+  "nov",
+  "dec",
+];
 
 /**
  * An RFC-3339 date-time with an explicit offset, the wire format the SDK
@@ -167,7 +184,8 @@ const HTTP_DATE = /^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/
  * reads an offset-less `2026-08-24T13:17:23` as *local* time, which would make the
  * precondition pass or fail by the host's UTC offset.
  */
-const RFC_3339 = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:?\d{2})$/;
+const RFC_3339 =
+  /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})[Tt]\d{2}:\d{2}:\d{2}(?<fraction>\.\d+)?([Zz]|[+-]\d{2}:?\d{2})$/;
 
 /**
  * Match the shape before parsing. `Date.parse` on its own is far too permissive
@@ -178,15 +196,37 @@ const RFC_3339 = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}
 function parseTimestamp(raw: string): ExpectedTime {
   const trimmed = raw.trim();
   const rfc3339 = RFC_3339.exec(trimmed);
-  if (!rfc3339 && !HTTP_DATE.test(trimmed)) throw invalidTimestamp(raw);
-  // A well-shaped string can still name an impossible instant, e.g. month 13.
+  const groups = (rfc3339 ?? HTTP_DATE.exec(trimmed))?.groups;
+  if (!groups) throw invalidTimestamp(raw);
+  const month = rfc3339
+    ? Number(groups.month)
+    : HTTP_DATE_MONTHS.indexOf(groups.month.toLowerCase()) + 1;
+  // A well-shaped string can still name a day that never existed, and `Date.parse`
+  // rolls those over without complaint: 29 Feb 2026 becomes 1 March. Comparing an
+  // object against an instant the caller never named is worse than refusing it.
+  if (!isRealDate(Number(groups.year), month, Number(groups.day))) throw invalidTimestamp(raw);
   const ms = Date.parse(trimmed);
   if (Number.isNaN(ms)) throw invalidTimestamp(raw);
   // A zero fraction says nothing the second did not: it is what a second-granular
   // value looks like once formatted with millisecond precision, which is all S3
   // ever hands a client back. Only a non-zero fraction is a claim about millis.
-  const fraction = rfc3339?.[1];
+  const fraction = groups.fraction;
   return { ms, wholeSeconds: fraction === undefined || Number(fraction) === 0 };
+}
+
+/** Whether the named day exists, month 1-12 and day counted from 1. */
+function isRealDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1) return false;
+  return day <= daysInMonth(year, month);
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) return isLeapYear(year) ? 29 : 28;
+  return month === 4 || month === 6 || month === 9 || month === 11 ? 30 : 31;
+}
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
 }
 
 function invalidTimestamp(raw: string): S3Error {

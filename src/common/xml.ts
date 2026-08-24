@@ -66,6 +66,21 @@ export function xmlElement(source: string, name: string): string | undefined {
 }
 
 /**
+ * Whether every `<name>` opening tag in `source` is closed. {@link xmlBlocks}
+ * skips an unclosed element rather than failing, so a truncated document reads
+ * as a shorter valid one — `<Delete><Object><Key>k</Key></Object>` with no
+ * `</Delete>` looks like a complete one-key request. A caller that must reject a
+ * malformed body checks the elements it relies on with this first.
+ */
+export function xmlTagsClosed(source: string, name: string): boolean {
+  return countOccurrences(source, `<${name}>`) === countOccurrences(source, `</${name}>`);
+}
+
+function countOccurrences(source: string, needle: string): number {
+  return source.split(needle).length - 1;
+}
+
+/**
  * The inner text of every `<name>` element in `source`, in document order. Left
  * escaped, unlike {@link xmlElement}, so nested elements can be read out of each
  * block; unescape yourself when the elements hold text.

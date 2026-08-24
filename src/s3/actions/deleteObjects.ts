@@ -1,6 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { S3Error } from "../../common/errors.ts";
-import { escapeXml, unescapeXml, xmlBlocks, xmlElement } from "../../common/xml.ts";
+import { escapeXml, unescapeXml, xmlBlocks, xmlElement, xmlTagsClosed } from "../../common/xml.ts";
 import type { S3Store } from "../s3Store.ts";
 import {
   type DeletePreconditions,
@@ -28,6 +28,33 @@ interface PlannedDelete {
   preconditions?: ParsedDeletePreconditions;
 }
 
+/** The `<Delete>` root, allowing the namespace attribute the SDKs put on it. */
+const DELETE_ROOT_OPEN = /<Delete(\s[^>]*)?>/;
+
+function malformedXml(): S3Error {
+  return new S3Error(
+    "MalformedXML",
+    "The XML you provided was not well-formed or did not validate against our published schema.",
+    400,
+  );
+}
+
+/**
+ * Reject a body that element extraction would otherwise read as a shorter, valid
+ * request. Regexes see no further than the tags that happen to be closed, so a
+ * truncated document quietly loses its tail: a body cut off after the first
+ * `</Object>` would delete that one key and answer `200 OK` as though the batch
+ * were complete. Real S3 answers MalformedXML and deletes nothing, so the tags
+ * this parser relies on are checked for their closers before anything is read
+ * out of them.
+ */
+function assertWellFormedDeleteBody(body: string): void {
+  const rooted = DELETE_ROOT_OPEN.test(body) && body.includes("</Delete>");
+  if (!rooted || !xmlTagsClosed(body, "Object") || !xmlTagsClosed(body, "Key")) {
+    throw malformedXml();
+  }
+}
+
 /**
  * Parse the objects named in a Multi-Object Delete body. Each `<Object>` entry
  * carries a key plus the optional per-object preconditions AWS added for
@@ -40,6 +67,7 @@ interface PlannedDelete {
  * is the worst available way to break it.
  */
 function parseRequestedDeletes(body: string): RequestedDelete[] {
+  assertWellFormedDeleteBody(body);
   const blocks = xmlBlocks(body, "Object");
   if (blocks.length === 0) {
     return xmlBlocks(body, "Key").map((raw) => ({
@@ -52,11 +80,7 @@ function parseRequestedDeletes(body: string): RequestedDelete[] {
     if (key === undefined) {
       // Silently skipping the entry would report the batch as a partial success
       // with no sign an object was dropped. Real S3 answers MalformedXML.
-      throw new S3Error(
-        "MalformedXML",
-        "The XML you provided was not well-formed or did not validate against our published schema.",
-        400,
-      );
+      throw malformedXml();
     }
     return {
       key,

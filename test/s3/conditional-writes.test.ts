@@ -241,6 +241,11 @@ describe("S3 Conditional Writes", () => {
           }),
         ),
       ).rejects.toMatchObject({ $metadata: { httpStatusCode: 412 } });
+
+      // The precondition must fail before the copy, not alongside it.
+      await expect(getBody("copy-dst4.txt")).rejects.toMatchObject({
+        $metadata: { httpStatusCode: 404 },
+      });
     });
 
     it("If-None-Match: * succeeds when the destination does not exist", async () => {
