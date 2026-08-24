@@ -2,11 +2,11 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { S3Error } from "../../common/errors.ts";
 import type { S3Store } from "../s3Store.ts";
 import {
-  DIRECTORY_ONLY_DELETE_PRECONDITIONS,
   checkConditionalDelete,
   deletePreconditionsFromHeaders,
+  directoryOnlyPreconditionError,
   hasDeletePreconditions,
-  rejectDirectoryOnlyPreconditions,
+  parseDeletePreconditions,
 } from "../conditionalDeletes.ts";
 
 export function deleteObject(
@@ -21,15 +21,22 @@ export function deleteObject(
     request.headers as Record<string, string | string[] | undefined>,
   );
   if (hasDeletePreconditions(preconditions)) {
-    if (store.getBucketType(bucket) !== "directory") {
-      rejectDirectoryOnlyPreconditions(preconditions, DIRECTORY_ONLY_DELETE_PRECONDITIONS);
-    }
     // Resolve the bucket first: an absent bucket must read as NoSuchBucket, not
-    // as a precondition failure against a key that could never have been there.
+    // as an unsupported precondition (getBucketType answers `undefined` for a
+    // bucket that isn't there, which is not a directory bucket either) and not as
+    // a failure against a key that could never have been there.
     if (!store.hasBucket(bucket)) {
       throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
     }
-    checkConditionalDelete(preconditions, store.peekObject(bucket, key), `/${bucket}/${key}`);
+    if (store.getBucketType(bucket) !== "directory") {
+      const unsupported = directoryOnlyPreconditionError(preconditions, "header");
+      if (unsupported) throw unsupported;
+    }
+    checkConditionalDelete(
+      parseDeletePreconditions(preconditions),
+      store.peekObject(bucket, key),
+      `/${bucket}/${key}`,
+    );
   }
 
   store.deleteObject(bucket, key);

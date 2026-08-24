@@ -1,6 +1,7 @@
 import { S3Error } from "../common/errors.ts";
 
-function headerValue(v: string | string[] | undefined): string | undefined {
+/** Read a precondition header, collapsing a repeated one into the list it stands for. */
+export function headerValue(v: string | string[] | undefined): string | undefined {
   if (v === undefined) return undefined;
   // Preserve every value: a repeated header and a single comma-separated header
   // are equivalent under RFC 7232, and both must be evaluated as a list.

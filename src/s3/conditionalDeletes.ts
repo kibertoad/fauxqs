@@ -1,12 +1,12 @@
 import { S3Error } from "../common/errors.ts";
-import { etagEquals, parseEtagList, preconditionFailed } from "./conditionalWrites.ts";
+import { etagEquals, headerValue, parseEtagList, preconditionFailed } from "./conditionalWrites.ts";
 
 /**
- * Preconditions a conditional delete carries. `ifMatch` is the `If-Match` header
- * on DeleteObject or the per-object `<ETag>` element in a DeleteObjects body;
- * the other two are the directory-bucket-only `x-amz-if-match-last-modified-time`
- * and `x-amz-if-match-size` headers, or their `<LastModifiedTime>` / `<Size>`
- * body equivalents.
+ * Preconditions a conditional delete carries, as they arrived on the wire.
+ * `ifMatch` is the `If-Match` header on DeleteObject or the per-object `<ETag>`
+ * element in a DeleteObjects body; the other two are the directory-bucket-only
+ * `x-amz-if-match-last-modified-time` and `x-amz-if-match-size` headers, or their
+ * `<LastModifiedTime>` / `<Size>` body equivalents.
  */
 export interface DeletePreconditions {
   ifMatch?: string;
@@ -21,11 +21,25 @@ export interface DeleteTarget {
   contentLength: number;
 }
 
-/** Header and body names of the two preconditions only directory buckets accept. */
+/**
+ * The two preconditions only directory buckets accept, each with the header name
+ * DeleteObject reads it from and the body element name DeleteObjects reads it
+ * from. Keyed by {@link DeletePreconditions} field so one precondition's two
+ * spellings cannot drift apart.
+ */
 export const DIRECTORY_ONLY_DELETE_PRECONDITIONS = {
-  ifMatchLastModifiedTime: "x-amz-if-match-last-modified-time",
-  ifMatchSize: "x-amz-if-match-size",
+  ifMatchLastModifiedTime: {
+    header: "x-amz-if-match-last-modified-time",
+    element: "LastModifiedTime",
+  },
+  ifMatchSize: {
+    header: "x-amz-if-match-size",
+    element: "Size",
+  },
 } as const;
+
+/** Which spelling of a precondition's name an error message should quote. */
+export type PreconditionSubject = "header" | "element";
 
 export function hasDeletePreconditions(preconditions: DeletePreconditions): boolean {
   return (
@@ -36,32 +50,72 @@ export function hasDeletePreconditions(preconditions: DeletePreconditions): bool
 }
 
 /**
- * Reject the two directory-bucket-only preconditions on a general-purpose bucket,
- * the way S3 rejects input whose functionality it does not offer. `names` carries
- * the header names for DeleteObject and the body element names for DeleteObjects.
+ * The `501 NotImplemented` a general-purpose bucket owes a directory-bucket-only
+ * precondition, or `undefined` when none is present. AWS scopes both to directory
+ * buckets, and silently ignoring a precondition is the one outcome worse than
+ * rejecting it: the caller believes it got a compare-and-swap. DeleteObject
+ * throws this for the whole request, DeleteObjects reports it against the single
+ * object that carried it.
  */
-export function rejectDirectoryOnlyPreconditions(
+export function directoryOnlyPreconditionError(
   preconditions: DeletePreconditions,
-  names: { ifMatchLastModifiedTime: string; ifMatchSize: string },
-  subject: "header" | "element" = "header",
-): void {
-  const unsupported =
+  subject: PreconditionSubject,
+): S3Error | undefined {
+  const field =
     preconditions.ifMatchLastModifiedTime !== undefined
-      ? names.ifMatchLastModifiedTime
+      ? "ifMatchLastModifiedTime"
       : preconditions.ifMatchSize !== undefined
-        ? names.ifMatchSize
+        ? "ifMatchSize"
         : undefined;
-  if (unsupported) {
-    throw new S3Error(
-      "NotImplemented",
-      `A ${subject} you provided implies functionality that is not implemented: ${unsupported} is only supported for directory buckets`,
-      501,
-    );
-  }
+  if (field === undefined) return undefined;
+  const name = DIRECTORY_ONLY_DELETE_PRECONDITIONS[field][subject];
+  const article = subject === "element" ? "An" : "A";
+  return new S3Error(
+    "NotImplemented",
+    `${article} ${subject} you provided implies functionality that is not implemented: ${name} is only supported for directory buckets`,
+    501,
+  );
 }
 
 /**
- * Evaluate S3 conditional-delete preconditions against the object currently
+ * A timestamp precondition, with the precision the client actually expressed.
+ * An HTTP-date names a whole second and nothing finer, so it is compared against
+ * a stored timestamp truncated to seconds; an RFC-3339 value carrying a non-zero
+ * fraction claimed milliseconds and is compared exactly.
+ */
+interface ExpectedTime {
+  ms: number;
+  wholeSeconds: boolean;
+}
+
+/** Delete preconditions whose values have been parsed and validated. */
+export interface ParsedDeletePreconditions {
+  ifMatch?: string;
+  expectedTime?: ExpectedTime;
+  expectedSize?: number;
+}
+
+/**
+ * Parse and validate a conditional delete's values without consulting the store.
+ * Split out from {@link checkConditionalDelete} so a malformed value fails the
+ * request as the `400 InvalidArgument` it is — in a DeleteObjects batch that means
+ * before the first key is touched, rather than as a per-object verdict under a
+ * `200 OK`.
+ */
+export function parseDeletePreconditions(
+  preconditions: DeletePreconditions,
+): ParsedDeletePreconditions {
+  const { ifMatch, ifMatchLastModifiedTime, ifMatchSize } = preconditions;
+  return {
+    ifMatch,
+    expectedTime:
+      ifMatchLastModifiedTime === undefined ? undefined : parseTimestamp(ifMatchLastModifiedTime),
+    expectedSize: ifMatchSize === undefined ? undefined : parseSize(ifMatchSize),
+  };
+}
+
+/**
+ * Evaluate parsed conditional-delete preconditions against the object currently
  * stored at the target key (`undefined` when the key holds nothing).
  *
  * - `If-Match: *`    — asserts only that the object exists; 412 when it does not.
@@ -74,17 +128,11 @@ export function rejectDirectoryOnlyPreconditions(
  * Applies to DeleteObject and to each object in a DeleteObjects batch.
  */
 export function checkConditionalDelete(
-  preconditions: DeletePreconditions,
+  preconditions: ParsedDeletePreconditions,
   existing: DeleteTarget | undefined,
   resource?: string,
 ): void {
-  const { ifMatch, ifMatchLastModifiedTime, ifMatchSize } = preconditions;
-
-  // Parse before comparing: a malformed value is rejected whether or not the key
-  // currently holds an object.
-  const expectedTime =
-    ifMatchLastModifiedTime === undefined ? undefined : parseHttpDate(ifMatchLastModifiedTime);
-  const expectedSize = ifMatchSize === undefined ? undefined : parseSize(ifMatchSize);
+  const { ifMatch, expectedTime, expectedSize } = preconditions;
 
   if (ifMatch !== undefined) {
     const tags = parseEtagList(ifMatch);
@@ -99,13 +147,10 @@ export function checkConditionalDelete(
 
   if (!existing) return;
 
-  // The wire format is an HTTP-date, which carries whole seconds, so a stored
-  // timestamp has to be compared at second granularity.
-  if (
-    expectedTime !== undefined &&
-    expectedTime !== truncateToSeconds(existing.lastModified.getTime())
-  ) {
-    throw preconditionFailed();
+  if (expectedTime !== undefined) {
+    const stored = existing.lastModified.getTime();
+    const comparable = expectedTime.wholeSeconds ? truncateToSeconds(stored) : stored;
+    if (expectedTime.ms !== comparable) throw preconditionFailed();
   }
 
   if (expectedSize !== undefined && expectedSize !== existing.contentLength) {
@@ -113,12 +158,39 @@ export function checkConditionalDelete(
   }
 }
 
-function parseHttpDate(raw: string): number {
-  const parsed = Date.parse(raw.trim());
-  if (Number.isNaN(parsed)) {
-    throw new S3Error("InvalidArgument", `Invalid last modified time precondition: ${raw}`, 400);
-  }
-  return truncateToSeconds(parsed);
+/** An HTTP-date, the wire format of `x-amz-if-match-last-modified-time`. */
+const HTTP_DATE = /^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+
+/**
+ * An RFC-3339 date-time with an explicit offset, the wire format the SDK
+ * serialises a `<LastModifiedTime>` element as. The offset is required: `Date.parse`
+ * reads an offset-less `2026-08-24T13:17:23` as *local* time, which would make the
+ * precondition pass or fail by the host's UTC offset.
+ */
+const RFC_3339 = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:?\d{2})$/;
+
+/**
+ * Match the shape before parsing. `Date.parse` on its own is far too permissive
+ * to validate a timestamp with: it reads `"999"` as the year 999, so a typo or a
+ * unit mix-up would surface as a plain 412 and send the caller hunting for clock
+ * drift that isn't there.
+ */
+function parseTimestamp(raw: string): ExpectedTime {
+  const trimmed = raw.trim();
+  const rfc3339 = RFC_3339.exec(trimmed);
+  if (!rfc3339 && !HTTP_DATE.test(trimmed)) throw invalidTimestamp(raw);
+  // A well-shaped string can still name an impossible instant, e.g. month 13.
+  const ms = Date.parse(trimmed);
+  if (Number.isNaN(ms)) throw invalidTimestamp(raw);
+  // A zero fraction says nothing the second did not: it is what a second-granular
+  // value looks like once formatted with millisecond precision, which is all S3
+  // ever hands a client back. Only a non-zero fraction is a claim about millis.
+  const fraction = rfc3339?.[1];
+  return { ms, wholeSeconds: fraction === undefined || Number(fraction) === 0 };
+}
+
+function invalidTimestamp(raw: string): S3Error {
+  return new S3Error("InvalidArgument", `Invalid last modified time precondition: ${raw}`, 400);
 }
 
 function parseSize(raw: string): number {
@@ -133,26 +205,15 @@ function truncateToSeconds(ms: number): number {
   return Math.floor(ms / 1000) * 1000;
 }
 
-/** Read a precondition value, treating a missing or blank one as absent. */
-function preconditionHeader(
-  headers: Record<string, string | string[] | undefined>,
-  name: string,
-): string | undefined {
-  const raw = headers[name];
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  return value === undefined || value.trim() === "" ? undefined : value;
-}
-
 /** Collect the conditional-delete headers off a DeleteObject request. */
 export function deletePreconditionsFromHeaders(
   headers: Record<string, string | string[] | undefined>,
 ): DeletePreconditions {
   return {
-    ifMatch: preconditionHeader(headers, "if-match"),
-    ifMatchLastModifiedTime: preconditionHeader(
-      headers,
-      DIRECTORY_ONLY_DELETE_PRECONDITIONS.ifMatchLastModifiedTime,
+    ifMatch: headerValue(headers["if-match"]),
+    ifMatchLastModifiedTime: headerValue(
+      headers[DIRECTORY_ONLY_DELETE_PRECONDITIONS.ifMatchLastModifiedTime.header],
     ),
-    ifMatchSize: preconditionHeader(headers, DIRECTORY_ONLY_DELETE_PRECONDITIONS.ifMatchSize),
+    ifMatchSize: headerValue(headers[DIRECTORY_ONLY_DELETE_PRECONDITIONS.ifMatchSize.header]),
   };
 }

@@ -63,6 +63,15 @@ describe("S3 Conditional Deletes", () => {
     });
   }
 
+  /** Raw Multi-Object Delete, for bodies no SDK would serialise. */
+  function rawDeleteObjects(targetBucket: string, body: string): Promise<Response> {
+    return fetch(`http://127.0.0.1:${server.port}/${targetBucket}?delete`, {
+      method: "POST",
+      headers: { "content-type": "application/xml" },
+      body,
+    });
+  }
+
   describe("DeleteObject If-Match", () => {
     it("deletes when the ETag matches", async () => {
       const { etag } = await put(bucket, "ifm-match.txt", "v1");
@@ -404,24 +413,168 @@ describe("S3 Conditional Deletes", () => {
       });
     });
 
-    it("rejects Size on a general-purpose bucket without deleting anything", async () => {
+    it("reports Size on a general-purpose bucket per object, sparing the rest of the batch", async () => {
       await put(bucket, "batch-gp-plain.txt", "v1");
       await put(bucket, "batch-gp-size.txt", "v1");
 
-      await expect(
-        s3.send(
-          new DeleteObjectsCommand({
-            Bucket: bucket,
-            Delete: {
-              Objects: [{ Key: "batch-gp-plain.txt" }, { Key: "batch-gp-size.txt", Size: 2 }],
-            },
-          }),
-        ),
-      ).rejects.toMatchObject({ name: "NotImplemented" });
+      const result = await s3.send(
+        new DeleteObjectsCommand({
+          Bucket: bucket,
+          Delete: {
+            Objects: [{ Key: "batch-gp-plain.txt" }, { Key: "batch-gp-size.txt", Size: 2 }],
+          },
+        }),
+      );
 
-      // The whole request is rejected, so the unconditional key survives too.
-      expect(await exists(bucket, "batch-gp-plain.txt")).toBe(true);
+      // The one object that asked for an unsupported precondition fails; a batch
+      // is not aborted over it, so the unconditional sibling is still deleted.
+      expect((result.Deleted ?? []).map((d) => d.Key)).toEqual(["batch-gp-plain.txt"]);
+      expect(result.Errors).toHaveLength(1);
+      expect(result.Errors![0]).toMatchObject({
+        Key: "batch-gp-size.txt",
+        Code: "NotImplemented",
+      });
+      expect(result.Errors![0].Message).toContain("Size");
+      expect(await exists(bucket, "batch-gp-plain.txt")).toBe(false);
       expect(await exists(bucket, "batch-gp-size.txt")).toBe(true);
+    });
+  });
+
+  describe("DeleteObjects body parsing", () => {
+    it("still deletes keys in a body that omits the <Object> wrapper", async () => {
+      await put(bucket, "loose-one.txt", "v1");
+      await put(bucket, "loose-two.txt", "v1");
+
+      // Hand-written XML the SDKs never emit, but which fauxqs accepted before
+      // per-object preconditions arrived. Reporting 200 while deleting nothing
+      // would be the worst way to drop support for it.
+      const res = await rawDeleteObjects(
+        bucket,
+        "<Delete><Key>loose-one.txt</Key><Key>loose-two.txt</Key></Delete>",
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.text();
+      expect(body).toContain("loose-one.txt");
+      expect(body).toContain("loose-two.txt");
+      expect(await exists(bucket, "loose-one.txt")).toBe(false);
+      expect(await exists(bucket, "loose-two.txt")).toBe(false);
+    });
+
+    it("rejects an <Object> entry with no key as MalformedXML", async () => {
+      await put(bucket, "keyless-sibling.txt", "v1");
+
+      const res = await rawDeleteObjects(
+        bucket,
+        "<Delete><Object><ETag>*</ETag></Object>" +
+          "<Object><Key>keyless-sibling.txt</Key></Object></Delete>",
+      );
+
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("MalformedXML");
+      // A dropped entry must not be reported as a partial success.
+      expect(await exists(bucket, "keyless-sibling.txt")).toBe(true);
+    });
+
+    it("fails the whole request on a malformed <Size>, deleting nothing", async () => {
+      await put(dirBucket, "batch-bad-size.txt", "v1");
+      await put(dirBucket, "batch-bad-size-sibling.txt", "v1");
+
+      const res = await rawDeleteObjects(
+        dirBucket,
+        "<Delete><Object><Key>batch-bad-size-sibling.txt</Key></Object>" +
+          "<Object><Key>batch-bad-size.txt</Key><Size>not-a-number</Size></Object></Delete>",
+      );
+
+      // A value that cannot be parsed is a bad request, not a per-object verdict
+      // under a 200, and it is caught before the batch is half applied.
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("InvalidArgument");
+      expect(await exists(dirBucket, "batch-bad-size.txt")).toBe(true);
+      expect(await exists(dirBucket, "batch-bad-size-sibling.txt")).toBe(true);
+    });
+  });
+
+  describe("last-modified-time wire formats", () => {
+    it("accepts an RFC-3339 timestamp with an explicit offset", async () => {
+      await put(dirBucket, "iso-offset.txt", "v1");
+      const head = await s3.send(
+        new HeadObjectCommand({ Bucket: dirBucket, Key: "iso-offset.txt" }),
+      );
+
+      const res = await rawDelete(dirBucket, "iso-offset.txt", {
+        "x-amz-if-match-last-modified-time": head.LastModified!.toISOString(),
+      });
+
+      expect(res.status).toBe(204);
+      expect(await exists(dirBucket, "iso-offset.txt")).toBe(false);
+    });
+
+    it("rejects a timestamp with no offset, which would otherwise read as local time", async () => {
+      await put(dirBucket, "iso-naive.txt", "v1");
+      const head = await s3.send(
+        new HeadObjectCommand({ Bucket: dirBucket, Key: "iso-naive.txt" }),
+      );
+
+      // The correct instant, spelled without a zone: Date.parse would read it in
+      // the host's timezone, so the same request would pass on a UTC box and 412
+      // anywhere else.
+      const res = await rawDelete(dirBucket, "iso-naive.txt", {
+        "x-amz-if-match-last-modified-time": head.LastModified!.toISOString().replace("Z", ""),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("InvalidArgument");
+      expect(await exists(dirBucket, "iso-naive.txt")).toBe(true);
+    });
+
+    it("rejects a value that is not a timestamp at all", async () => {
+      await put(dirBucket, "lmt-garbage.txt", "v1");
+
+      // Date.parse reads "999" as the year 999, which would surface as a plain
+      // 412 and send the caller hunting for clock drift that isn't there.
+      const res = await rawDelete(dirBucket, "lmt-garbage.txt", {
+        "x-amz-if-match-last-modified-time": "999",
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("InvalidArgument");
+      expect(await exists(dirBucket, "lmt-garbage.txt")).toBe(true);
+    });
+  });
+
+  describe("If-Match header shapes", () => {
+    it("treats a blank If-Match as a precondition, the way a write does", async () => {
+      await put(bucket, "blank-if-match.txt", "v1");
+
+      // Reading a blank value as "no precondition sent" would silently delete on
+      // a request that PutObject answers with a 412. It matches no ETag, so it
+      // cannot hold.
+      const res = await rawDelete(bucket, "blank-if-match.txt", { "if-match": "" });
+
+      expect(res.status).toBe(412);
+      expect(await exists(bucket, "blank-if-match.txt")).toBe(true);
+    });
+
+    it("applies the empty-key rule to a blank If-Match too", async () => {
+      const res = await rawDelete(bucket, "blank-if-match-missing.txt", { "if-match": "" });
+
+      // A concrete If-Match against a key that holds nothing is a 404, not a 412.
+      expect(res.status).toBe(404);
+      expect(await res.text()).toContain("NoSuchKey");
+    });
+  });
+
+  describe("DeleteObject bucket resolution", () => {
+    it("reports NoSuchBucket ahead of an unsupported directory-only header", async () => {
+      // An absent bucket is not a directory bucket, but it is not a
+      // general-purpose one either — resolving it has to come first.
+      const res = await rawDelete("no-such-bucket-at-all", "k.txt", {
+        "x-amz-if-match-size": "5",
+      });
+
+      expect(res.status).toBe(404);
+      expect(await res.text()).toContain("NoSuchBucket");
     });
   });
 });

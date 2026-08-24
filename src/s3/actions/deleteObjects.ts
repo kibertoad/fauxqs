@@ -1,70 +1,72 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import type { DeletedObject, _Error } from "@aws-sdk/client-s3";
 import { S3Error } from "../../common/errors.ts";
-import { escapeXml, unescapeXml } from "../../common/xml.ts";
+import { escapeXml, unescapeXml, xmlBlocks, xmlElement } from "../../common/xml.ts";
 import type { S3Store } from "../s3Store.ts";
 import {
   type DeletePreconditions,
+  type ParsedDeletePreconditions,
   checkConditionalDelete,
+  directoryOnlyPreconditionError,
   hasDeletePreconditions,
-  rejectDirectoryOnlyPreconditions,
+  parseDeletePreconditions,
 } from "../conditionalDeletes.ts";
 
-/** Body element names of the two preconditions only directory buckets accept. */
-const DIRECTORY_ONLY_ELEMENTS = {
-  ifMatchLastModifiedTime: "LastModifiedTime",
-  ifMatchSize: "Size",
-} as const;
-
-// Non-global so each `exec` starts from the beginning of the <Object> block it
-// is handed; the <Object> scan below is the only stateful one.
-const ELEMENT_PATTERNS = {
-  Key: /<Key>([\s\S]*?)<\/Key>/,
-  ETag: /<ETag>([\s\S]*?)<\/ETag>/,
-  LastModifiedTime: /<LastModifiedTime>([\s\S]*?)<\/LastModifiedTime>/,
-  Size: /<Size>([\s\S]*?)<\/Size>/,
-} as const;
+/** The verdicts that belong in the response body rather than failing the request. */
+const PER_OBJECT_ERROR_CODES = new Set(["PreconditionFailed", "NoSuchKey"]);
 
 interface RequestedDelete {
   key: string;
   preconditions: DeletePreconditions;
 }
 
-function element(block: string, name: keyof typeof ELEMENT_PATTERNS): string | undefined {
-  const match = ELEMENT_PATTERNS[name].exec(block);
-  return match ? unescapeXml(match[1]) : undefined;
-}
-
-/** Read a precondition element, treating an empty one as absent. */
-function precondition(block: string, name: keyof typeof ELEMENT_PATTERNS): string | undefined {
-  const value = element(block, name);
-  return value === undefined || value.trim() === "" ? undefined : value;
+/** One object's fate, decided before anything is deleted. */
+interface PlannedDelete {
+  key: string;
+  /** Set when this object's preconditions cannot be honoured on this bucket. */
+  rejected?: S3Error;
+  /** Set when this object carries preconditions still to be evaluated. */
+  preconditions?: ParsedDeletePreconditions;
 }
 
 /**
- * Parse the `<Object>` entries of a Multi-Object Delete body. Each entry carries
- * a key plus the optional per-object preconditions AWS added for conditional
- * deletes: `<ETag>` for every bucket type, `<LastModifiedTime>` and `<Size>` for
- * directory buckets.
+ * Parse the objects named in a Multi-Object Delete body. Each `<Object>` entry
+ * carries a key plus the optional per-object preconditions AWS added for
+ * conditional deletes: `<ETag>` for every bucket type, `<LastModifiedTime>` and
+ * `<Size>` for directory buckets.
+ *
+ * A body with no `<Object>` wrapper anywhere falls back to a bare `<Key>` scan.
+ * Every AWS SDK wraps its keys, but hand-written XML that skips the wrapper used
+ * to delete just fine here, and answering `200 OK` while quietly deleting nothing
+ * is the worst available way to break it.
  */
 function parseRequestedDeletes(body: string): RequestedDelete[] {
-  const requested: RequestedDelete[] = [];
-  const objectRegex = /<Object>([\s\S]*?)<\/Object>/g;
-  let match: RegExpExecArray | null;
-  while ((match = objectRegex.exec(body)) !== null) {
-    const block = match[1];
-    const key = element(block, "Key");
-    if (key === undefined) continue;
-    requested.push({
+  const blocks = xmlBlocks(body, "Object");
+  if (blocks.length === 0) {
+    return xmlBlocks(body, "Key").map((raw) => ({
+      key: unescapeXml(raw),
+      preconditions: {},
+    }));
+  }
+  return blocks.map((block) => {
+    const key = xmlElement(block, "Key");
+    if (key === undefined) {
+      // Silently skipping the entry would report the batch as a partial success
+      // with no sign an object was dropped. Real S3 answers MalformedXML.
+      throw new S3Error(
+        "MalformedXML",
+        "The XML you provided was not well-formed or did not validate against our published schema.",
+        400,
+      );
+    }
+    return {
       key,
       preconditions: {
-        ifMatch: precondition(block, "ETag"),
-        ifMatchLastModifiedTime: precondition(block, "LastModifiedTime"),
-        ifMatchSize: precondition(block, "Size"),
+        ifMatch: xmlElement(block, "ETag"),
+        ifMatchLastModifiedTime: xmlElement(block, "LastModifiedTime"),
+        ifMatchSize: xmlElement(block, "Size"),
       },
-    });
-  }
-  return requested;
+    };
+  });
 }
 
 export function deleteObjects(
@@ -77,54 +79,60 @@ export function deleteObjects(
     ? request.body.toString("utf-8")
     : (request.body as string);
 
-  // Parse <Quiet> flag from XML body
-  const quietMatch = /<Quiet>(true|false)<\/Quiet>/i.exec(body);
-  const quiet = quietMatch?.[1]?.toLowerCase() === "true";
-
+  const quiet = xmlElement(body, "Quiet")?.trim().toLowerCase() === "true";
   const requested = parseRequestedDeletes(body);
 
   // A missing bucket fails the whole request, before any key is looked at.
   if (!store.hasBucket(bucket)) {
     throw new S3Error("NoSuchBucket", `The specified bucket does not exist: ${bucket}`, 404);
   }
+  const isDirectoryBucket = store.getBucketType(bucket) === "directory";
 
-  // Unsupported preconditions are rejected up front so a batch is never half
-  // applied before the request turns out to be invalid.
-  if (store.getBucketType(bucket) !== "directory") {
-    for (const { preconditions } of requested) {
-      rejectDirectoryOnlyPreconditions(preconditions, DIRECTORY_ONLY_ELEMENTS, "element");
+  // Settle every entry before deleting anything, so a malformed value throws out
+  // of here as a request-level 400 rather than leaving the batch half applied.
+  const planned: PlannedDelete[] = requested.map(({ key, preconditions }) => {
+    if (!hasDeletePreconditions(preconditions)) return { key };
+    if (!isDirectoryBucket) {
+      const rejected = directoryOnlyPreconditionError(preconditions, "element");
+      // Reported against this object alone; the rest of the batch still proceeds.
+      if (rejected) return { key, rejected };
     }
-  }
+    return { key, preconditions: parseDeletePreconditions(preconditions) };
+  });
 
-  const deleted: DeletedObject[] = [];
-  const errors: _Error[] = [];
+  const deleted: string[] = [];
+  const errors: { key: string; code: string; message: string }[] = [];
 
-  for (const { key, preconditions } of requested) {
-    if (hasDeletePreconditions(preconditions)) {
+  for (const entry of planned) {
+    if (entry.rejected) {
+      errors.push({ key: entry.key, code: entry.rejected.code, message: entry.rejected.message });
+      continue;
+    }
+    if (entry.preconditions) {
       try {
-        checkConditionalDelete(preconditions, store.peekObject(bucket, key));
+        checkConditionalDelete(entry.preconditions, store.peekObject(bucket, entry.key));
       } catch (err) {
-        if (!(err instanceof S3Error)) throw err;
-        // A per-object precondition failure is reported in the response body,
-        // and the rest of the batch still goes through.
-        errors.push({ Key: key, Code: err.code, Message: err.message });
+        // Only a per-object verdict belongs in the body. Anything else is a
+        // request-level failure and must not be dressed up as a 200.
+        if (!(err instanceof S3Error) || !PER_OBJECT_ERROR_CODES.has(err.code)) throw err;
+        errors.push({ key: entry.key, code: err.code, message: err.message });
         continue;
       }
     }
-    store.deleteObject(bucket, key);
-    deleted.push({ Key: key });
+    store.deleteObject(bucket, entry.key);
+    deleted.push(entry.key);
   }
 
   const entries: string[] = [];
   // Quiet mode suppresses the successes but never the errors.
   if (!quiet) {
-    for (const d of deleted) {
-      entries.push(`<Deleted><Key>${escapeXml(d.Key!)}</Key></Deleted>`);
+    for (const key of deleted) {
+      entries.push(`<Deleted><Key>${escapeXml(key)}</Key></Deleted>`);
     }
   }
   for (const e of errors) {
     entries.push(
-      `<Error><Key>${escapeXml(e.Key!)}</Key><Code>${e.Code}</Code><Message>${escapeXml(e.Message!)}</Message></Error>`,
+      `<Error><Key>${escapeXml(e.key)}</Key><Code>${escapeXml(e.code)}</Code><Message>${escapeXml(e.message)}</Message></Error>`,
     );
   }
 
