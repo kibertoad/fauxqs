@@ -25,6 +25,21 @@ const NEW_ALGORITHMS = ["SHA512", "MD5", "XXHASH64", "XXHASH3", "XXHASH128"] as 
 const checksumHeader = (algorithm: ChecksumAlgorithm) =>
   `x-amz-checksum-${algorithm.toLowerCase()}`;
 
+const CRLF = "\r\n";
+
+/** Wrap a body in a single aws-chunked chunk followed by trailing headers. */
+function awsChunked(body: string, trailers: Record<string, string>): Buffer {
+  const data = Buffer.from(body);
+  const trailerLines = Object.entries(trailers)
+    .map(([name, value]) => `${name}:${value}${CRLF}`)
+    .join("");
+  return Buffer.concat([
+    Buffer.from(`${data.length.toString(16)};chunk-signature=0${CRLF}`),
+    data,
+    Buffer.from(`${CRLF}0${CRLF}${trailerLines}${CRLF}`),
+  ]);
+}
+
 describe("S3 checksum algorithms added in 2026", () => {
   let server: FauxqsServer;
   let s3: ReturnType<typeof createS3Client>;
@@ -124,6 +139,34 @@ describe("S3 checksum algorithms added in 2026", () => {
       expect(response.headers.get(checksumHeader(algorithm))).toBe(expected);
       await response.text();
     });
+  });
+
+  it("accepts the checksum as an aws-chunked trailing header", async () => {
+    // Streaming uploads carry the checksum in a trailer rather than a request
+    // header, since it is only known once the body has been read.
+    for (const algorithm of NEW_ALGORITHMS) {
+      const key = `chunked-${algorithm.toLowerCase()}.txt`;
+      const body = `chunked payload for ${algorithm}`;
+      const expected = computeChecksum(algorithm, Buffer.from(body));
+
+      const response = await fetch(`${baseUrl}/${bucket}/${key}`, {
+        method: "PUT",
+        headers: {
+          "content-encoding": "aws-chunked",
+          "x-amz-trailer": checksumHeader(algorithm),
+        },
+        body: awsChunked(body, { [checksumHeader(algorithm)]: expected }),
+      });
+      expect(response.status, algorithm).toBe(200);
+      expect(response.headers.get(checksumHeader(algorithm)), algorithm).toBe(expected);
+      await response.text();
+
+      const stored = await fetch(`${baseUrl}/${bucket}/${key}`, {
+        headers: { "x-amz-checksum-mode": "ENABLED" },
+      });
+      expect(await stored.text(), algorithm).toBe(body);
+      expect(stored.headers.get(checksumHeader(algorithm)), algorithm).toBe(expected);
+    }
   });
 
   it("computes SHA512 identically to node:crypto", async () => {
@@ -345,6 +388,18 @@ describe("opt-in checksum validation", () => {
     expect(await response.text()).toContain("<Code>BadDigest</Code>");
   });
 
+  it("rejects a mismatched checksum sent as an aws-chunked trailing header", async () => {
+    const wrong = computeChecksum("SHA512", Buffer.from("a different body"));
+
+    const response = await fetch(`${baseUrl}/${bucket}/chunked-invalid.txt`, {
+      method: "PUT",
+      headers: { "content-encoding": "aws-chunked", "x-amz-trailer": "x-amz-checksum-sha512" },
+      body: awsChunked("streamed body", { "x-amz-checksum-sha512": wrong }),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("<Code>BadDigest</Code>");
+  });
+
   it("rejects a mismatched checksum on a CopyObject that replaces metadata", async () => {
     await put("copy-validated-src.txt", "source body", {
       "x-amz-checksum-sha256": computeChecksum("SHA256", Buffer.from("source body")),
@@ -389,5 +444,12 @@ describe("checksum validation is off by default", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("x-amz-checksum-sha256")).toBe(wrong);
     await response.text();
+
+    // The unverified value is what later reads see, too.
+    const stored = await fetch(`http://127.0.0.1:${server.port}/${bucket}/unchecked.txt`, {
+      headers: { "x-amz-checksum-mode": "ENABLED" },
+    });
+    expect(stored.headers.get("x-amz-checksum-sha256")).toBe(wrong);
+    await stored.text();
   });
 });
