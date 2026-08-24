@@ -12,7 +12,8 @@ import {
 import { join, dirname, sep } from "node:path";
 import type { S3PersistenceProvider } from "./s3Persistence.ts";
 import type { S3Store, BucketType } from "./s3Store.ts";
-import type { S3Object, MultipartUpload, MultipartPart, ChecksumAlgorithm } from "./s3Types.ts";
+import type { S3Object, MultipartUpload, MultipartPart } from "./s3Types.ts";
+import { toChecksumAlgorithm } from "./checksum.ts";
 
 /**
  * Encode an S3 key into a filesystem-safe relative path.
@@ -328,6 +329,7 @@ export class FileS3Persistence implements S3PersistenceProvider {
       if (!existsSync(objectsDir)) continue;
       this.walkMetaFiles(objectsDir, (metaPath) => {
         const meta: ObjectMeta = JSON.parse(readFileSync(metaPath, "utf-8"));
+        const checksumAlgorithm = toChecksumAlgorithm(meta.checksumAlgorithm);
         const obj: S3Object = {
           key: meta.key,
           body: Buffer.alloc(0), // Metadata only — body is read on demand
@@ -341,9 +343,7 @@ export class FileS3Persistence implements S3PersistenceProvider {
           ...(meta.cacheControl && { cacheControl: meta.cacheControl }),
           ...(meta.contentEncoding && { contentEncoding: meta.contentEncoding }),
           ...(meta.parts && { parts: meta.parts }),
-          ...(meta.checksumAlgorithm && {
-            checksumAlgorithm: meta.checksumAlgorithm as ChecksumAlgorithm,
-          }),
+          ...(checksumAlgorithm && { checksumAlgorithm }),
           ...(meta.checksumValue && { checksumValue: meta.checksumValue }),
           ...(meta.checksumType && {
             checksumType: meta.checksumType as "FULL_OBJECT" | "COMPOSITE",
@@ -362,6 +362,7 @@ export class FileS3Persistence implements S3PersistenceProvider {
       if (!existsSync(uploadMetaPath)) continue;
       const meta: UploadMeta = JSON.parse(readFileSync(uploadMetaPath, "utf-8"));
 
+      const checksumAlgorithm = toChecksumAlgorithm(meta.checksumAlgorithm);
       const upload: MultipartUpload = {
         uploadId: meta.uploadId,
         bucket: meta.bucket,
@@ -374,9 +375,7 @@ export class FileS3Persistence implements S3PersistenceProvider {
         ...(meta.contentDisposition && { contentDisposition: meta.contentDisposition }),
         ...(meta.cacheControl && { cacheControl: meta.cacheControl }),
         ...(meta.contentEncoding && { contentEncoding: meta.contentEncoding }),
-        ...(meta.checksumAlgorithm && {
-          checksumAlgorithm: meta.checksumAlgorithm as ChecksumAlgorithm,
-        }),
+        ...(checksumAlgorithm && { checksumAlgorithm }),
       };
 
       // Load parts fully (they're temporary, needed for completeMultipartUpload concatenation)

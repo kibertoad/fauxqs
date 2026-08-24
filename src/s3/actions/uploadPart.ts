@@ -2,7 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { S3Error } from "../../common/errors.ts";
 import type { S3Store } from "../s3Store.ts";
 import { decodeAwsChunked } from "../chunkedEncoding.ts";
-import { extractChecksumFromHeaders, checksumHeaderName } from "../checksum.ts";
+import { checksumHeaderName, resolveUploadChecksum, validateContentMd5 } from "../checksum.ts";
 
 export function uploadPart(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
@@ -12,6 +12,8 @@ export function uploadPart(
   const query = (request.query ?? {}) as Record<string, string>;
   const uploadId = query["uploadId"];
   const partNumber = parseInt(query["partNumber"], 10);
+  const headers = request.headers as Record<string, string | string[] | undefined>;
+  const validateChecksums = !store.relaxedRules?.disableChecksumValidation;
 
   // UploadPartCopy: check for x-amz-copy-source header
   const copySource = request.headers["x-amz-copy-source"] as string | undefined;
@@ -58,6 +60,8 @@ export function uploadPart(
       partBody = srcObj.body;
     }
 
+    // No client checksum to pass: the store computes the part checksum from the
+    // upload's algorithm, and real S3 reports it back in CopyPartResult.
     const result = store.uploadPart(uploadId, partNumber, partBody);
 
     const xml = [
@@ -65,6 +69,11 @@ export function uploadPart(
       `<CopyPartResult>`,
       `  <ETag>${result.etag}</ETag>`,
       `  <LastModified>${new Date().toISOString()}</LastModified>`,
+      ...(result.checksum
+        ? [
+            `  <Checksum${result.checksum.algorithm}>${result.checksum.value}</Checksum${result.checksum.algorithm}>`,
+          ]
+        : []),
       `</CopyPartResult>`,
     ].join("\n");
 
@@ -84,16 +93,17 @@ export function uploadPart(
     trailers = decoded.trailers;
   }
 
-  // Extract checksum from trailing headers first, then regular headers
-  const cksum =
-    extractChecksumFromHeaders(trailers) ??
-    extractChecksumFromHeaders(request.headers as Record<string, string | string[] | undefined>);
+  if (validateChecksums) {
+    validateContentMd5(headers, body);
+  }
+  // Trailing headers first, then regular headers, then the algorithm-only form.
+  const cksum = resolveUploadChecksum(headers, trailers, body, validateChecksums);
 
-  const result = store.uploadPart(uploadId, partNumber, body, cksum?.value);
+  const result = store.uploadPart(uploadId, partNumber, body, cksum);
 
   reply.header("etag", result.etag);
-  if (cksum && result.checksumValue) {
-    reply.header(checksumHeaderName(cksum.algorithm), result.checksumValue);
+  if (result.checksum) {
+    reply.header(checksumHeaderName(result.checksum.algorithm), result.checksum.value);
   }
   reply.status(200).send();
 }

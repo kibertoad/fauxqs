@@ -1,4 +1,22 @@
-export type ChecksumAlgorithm = "CRC32" | "CRC32C" | "CRC64NVME" | "SHA1" | "SHA256";
+/**
+ * Checksum algorithms S3 supports, in the order AWS documents them. The five
+ * originals were joined by MD5, SHA512 and the three xxHash variants in
+ * April 2026.
+ */
+export const CHECKSUM_ALGORITHMS = [
+  "CRC32",
+  "CRC32C",
+  "CRC64NVME",
+  "SHA1",
+  "SHA256",
+  "SHA512",
+  "MD5",
+  "XXHASH64",
+  "XXHASH3",
+  "XXHASH128",
+] as const;
+
+export type ChecksumAlgorithm = (typeof CHECKSUM_ALGORITHMS)[number];
 
 export interface S3Object {
   key: string;

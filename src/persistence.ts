@@ -7,7 +7,7 @@ import type { SnsStore } from "./sns/snsStore.ts";
 import type { SnsTopic, SnsSubscription } from "./sns/snsTypes.ts";
 import type { S3Store, BucketType } from "./s3/s3Store.ts";
 import type { S3Object, MultipartUpload, MultipartPart } from "./s3/s3Types.ts";
-import type { ChecksumAlgorithm } from "./s3/s3Types.ts";
+import { toChecksumAlgorithm } from "./s3/checksum.ts";
 import type { S3PersistenceProvider } from "./s3/s3Persistence.ts";
 
 const SCHEMA = `
@@ -842,6 +842,7 @@ export class PersistenceManager implements S3PersistenceProvider {
     }>;
 
     for (const row of rows) {
+      const checksumAlgorithm = toChecksumAlgorithm(row.checksum_algorithm);
       const obj: S3Object = {
         key: row.key,
         body: Buffer.alloc(0),
@@ -855,9 +856,7 @@ export class PersistenceManager implements S3PersistenceProvider {
         ...(row.cache_control && { cacheControl: row.cache_control }),
         ...(row.content_encoding && { contentEncoding: row.content_encoding }),
         ...(row.parts && { parts: JSON.parse(row.parts) }),
-        ...(row.checksum_algorithm && {
-          checksumAlgorithm: row.checksum_algorithm as ChecksumAlgorithm,
-        }),
+        ...(checksumAlgorithm && { checksumAlgorithm }),
         ...(row.checksum_value && { checksumValue: row.checksum_value }),
         ...(row.checksum_type && {
           checksumType: row.checksum_type as "FULL_OBJECT" | "COMPOSITE",
@@ -884,6 +883,7 @@ export class PersistenceManager implements S3PersistenceProvider {
     }>;
 
     for (const row of uploadRows) {
+      const checksumAlgorithm = toChecksumAlgorithm(row.checksum_algorithm);
       const upload: MultipartUpload = {
         uploadId: row.upload_id,
         bucket: row.bucket,
@@ -896,9 +896,7 @@ export class PersistenceManager implements S3PersistenceProvider {
         ...(row.content_disposition && { contentDisposition: row.content_disposition }),
         ...(row.cache_control && { cacheControl: row.cache_control }),
         ...(row.content_encoding && { contentEncoding: row.content_encoding }),
-        ...(row.checksum_algorithm && {
-          checksumAlgorithm: row.checksum_algorithm as ChecksumAlgorithm,
-        }),
+        ...(checksumAlgorithm && { checksumAlgorithm }),
       };
 
       const partRows = this.stmts.loadMultipartParts.all(row.upload_id) as Array<{

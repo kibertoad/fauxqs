@@ -101,6 +101,7 @@ Alternatively, use `forcePathStyle: true` on the S3 client if you prefer path-st
 | `FAUXQS_PERSISTENCE` | Enable SQLite persistence (requires a volume mounted at `/data`) | `false` |
 | `FAUXQS_DATA_DIR` | Directory for the SQLite database | `/data` (preset in image) |
 | `FAUXQS_S3_STORAGE_DIR` | Store S3 objects as files on disk instead of SQLite blobs | (none) |
+| `FAUXQS_DISABLE_CHECKSUM_VALIDATION` | Stop verifying uploaded S3 bodies against the `x-amz-checksum-*`/`Content-MD5` header the client sent | `false` |
 | `FAUXQS_RUN_USER` | User the server runs as (name, uid, or `uid:gid`) | `node` (uid 1000) |
 | `FAUXQS_RUN_AS_ROOT` | Keep the server running as root instead of dropping privileges | `false` |
 

@@ -20,7 +20,7 @@ export class S3Store {
   private multipartUploadsByBucket = new Map<string, Set<string>>();
   spy?: MessageSpy;
   persistence?: S3PersistenceProvider;
-  relaxedRules?: { disableMinCopySourceSize?: boolean };
+  relaxedRules?: { disableMinCopySourceSize?: boolean; disableChecksumValidation?: boolean };
   /** Dispatches S3 object events to SQS/SNS. Set by buildApp; undefined disables notifications. */
   notificationDispatcher?: S3EventDispatcher;
   private bucketNotificationConfigurations = new Map<string, S3NotificationConfiguration>();
@@ -519,8 +519,8 @@ export class S3Store {
     uploadId: string,
     partNumber: number,
     body: Buffer,
-    checksumValue?: string,
-  ): { etag: string; checksumValue?: string } {
+    checksum?: { algorithm: ChecksumAlgorithm; value: string },
+  ): { etag: string; checksum?: { algorithm: ChecksumAlgorithm; value: string } } {
     const upload = this.multipartUploads.get(uploadId);
     if (!upload) {
       throw new S3Error(
@@ -529,18 +529,41 @@ export class S3Store {
         404,
       );
     }
+    // A part checksum only means anything under the algorithm the upload was
+    // created with, because completeMultipartUpload hashes the concatenated
+    // part digests under that algorithm. A digest computed with a different one
+    // would yield a composite checksum no client could reproduce.
+    if (checksum && upload.checksumAlgorithm && checksum.algorithm !== upload.checksumAlgorithm) {
+      throw new S3Error(
+        "InvalidRequest",
+        `Checksum Type mismatch occurred, expected checksum Type: ${upload.checksumAlgorithm.toLowerCase()}, actual checksum Type: ${checksum.algorithm.toLowerCase()}`,
+        400,
+      );
+    }
     const etag = `"${createHash("md5").update(body).digest("hex")}"`;
+    // When the upload has an algorithm but the client sent no checksum, compute
+    // it here the way real S3 does. UploadPartCopy never sends one, and without
+    // this the whole upload would fail at completion time for want of a
+    // complete set of part checksums.
+    const resolved =
+      checksum ??
+      (upload.checksumAlgorithm
+        ? {
+            algorithm: upload.checksumAlgorithm,
+            value: computeChecksum(upload.checksumAlgorithm, body),
+          }
+        : undefined);
     const part = {
       partNumber,
       body,
       etag,
       lastModified: new Date(),
-      ...(checksumValue && { checksumValue }),
+      ...(resolved && { checksumValue: resolved.value }),
     };
     upload.parts.set(partNumber, part);
     this.persistence?.upsertMultipartPart(uploadId, part);
 
-    return { etag, checksumValue };
+    return { etag, ...(resolved && { checksum: resolved }) };
   }
 
   completeMultipartUpload(
