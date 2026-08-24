@@ -106,7 +106,12 @@ Alternatively, use `forcePathStyle: true` on the S3 client if you prefer path-st
 
 ## Container User
 
-The server runs as the unprivileged `node` user (uid 1000). The entrypoint starts as root only to bind dnsmasq to port 53 and to hand the mounted directories over to that user, so root-owned bind mounts like `-v ./volume:/data` keep working with nothing to prepare on the host. Directories that are already writable by that user keep their ownership — the handover only happens where it is needed.
+By default the server runs as the unprivileged `node` user (uid 1000). The entrypoint starts as root only to bind dnsmasq to port 53 and to hand the mounted directories over to that user, so root-owned bind mounts like `-v ./volume:/data` keep working with nothing to prepare on the host. Directories that are already writable by that user keep their ownership — the handover only happens where it is needed.
+
+Non-root is the default, not a guarantee. Two supported cases keep the server as root, both of them logged:
+
+- `FAUXQS_RUN_AS_ROOT=true`, which selects root deliberately.
+- A write directory that `chown` cannot hand over while root can still write to it — some remote filesystems ignore `chown`. The entrypoint prints `WARNING: Keeping the server as root, which can write to <dir>` and names the directory. If *neither* the unprivileged user nor root can write to it (a read-only mount), it refuses to start instead of failing on the first write.
 
 To avoid the root phase entirely, start the container as non-root — dnsmasq carries `cap_net_bind_service` as a file capability, so wildcard DNS still works:
 
@@ -116,7 +121,9 @@ docker run -p 4566:4566 --user 1000:1000 -v fauxqs-data:/data -e FAUXQS_PERSISTE
 
 In that mode a bind-mounted directory must already be writable by the uid you pass; if it is not, the container reports which directory is at fault and refuses to start rather than failing every write at runtime.
 
-Wildcard DNS needs the `NET_BIND_SERVICE` capability wherever port 53 counts as privileged, which includes most Kubernetes clusters. If you drop all capabilities (`--cap-drop=ALL`, or Kubernetes' `restricted` policy), add that one back to keep it. Without it the container still starts and the API works — `*.fauxqs` names just won't resolve inside the container, so S3 clients need `forcePathStyle: true`.
+Wildcard DNS needs the `NET_BIND_SERVICE` capability only where port 53 counts as privileged. Docker sets `net.ipv4.ip_unprivileged_port_start=0` by default, so it works there even under `--cap-drop=ALL`; most Kubernetes clusters leave port 53 privileged, so under the `restricted` policy add that one capability back to keep wildcard DNS. Where it is missing and the port is privileged, the container still starts and the API works normally — the log says wildcard DNS is unavailable.
+
+That only affects clients resolving `<bucket>.s3.<container-hostname>` through the container's own DNS, i.e. other containers on the same network. Clients on the host using `*.localhost.fauxqs.dev` are unaffected, since that wildcard is public DNS. For an affected container client, point the endpoint at a name its own resolver can reach — the compose service name, e.g. `http://fauxqs:4566` — and set `forcePathStyle: true`; `forcePathStyle` alone does not change the endpoint host.
 
 ## Persistence
 

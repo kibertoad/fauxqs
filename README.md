@@ -164,7 +164,7 @@ docker run -p 4566:4566 \
 
 #### Container user
 
-The server does not run as root. The entrypoint starts as root only to do what needs privileges — binding dnsmasq to port 53 and taking ownership of the mounted directories — and then drops to the unprivileged `node` user (uid 1000) before starting the server.
+By default the server does not run as root. The entrypoint starts as root only to do what needs privileges — binding dnsmasq to port 53 and taking ownership of the mounted directories — and then drops to the unprivileged `node` user (uid 1000) before starting the server. Two cases keep it as root, both of them logged: `FAUXQS_RUN_AS_ROOT=true`, and a write directory that `chown` cannot hand over while root can still write to it (see the end of this section). Treat non-root as the default rather than an unconditional guarantee.
 
 This keeps bind mounts working: `-v ./volume:/data` gives you a root-owned host directory, which the entrypoint hands over to `node` on startup. Nothing to prepare on the host.
 
@@ -183,7 +183,7 @@ docker run -p 4566:4566 --user 1000:1000 -v fauxqs-data:/data -e FAUXQS_PERSISTE
 
 dnsmasq carries `cap_net_bind_service` as a file capability, so wildcard DNS still works this way. With an *empty* named volume, Docker copies the image's ownership of `/data` (uid 1000), so persistence works out of the box. A bind-mounted host directory, on the other hand, has to be writable by the uid you pass — the container can no longer fix the ownership itself, so it reports the problem at startup instead of serving a healthy `/health` while every write fails.
 
-Wildcard DNS needs the `NET_BIND_SERVICE` capability wherever port 53 counts as privileged, which includes most Kubernetes clusters. Under Kubernetes' `restricted` Pod Security Standard, which drops every capability, add it back:
+Wildcard DNS needs the `NET_BIND_SERVICE` capability only where port 53 counts as privileged. Docker sets `net.ipv4.ip_unprivileged_port_start=0` by default, so it keeps working there even under `--cap-drop=ALL`; most Kubernetes clusters leave port 53 privileged, so under the `restricted` Pod Security Standard, which drops every capability, add that one back:
 
 ```yaml
 securityContext:
@@ -194,7 +194,9 @@ securityContext:
     add: ["NET_BIND_SERVICE"]   # omit if you don't need wildcard DNS
 ```
 
-Without it the container still starts and the API works normally — `*.fauxqs` names just won't resolve inside the container, which the logs point out, and S3 clients need `forcePathStyle: true`.
+Where the capability is missing and port 53 is privileged, the container still starts and the API works normally — dnsmasq just doesn't come up, which the logs point out.
+
+That only affects clients that resolve `<bucket>.s3.<container-hostname>` through the container's own DNS, i.e. [other containers on the same network](#container-to-container-s3-virtual-hosted-style). Clients on the host using `*.localhost.fauxqs.dev` are unaffected, since that wildcard is public DNS. For an affected container client, point the endpoint at a name its own resolver can reach — the compose service name, e.g. `http://fauxqs:4566` — and set `forcePathStyle: true`; `forcePathStyle` alone does not change the endpoint host.
 
 If a directory the server writes to cannot be made writable at all — a read-only mount, most often — the entrypoint says which directory is at fault and refuses to start, because a server that starts anyway would fail on its first write. When `chown` is merely ineffective (some remote filesystems ignore it) but root can still write, it stays root instead, and says so.
 
