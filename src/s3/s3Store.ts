@@ -451,15 +451,6 @@ export class S3Store {
     }
   }
 
-  deleteObjects(bucket: string, keys: string[]): string[] {
-    const deleted: string[] = [];
-    for (const key of keys) {
-      this.deleteObject(bucket, key);
-      deleted.push(key);
-    }
-    return deleted;
-  }
-
   // --- Multipart Upload ---
 
   createMultipartUpload(

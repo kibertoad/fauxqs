@@ -8,7 +8,7 @@ function headerValue(v: string | string[] | undefined): string | undefined {
 }
 
 /** Split a comma-separated entity-tag list (RFC 7232) into individual tokens. */
-function parseEtagList(raw: string): string[] {
+export function parseEtagList(raw: string): string[] {
   return raw
     .split(",")
     .map((tag) => tag.trim())
@@ -28,7 +28,8 @@ export function etagEquals(a: string, b: string): boolean {
   return normalizeEtag(a) === normalizeEtag(b);
 }
 
-function preconditionFailed(): S3Error {
+/** The single 412 every S3 conditional operation reports, message included. */
+export function preconditionFailed(): S3Error {
   return new S3Error(
     "PreconditionFailed",
     "At least one of the pre-conditions you specified did not hold",
