@@ -10,13 +10,13 @@ importers:
     dependencies:
       '@aws-sdk/client-s3':
         specifier: ^3.1053.0
-        version: 3.1123.0
+        version: 3.1124.0
       '@aws-sdk/client-sns':
         specifier: ^3.1053.0
-        version: 3.1123.0
+        version: 3.1124.0
       '@aws-sdk/client-sqs':
         specifier: ^3.1053.0
-        version: 3.1123.0
+        version: 3.1124.0
       '@fastify/cors':
         specifier: ^11.2.0
         version: 11.3.0
@@ -35,13 +35,13 @@ importers:
     devDependencies:
       '@aws-sdk/s3-presigned-post':
         specifier: ^3.997.0
-        version: 3.1123.0
+        version: 3.1124.0
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.993.0
-        version: 3.1123.0
+        version: 3.1124.0
       '@message-queue-toolkit/s3-payload-store':
         specifier: ^4.0.0
-        version: 4.0.0(@aws-sdk/client-s3@3.1123.0)(@message-queue-toolkit/core@25.5.0(zod@4.4.3))
+        version: 4.0.0(@aws-sdk/client-s3@3.1124.0)(@message-queue-toolkit/core@25.5.0(zod@4.4.3))
       '@types/node':
         specifier: ^25.2.3
         version: 25.9.1
@@ -70,16 +70,16 @@ packages:
     resolution: {integrity: sha512-Dtu0gr4dnATZAPwEYbpCsG+MpLM7OAliy2gTepEFQwl1vZ6DL3QMH2FveMa3HLvPsOdhJsPRB3KtxVhph9T75A==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-s3@3.1123.0':
-    resolution: {integrity: sha512-InD/KXgF4clIFtqo8yzQQG755/BBoLstsC5WITLrMckKUUaACQgbpbZcdsySAXU3Uukp/3RV0Aiv5H3eDNGXcw==}
+  '@aws-sdk/client-s3@3.1124.0':
+    resolution: {integrity: sha512-f20BksgVlXufcf/mijde1LAjwM/iSDdG3mGtN3yRFOUzXtlFEOjxNi1Rf2Kb+rSgoiOSpO0hUOna9Bs+J1gX2A==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-sns@3.1123.0':
-    resolution: {integrity: sha512-EJc4ifEbCgLe6Z5Q+wkxp8QFX9pK1Cp5/VGE2iqaQVtwUbLU0MHrUlRqFV4ui7M/K9gsmTfhUJj1xVDaPzIP/g==}
+  '@aws-sdk/client-sns@3.1124.0':
+    resolution: {integrity: sha512-ZaNM/4GruMDqV6zDB6QtmYpHidM9BnoSGoyM+BsP5VVWqCei7p7/TdqLcgPfLZyISsVYKILL8+uPL5cWTYePEg==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-sqs@3.1123.0':
-    resolution: {integrity: sha512-GiCct1kMfeeXe3T3buPXEQE8xqpCb0QDRACwqgsV1J4QfOQiA8Q4iD4ChVASvClshRttXwR5o1YRYD4grgr/IA==}
+  '@aws-sdk/client-sqs@3.1124.0':
+    resolution: {integrity: sha512-bB69JCInUzgeWQ1uq5+ehH9m9h1CL6O0zUxNat995H6UlaIjpHPC0d6m7NIyt0i8y7eex1WK8J3Zp70EeRY92w==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/core@3.977.9':
@@ -130,12 +130,12 @@ packages:
     resolution: {integrity: sha512-NhEgryjlBF9w38ZXqGymQV28IhkYa1mKhlbYnqIis57AYwWGVYfUPgg/qC2rLRqOUfblxx++irvju10kVTa8Vw==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/s3-presigned-post@3.1123.0':
-    resolution: {integrity: sha512-pJpQdhllWNlYOahh5Ml7cghI1DS+I6NEbzjK7qGiW9E2aaAT2uj4V0SvSIILjJ4FSrr5f/ilRT6IfK3Ae5qneA==}
+  '@aws-sdk/s3-presigned-post@3.1124.0':
+    resolution: {integrity: sha512-BcfJa/AYkKlzyDG72/Sbaq88tSWQ1wm0AWWv2XN/q1GpK8cHrjjxaWuvvpLuMktDMH77PFyD/2fypQ8y3GO8wg==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/s3-request-presigner@3.1123.0':
-    resolution: {integrity: sha512-u0vjRCIRA8ATy9SseEmHu3BNv4xTE7Pi/+Q4AVXG2brRfnEEFU6oVBoagDxMeLqsNfvJJRlhP620O0rbiCDnpA==}
+  '@aws-sdk/s3-request-presigner@3.1124.0':
+    resolution: {integrity: sha512-e9R8FQD4QNAM+g2X8HB/wr5q4pgJXjFDMI+FOC759Ez70xG5Zo7lCBU/wVILSFQ2wOrT76F6kVPe3bMERxMf2w==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/signature-v4-multi-region@3.996.46':
@@ -1394,7 +1394,7 @@ snapshots:
       '@smithy/types': 4.17.2
       tslib: 2.8.1
 
-  '@aws-sdk/client-s3@3.1123.0':
+  '@aws-sdk/client-s3@3.1124.0':
     dependencies:
       '@aws-sdk/checksums': 3.1000.29
       '@aws-sdk/core': 3.977.9
@@ -1408,7 +1408,7 @@ snapshots:
       '@smithy/types': 4.17.2
       tslib: 2.8.1
 
-  '@aws-sdk/client-sns@3.1123.0':
+  '@aws-sdk/client-sns@3.1124.0':
     dependencies:
       '@aws-sdk/core': 3.977.9
       '@aws-sdk/credential-provider-node': 3.972.82
@@ -1419,7 +1419,7 @@ snapshots:
       '@smithy/types': 4.17.2
       tslib: 2.8.1
 
-  '@aws-sdk/client-sqs@3.1123.0':
+  '@aws-sdk/client-sqs@3.1124.0':
     dependencies:
       '@aws-sdk/core': 3.977.9
       '@aws-sdk/credential-provider-node': 3.972.82
@@ -1553,9 +1553,9 @@ snapshots:
       '@smithy/types': 4.17.2
       tslib: 2.8.1
 
-  '@aws-sdk/s3-presigned-post@3.1123.0':
+  '@aws-sdk/s3-presigned-post@3.1124.0':
     dependencies:
-      '@aws-sdk/client-s3': 3.1123.0
+      '@aws-sdk/client-s3': 3.1124.0
       '@aws-sdk/core': 3.977.9
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
@@ -1563,7 +1563,7 @@ snapshots:
       '@smithy/types': 4.17.2
       tslib: 2.8.1
 
-  '@aws-sdk/s3-request-presigner@3.1123.0':
+  '@aws-sdk/s3-request-presigner@3.1124.0':
     dependencies:
       '@aws-sdk/core': 3.977.9
       '@aws-sdk/signature-v4-multi-region': 3.996.46
@@ -1690,9 +1690,9 @@ snapshots:
       toad-cache: 3.7.4
       zod: 4.4.3
 
-  '@message-queue-toolkit/s3-payload-store@4.0.0(@aws-sdk/client-s3@3.1123.0)(@message-queue-toolkit/core@25.5.0(zod@4.4.3))':
+  '@message-queue-toolkit/s3-payload-store@4.0.0(@aws-sdk/client-s3@3.1124.0)(@message-queue-toolkit/core@25.5.0(zod@4.4.3))':
     dependencies:
-      '@aws-sdk/client-s3': 3.1123.0
+      '@aws-sdk/client-s3': 3.1124.0
       '@message-queue-toolkit/core': 25.5.0(zod@4.4.3)
 
   '@message-queue-toolkit/schemas@7.2.0(zod@4.4.3)':
