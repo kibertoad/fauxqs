@@ -10,13 +10,13 @@ importers:
     dependencies:
       '@aws-sdk/client-s3':
         specifier: ^3.1053.0
-        version: 3.1124.0
+        version: 3.1125.0
       '@aws-sdk/client-sns':
         specifier: ^3.1053.0
-        version: 3.1124.0
+        version: 3.1125.0
       '@aws-sdk/client-sqs':
         specifier: ^3.1053.0
-        version: 3.1124.0
+        version: 3.1125.0
       '@fastify/cors':
         specifier: ^11.2.0
         version: 11.3.0
@@ -35,13 +35,13 @@ importers:
     devDependencies:
       '@aws-sdk/s3-presigned-post':
         specifier: ^3.997.0
-        version: 3.1124.0
+        version: 3.1125.0
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.993.0
-        version: 3.1124.0
+        version: 3.1125.0
       '@message-queue-toolkit/s3-payload-store':
         specifier: ^4.0.0
-        version: 4.0.0(@aws-sdk/client-s3@3.1124.0)(@message-queue-toolkit/core@25.5.0(zod@4.4.3))
+        version: 4.0.0(@aws-sdk/client-s3@3.1125.0)(@message-queue-toolkit/core@25.5.0(zod@4.4.3))
       '@types/node':
         specifier: ^25.2.3
         version: 25.9.1
@@ -70,16 +70,16 @@ packages:
     resolution: {integrity: sha512-Dtu0gr4dnATZAPwEYbpCsG+MpLM7OAliy2gTepEFQwl1vZ6DL3QMH2FveMa3HLvPsOdhJsPRB3KtxVhph9T75A==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-s3@3.1124.0':
-    resolution: {integrity: sha512-f20BksgVlXufcf/mijde1LAjwM/iSDdG3mGtN3yRFOUzXtlFEOjxNi1Rf2Kb+rSgoiOSpO0hUOna9Bs+J1gX2A==}
+  '@aws-sdk/client-s3@3.1125.0':
+    resolution: {integrity: sha512-l0npObtjYgqDfUHiifnWGFuAuMVq5r4AVf4C+jY+thJ/2iAr/eHqAjBR4clbmXxSoJ5w3+ZFGRPyci/CCkUoyg==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-sns@3.1124.0':
-    resolution: {integrity: sha512-ZaNM/4GruMDqV6zDB6QtmYpHidM9BnoSGoyM+BsP5VVWqCei7p7/TdqLcgPfLZyISsVYKILL8+uPL5cWTYePEg==}
+  '@aws-sdk/client-sns@3.1125.0':
+    resolution: {integrity: sha512-l3khY+3Ez6waG6Ne0z4jllW8Npq/aLnvi9s8rU6dZIEy4ST4+5iIw7y5eG5K6zkIdg74PY7YIBBxc/QerbKsDw==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-sqs@3.1124.0':
-    resolution: {integrity: sha512-bB69JCInUzgeWQ1uq5+ehH9m9h1CL6O0zUxNat995H6UlaIjpHPC0d6m7NIyt0i8y7eex1WK8J3Zp70EeRY92w==}
+  '@aws-sdk/client-sqs@3.1125.0':
+    resolution: {integrity: sha512-Hz7sgk/BZGqvGpSSqAteM9oOepD9azeG4AuqBaUDlB32FinQBHbCA1vrf7idusDTmMCoa0vJcO7YeqbAkB5cQw==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/core@3.977.9':
@@ -130,12 +130,12 @@ packages:
     resolution: {integrity: sha512-NhEgryjlBF9w38ZXqGymQV28IhkYa1mKhlbYnqIis57AYwWGVYfUPgg/qC2rLRqOUfblxx++irvju10kVTa8Vw==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/s3-presigned-post@3.1124.0':
-    resolution: {integrity: sha512-BcfJa/AYkKlzyDG72/Sbaq88tSWQ1wm0AWWv2XN/q1GpK8cHrjjxaWuvvpLuMktDMH77PFyD/2fypQ8y3GO8wg==}
+  '@aws-sdk/s3-presigned-post@3.1125.0':
+    resolution: {integrity: sha512-/nVyJ5xTBvbLuckWiZB1nCzMxt1bJMNppej3A7rliZdrdEbTYTLrciPX6twBv89K+cCCycyc+KkeK4nrEUBRlg==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/s3-request-presigner@3.1124.0':
-    resolution: {integrity: sha512-e9R8FQD4QNAM+g2X8HB/wr5q4pgJXjFDMI+FOC759Ez70xG5Zo7lCBU/wVILSFQ2wOrT76F6kVPe3bMERxMf2w==}
+  '@aws-sdk/s3-request-presigner@3.1125.0':
+    resolution: {integrity: sha512-WGK4s9XWk57ZvzfUw0j1m9xgKqCElZHVp5P80MQJCGV8A3Rpy2fAjDKrfauXQvBRHdECpijXpajpI/+X8Tsv+A==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/signature-v4-multi-region@3.996.46':
@@ -875,8 +875,8 @@ packages:
     resolution: {integrity: sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==}
     engines: {node: '>=12.0.0'}
 
-  fast-copy@4.1.0:
-    resolution: {integrity: sha512-f5oNUvGAmBPLP85im9czQ7fVWh3RfcIIIzyXrcXKmCiWoDn+CRmfsoQN3jmE5J+UEquj4Ugc1woTaxD0oa37Gg==}
+  fast-copy@4.1.1:
+    resolution: {integrity: sha512-A4QTJmuiztpGtr6AMeJts9R4hbj2ZBUwtOaKrG6rw2y7t6+IaJKjz5M3XDs8BUznxDH43FVc6A0y/gWlMl4UtA==}
 
   fast-decode-uri-component@1.0.1:
     resolution: {integrity: sha512-WKgKWg5eUxvRZGwW8FvfbaH7AXSh2cL+3j5fMGzUMCxWBJ3dV3a7Wz8y2f/uQ0e3B6WmodD3oS54jTQ9HVTIIg==}
@@ -1394,7 +1394,7 @@ snapshots:
       '@smithy/types': 4.17.2
       tslib: 2.8.1
 
-  '@aws-sdk/client-s3@3.1124.0':
+  '@aws-sdk/client-s3@3.1125.0':
     dependencies:
       '@aws-sdk/checksums': 3.1000.29
       '@aws-sdk/core': 3.977.9
@@ -1408,7 +1408,7 @@ snapshots:
       '@smithy/types': 4.17.2
       tslib: 2.8.1
 
-  '@aws-sdk/client-sns@3.1124.0':
+  '@aws-sdk/client-sns@3.1125.0':
     dependencies:
       '@aws-sdk/core': 3.977.9
       '@aws-sdk/credential-provider-node': 3.972.82
@@ -1419,7 +1419,7 @@ snapshots:
       '@smithy/types': 4.17.2
       tslib: 2.8.1
 
-  '@aws-sdk/client-sqs@3.1124.0':
+  '@aws-sdk/client-sqs@3.1125.0':
     dependencies:
       '@aws-sdk/core': 3.977.9
       '@aws-sdk/credential-provider-node': 3.972.82
@@ -1553,9 +1553,9 @@ snapshots:
       '@smithy/types': 4.17.2
       tslib: 2.8.1
 
-  '@aws-sdk/s3-presigned-post@3.1124.0':
+  '@aws-sdk/s3-presigned-post@3.1125.0':
     dependencies:
-      '@aws-sdk/client-s3': 3.1124.0
+      '@aws-sdk/client-s3': 3.1125.0
       '@aws-sdk/core': 3.977.9
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
@@ -1563,7 +1563,7 @@ snapshots:
       '@smithy/types': 4.17.2
       tslib: 2.8.1
 
-  '@aws-sdk/s3-request-presigner@3.1124.0':
+  '@aws-sdk/s3-request-presigner@3.1125.0':
     dependencies:
       '@aws-sdk/core': 3.977.9
       '@aws-sdk/signature-v4-multi-region': 3.996.46
@@ -1690,9 +1690,9 @@ snapshots:
       toad-cache: 3.7.4
       zod: 4.4.3
 
-  '@message-queue-toolkit/s3-payload-store@4.0.0(@aws-sdk/client-s3@3.1124.0)(@message-queue-toolkit/core@25.5.0(zod@4.4.3))':
+  '@message-queue-toolkit/s3-payload-store@4.0.0(@aws-sdk/client-s3@3.1125.0)(@message-queue-toolkit/core@25.5.0(zod@4.4.3))':
     dependencies:
-      '@aws-sdk/client-s3': 3.1124.0
+      '@aws-sdk/client-s3': 3.1125.0
       '@message-queue-toolkit/core': 25.5.0(zod@4.4.3)
 
   '@message-queue-toolkit/schemas@7.2.0(zod@4.4.3)':
@@ -2107,7 +2107,7 @@ snapshots:
 
   expect-type@1.4.0: {}
 
-  fast-copy@4.1.0: {}
+  fast-copy@4.1.1: {}
 
   fast-decode-uri-component@1.0.1: {}
 
@@ -2349,7 +2349,7 @@ snapshots:
     dependencies:
       colorette: 2.0.20
       dateformat: 4.6.3
-      fast-copy: 4.1.0
+      fast-copy: 4.1.1
       fast-safe-stringify: 2.1.1
       help-me: 5.0.0
       joycon: 3.1.1
