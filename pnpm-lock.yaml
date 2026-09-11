@@ -56,7 +56,7 @@ importers:
         version: 1.81.0
       tinybench:
         specifier: ^6.0.0
-        version: 6.1.4
+        version: 6.1.5
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -1190,6 +1190,10 @@ packages:
 
   tinybench@6.1.4:
     resolution: {integrity: sha512-9APumHG7r4yOk4X4WlkmE71aZcv1gvin1czO3OQ1U9iJcFA5Ja/ygyb0vPOVHTthFozUYs8CLoLUlM8grb2lTQ==}
+    engines: {node: '>=20.0.0'}
+
+  tinybench@6.1.5:
+    resolution: {integrity: sha512-2qZgfd7wV+won5vCJhafUvAL/8p7wzhsh/OJwJI2Eo5J68U7rJwMUD9gdwdIMl2Z9tAYXBzGNhP0sFhifwQ9iQ==}
     engines: {node: '>=20.0.0'}
 
   tinyexec@1.3.0:
@@ -2357,6 +2361,8 @@ snapshots:
       real-require: 1.0.0
 
   tinybench@6.1.4: {}
+
+  tinybench@6.1.5: {}
 
   tinyexec@1.3.0: {}
 
