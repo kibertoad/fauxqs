@@ -9,6 +9,7 @@
     "bench:fauxqs-docker-lite": "node src/runners/fauxqs-docker-lite.ts",
     "bench:localstack": "node src/runners/localstack.ts",
     "bench:merge": "node src/merge-results.ts",
+    "bench:k6": "node k6/run.ts",
     "bench:clean": "del-cli results/*",
     "bench:all": "node --run bench:clean && pnpm bench:fauxqs-library && pnpm bench:fauxqs-docker-official && pnpm bench:fauxqs-docker-lite && pnpm bench:localstack && pnpm bench:merge"
   },

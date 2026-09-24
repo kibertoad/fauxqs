@@ -2,6 +2,8 @@
 
 SQS throughput benchmarks comparing fauxqs deployment modes against LocalStack.
 
+For load tests of the persistence backends (in-memory, SQLite, file-based S3 and PostgreSQL) with Pyroscope profiles of each run, see [k6/README.md](k6/README.md).
+
 ## Setups
 
 | Name | How it runs | What it measures |
