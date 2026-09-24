@@ -1,0 +1,64 @@
+# The load-test stack. `node run.ts` drives it; see README.md.
+name: fauxqs-k6
+
+services:
+  pyroscope:
+    image: grafana/pyroscope:2.3.1
+    ports:
+      - "127.0.0.1:${PYROSCOPE_PORT:-4040}:4040"
+    volumes:
+      - pyroscope-data:/data
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: fauxqs
+      POSTGRES_PASSWORD: fauxqs
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "fauxqs"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  fauxqs:
+    build:
+      context: ../..
+      dockerfile: benchmarks/k6/Dockerfile
+    image: fauxqs-profiled:local
+    environment:
+      BENCH_BACKEND: ${BENCH_BACKEND:-memory}
+      BENCH_SCENARIO: ${BENCH_SCENARIO:-manual}
+      BENCH_RUN_ID: ${BENCH_RUN_ID:-manual}
+      FAUXQS_POSTGRESQL_URL: postgres://fauxqs:fauxqs@postgres:5432/fauxqs
+      PYROSCOPE_ENABLED: ${PYROSCOPE_ENABLED:-true}
+      PYROSCOPE_SERVER_ADDRESS: http://pyroscope:4040
+      PYROSCOPE_WALL_COLLECT_CPU_TIME: "true"
+      PYROSCOPE_FLUSH_INTERVAL_MS: "5000"
+      PYROSCOPE_WALL_SAMPLING_DURATION_MS: "5000"
+    # Both FS-based backends write to a Docker volume, the same kind of storage
+    # the postgres service uses, so neither side pays for a host bind mount.
+    volumes:
+      - fauxqs-data:/data
+    ports:
+      - "127.0.0.1:${FAUXQS_BENCH_PORT:-14566}:4566"
+    stop_grace_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  k6:
+    image: grafana/k6:1.0.0
+    profiles: ["tools"]
+    volumes:
+      - ./scenarios:/scenarios:ro
+      - ./results:/results
+    environment:
+      FAUXQS_URL: http://fauxqs:4566
+
+volumes:
+  pyroscope-data:
+  postgres-data:
+  fauxqs-data:
