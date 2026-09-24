@@ -14,6 +14,7 @@ export class SnsStore {
   region?: string;
   spy?: MessageSpy;
   persistence?: PersistenceProvider;
+  private subscriptionListTails = new Map<string, Promise<unknown>>();
 
   async createTopic(
     name: string,
@@ -127,6 +128,35 @@ export class SnsStore {
     const topic = this.topics.get(topicArn);
     if (!topic) return undefined;
 
+    return this.withSubscriptionList(topicArn, () =>
+      this.subscribeLocked(topic, protocol, endpoint, attributes),
+    );
+  }
+
+  /**
+   * Runs changes to one topic's subscription list one at a time. Each change
+   * persists the whole list, so two overlapping ones would otherwise each write
+   * a list missing the other's arn.
+   */
+  private withSubscriptionList<T>(topicArn: string, fn: () => Promise<T>): Promise<T> {
+    const run = (this.subscriptionListTails.get(topicArn) ?? Promise.resolve()).then(fn);
+    const tail = run.catch(() => {});
+    this.subscriptionListTails.set(topicArn, tail);
+    void tail.then(() => {
+      if (this.subscriptionListTails.get(topicArn) === tail) {
+        this.subscriptionListTails.delete(topicArn);
+      }
+    });
+    return run;
+  }
+
+  private async subscribeLocked(
+    topic: SnsTopic,
+    protocol: string,
+    endpoint: string,
+    attributes?: Record<string, string>,
+  ): Promise<SnsSubscription> {
+    const topicArn = topic.arn;
     // Check for existing subscription with same (topicArn, protocol, endpoint)
     for (const subArn of topic.subscriptionArns) {
       const existing = this.subscriptions.get(subArn);
@@ -165,15 +195,15 @@ export class SnsStore {
       attributes: attributes ?? {},
     };
 
+    // Both writes land before the subscription becomes visible, so a publish
+    // never delivers to a subscription that is then rolled back.
     await this.persistence?.insertSubscription(subscription);
-    this.subscriptions.set(arn, subscription);
-    topic.subscriptionArns.push(arn);
     try {
-      // The current list, so concurrent subscribes to one topic each write every arn added so far.
-      await this.persistence?.updateTopicSubscriptionArns(topicArn, topic.subscriptionArns);
+      await this.persistence?.updateTopicSubscriptionArns(topicArn, [
+        ...topic.subscriptionArns,
+        arn,
+      ]);
     } catch (err) {
-      this.subscriptions.delete(arn);
-      topic.subscriptionArns = topic.subscriptionArns.filter((s) => s !== arn);
       try {
         await this.persistence?.deleteSubscription(arn);
       } catch {
@@ -181,6 +211,8 @@ export class SnsStore {
       }
       throw err;
     }
+    this.subscriptions.set(arn, subscription);
+    topic.subscriptionArns.push(arn);
     return subscription;
   }
 
@@ -188,16 +220,20 @@ export class SnsStore {
     const sub = this.subscriptions.get(arn);
     if (!sub) return false;
 
-    const topic = this.topics.get(sub.topicArn);
-    if (topic) {
-      const remaining = topic.subscriptionArns.filter((s) => s !== arn);
-      await this.persistence?.updateTopicSubscriptionArns(sub.topicArn, remaining);
-      topic.subscriptionArns = topic.subscriptionArns.filter((s) => s !== arn);
-    }
+    return this.withSubscriptionList(sub.topicArn, async () => {
+      // Already removed by a call that held the list before this one.
+      if (!this.subscriptions.has(arn)) return false;
+      const topic = this.topics.get(sub.topicArn);
+      if (topic) {
+        const remaining = topic.subscriptionArns.filter((s) => s !== arn);
+        await this.persistence?.updateTopicSubscriptionArns(sub.topicArn, remaining);
+        topic.subscriptionArns = remaining;
+      }
 
-    await this.persistence?.deleteSubscription(arn);
-    this.subscriptions.delete(arn);
-    return true;
+      await this.persistence?.deleteSubscription(arn);
+      this.subscriptions.delete(arn);
+      return true;
+    });
   }
 
   getSubscription(arn: string): SnsSubscription | undefined {

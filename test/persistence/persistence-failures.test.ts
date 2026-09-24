@@ -14,9 +14,11 @@ function stubPersistence(opts: { failing?: Set<string>; delayMs?: number } = {})
   const provider = new Proxy(
     {},
     {
-      get(_target, prop: string) {
+      get(target: Record<string, unknown>, prop: string) {
         // Not a thenable, or awaiting the provider itself would call into it.
         if (prop === "then") return undefined;
+        // A test can wrap a method by assigning over it.
+        if (prop in target) return target[prop];
         return async (...args: unknown[]) => {
           calls.push(prop);
           if (opts.delayMs) await new Promise((r) => setTimeout(r, opts.delayMs));
@@ -177,6 +179,43 @@ describe("async persistence failure handling", () => {
 
       expect(store.subscriptions.size).toBe(0);
       expect(topic.subscriptionArns).toEqual([]);
+    });
+
+    it("does not expose a subscription until its topic update is persisted", async () => {
+      const { provider } = stubPersistence({ delayMs: 5 });
+      const store = new SnsStore();
+      store.persistence = provider;
+      const topic = await store.createTopic("t", undefined, undefined, "us-east-1");
+
+      const pending = store.subscribe(topic.arn, "sqs", "arn:aws:sqs:us-east-1:000000000000:q");
+      await new Promise((r) => setTimeout(r, 7));
+      expect(store.subscriptions.size).toBe(0);
+      expect(topic.subscriptionArns).toEqual([]);
+
+      await pending;
+      expect(store.subscriptions.size).toBe(1);
+    });
+
+    it("keeps every arn when subscribes to one topic overlap", async () => {
+      const { provider } = stubPersistence({ delayMs: 2 });
+      const store = new SnsStore();
+      store.persistence = provider;
+      const topic = await store.createTopic("t", undefined, undefined, "us-east-1");
+      const writes: string[][] = [];
+      const update = provider.updateTopicSubscriptionArns.bind(provider);
+      provider.updateTopicSubscriptionArns = async (arn: string, arns: string[]) => {
+        writes.push([...arns]);
+        await update(arn, arns);
+      };
+
+      await Promise.all(
+        [1, 2, 3].map((i) =>
+          store.subscribe(topic.arn, "sqs", `arn:aws:sqs:us-east-1:000000000000:q${i}`),
+        ),
+      );
+
+      expect(topic.subscriptionArns).toHaveLength(3);
+      expect(writes.at(-1)).toEqual(topic.subscriptionArns);
     });
 
     it("keeps a topic and its subscriptions when the delete fails", async () => {
