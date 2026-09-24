@@ -2,7 +2,10 @@ import { SqsError, QueueDoesNotExistError } from "../../common/errors.ts";
 import type { SqsStore } from "../sqsStore.ts";
 import { SETTABLE_ATTRIBUTES, validateQueueAttributes } from "../sqsTypes.ts";
 
-export function setQueueAttributes(body: Record<string, unknown>, store: SqsStore): unknown {
+export async function setQueueAttributes(
+  body: Record<string, unknown>,
+  store: SqsStore,
+): Promise<unknown> {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -32,6 +35,6 @@ export function setQueueAttributes(body: Record<string, unknown>, store: SqsStor
     );
   }
 
-  queue.setAttributes(attributes);
+  await queue.setAttributes(attributes);
   return {};
 }

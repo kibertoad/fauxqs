@@ -491,7 +491,7 @@ describe("Persistence", () => {
     const queueUrl = `http://sqs.us-east-1.localhost:${server.port}/000000000000/reset-q`;
     await sqs.send(new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: "clear-me" }));
 
-    server.reset();
+    await server.reset();
     await server.stop();
 
     // Restart — queue should exist but be empty
@@ -512,11 +512,11 @@ describe("Persistence", () => {
   it("purgeAll() clears everything from DB", async () => {
     let server = await startFauxqs({ port: 0, logger: false, dataDir });
 
-    server.createQueue("purge-q");
-    server.createTopic("purge-topic");
-    server.createBucket("purge-bucket");
+    await server.createQueue("purge-q");
+    await server.createTopic("purge-topic");
+    await server.createBucket("purge-bucket");
 
-    server.purgeAll();
+    await server.purgeAll();
     await server.stop();
 
     // Restart — nothing should exist
@@ -536,8 +536,8 @@ describe("Persistence", () => {
   it("no persistence when dataDir is not set", async () => {
     // Should work normally without persistence
     const server = await startFauxqs({ port: 0, logger: false });
-    server.createQueue("ephemeral-q");
-    server.sendMessage("ephemeral-q", "test");
+    await server.createQueue("ephemeral-q");
+    await server.sendMessage("ephemeral-q", "test");
     await server.stop();
     // No assertions needed — just verifying it doesn't crash
   });
@@ -1020,7 +1020,7 @@ describe("Persistence", () => {
   it("S3: directory bucket type survives restart", async () => {
     let server = await startFauxqs({ port: 0, logger: false, dataDir });
 
-    server.createBucket("dir-bucket", { type: "directory" });
+    await server.createBucket("dir-bucket", { type: "directory" });
 
     await server.stop();
 
@@ -1127,7 +1127,7 @@ describe("Persistence", () => {
     let server = await startFauxqs({ port: 0, logger: false, dataDir });
     let s3 = makeS3Client(server.port);
 
-    server.createBucket("rename-bucket", { type: "directory" });
+    await server.createBucket("rename-bucket", { type: "directory" });
 
     await s3.send(
       new PutObjectCommand({

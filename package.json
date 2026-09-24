@@ -42,6 +42,7 @@
     "@fastify/cors": "^11.2.0",
     "@smithy/node-http-handler": "^4.7.4",
     "fastify": "^5.8.5",
+    "pg": "^8.20.0",
     "toad-cache": "^3.7.1",
     "valibot": "^1.4.0"
   },
@@ -49,10 +50,13 @@
     "@aws-sdk/s3-presigned-post": "^3.997.0",
     "@aws-sdk/s3-request-presigner": "^3.993.0",
     "@message-queue-toolkit/s3-payload-store": "^4.0.0",
+    "@testcontainers/postgresql": "^11.13.0",
     "@types/node": "^25.2.3",
+    "@types/pg": "^8.20.0",
     "@vitest/coverage-v8": "~5.0.0",
     "oxfmt": "^0.68.0",
     "oxlint": "^1.48.0",
+    "testcontainers": "^11.13.0",
     "tinybench": "^6.0.0",
     "typescript": "^7.0.2",
     "vitest": "~5.0.0"

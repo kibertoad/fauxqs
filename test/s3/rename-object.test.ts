@@ -44,13 +44,13 @@ describe("S3 RenameObject", () => {
     await server.stop();
   });
 
-  beforeEach(() => {
-    server.reset();
+  beforeEach(async () => {
+    await server.reset();
   });
 
   describe("basic rename", () => {
     it("renames object preserving body, content-type, metadata, and ETag", async () => {
-      server.createBucket("rename-dir", { type: "directory" });
+      await server.createBucket("rename-dir", { type: "directory" });
       await s3.send(
         new PutObjectCommand({
           Bucket: "rename-dir",
@@ -85,7 +85,7 @@ describe("S3 RenameObject", () => {
     });
 
     it("preserves system metadata (content-language, cache-control, etc.)", async () => {
-      server.createBucket("rename-sys", { type: "directory" });
+      await server.createBucket("rename-sys", { type: "directory" });
       await s3.send(
         new PutObjectCommand({
           Bucket: "rename-sys",
@@ -109,7 +109,7 @@ describe("S3 RenameObject", () => {
     });
 
     it("preserves checksums", async () => {
-      server.createBucket("rename-cksum", { type: "directory" });
+      await server.createBucket("rename-cksum", { type: "directory" });
       await s3.send(
         new PutObjectCommand({
           Bucket: "rename-cksum",
@@ -144,7 +144,7 @@ describe("S3 RenameObject", () => {
 
   describe("error cases", () => {
     it("returns NoSuchKey when source does not exist", async () => {
-      server.createBucket("rename-err", { type: "directory" });
+      await server.createBucket("rename-err", { type: "directory" });
       const res = await renameObject(server.port, "rename-err", "dest.txt", "nonexistent.txt");
       expect(res.status).toBe(404);
       const body = await res.text();
@@ -159,7 +159,7 @@ describe("S3 RenameObject", () => {
     });
 
     it("rejects general-purpose bucket with InvalidRequest", async () => {
-      server.createBucket("rename-gp");
+      await server.createBucket("rename-gp");
       await s3.send(
         new PutObjectCommand({
           Bucket: "rename-gp",
@@ -176,7 +176,7 @@ describe("S3 RenameObject", () => {
     });
 
     it("returns error when x-amz-rename-source header is missing", async () => {
-      server.createBucket("rename-no-hdr", { type: "directory" });
+      await server.createBucket("rename-no-hdr", { type: "directory" });
       const url = `http://127.0.0.1:${server.port}/rename-no-hdr/dest.txt?renameObject`;
       const res = await fetch(url, { method: "PUT" });
       expect(res.status).toBe(400);
@@ -185,7 +185,7 @@ describe("S3 RenameObject", () => {
     });
 
     it("rejects source key ending with /", async () => {
-      server.createBucket("rename-slash", { type: "directory" });
+      await server.createBucket("rename-slash", { type: "directory" });
       const res = await renameObject(server.port, "rename-slash", "dest.txt", "folder/");
       expect(res.status).toBe(400);
       const body = await res.text();
@@ -193,7 +193,7 @@ describe("S3 RenameObject", () => {
     });
 
     it("rejects destination key ending with /", async () => {
-      server.createBucket("rename-slash2", { type: "directory" });
+      await server.createBucket("rename-slash2", { type: "directory" });
       await s3.send(
         new PutObjectCommand({ Bucket: "rename-slash2", Key: "src.txt", Body: "data" }),
       );
@@ -211,7 +211,7 @@ describe("S3 RenameObject", () => {
 
   describe("default no-overwrite behavior", () => {
     it("fails with 412 when destination exists and no conditionals provided", async () => {
-      server.createBucket("rename-noov", { type: "directory" });
+      await server.createBucket("rename-noov", { type: "directory" });
       await s3.send(
         new PutObjectCommand({ Bucket: "rename-noov", Key: "src.txt", Body: "source" }),
       );
@@ -224,7 +224,7 @@ describe("S3 RenameObject", () => {
     });
 
     it("same-key rename fails with 412 (destination = source exists)", async () => {
-      server.createBucket("rename-same", { type: "directory" });
+      await server.createBucket("rename-same", { type: "directory" });
       await s3.send(
         new PutObjectCommand({ Bucket: "rename-same", Key: "same.txt", Body: "no change" }),
       );
@@ -234,7 +234,7 @@ describe("S3 RenameObject", () => {
     });
 
     it("If-Match allows overwrite when ETag matches", async () => {
-      server.createBucket("rename-ifm", { type: "directory" });
+      await server.createBucket("rename-ifm", { type: "directory" });
       await s3.send(
         new PutObjectCommand({ Bucket: "rename-ifm", Key: "src.txt", Body: "new content" }),
       );
@@ -257,7 +257,7 @@ describe("S3 RenameObject", () => {
     });
 
     it("If-Match fails when ETag does not match", async () => {
-      server.createBucket("rename-ifm2", { type: "directory" });
+      await server.createBucket("rename-ifm2", { type: "directory" });
       await s3.send(
         new PutObjectCommand({ Bucket: "rename-ifm2", Key: "src.txt", Body: "data" }),
       );
@@ -272,7 +272,7 @@ describe("S3 RenameObject", () => {
     });
 
     it("accepts an unquoted or weak-validator ETag, as the other operations do", async () => {
-      server.createBucket("rename-ifm-shapes", { type: "directory" });
+      await server.createBucket("rename-ifm-shapes", { type: "directory" });
       await s3.send(
         new PutObjectCommand({ Bucket: "rename-ifm-shapes", Key: "src.txt", Body: "new content" }),
       );
@@ -305,7 +305,7 @@ describe("S3 RenameObject", () => {
     });
 
     it("If-Match fails when destination does not exist", async () => {
-      server.createBucket("rename-ifm3", { type: "directory" });
+      await server.createBucket("rename-ifm3", { type: "directory" });
       await s3.send(
         new PutObjectCommand({ Bucket: "rename-ifm3", Key: "src.txt", Body: "data" }),
       );
@@ -319,7 +319,7 @@ describe("S3 RenameObject", () => {
 
   describe("destination conditionals", () => {
     it("If-None-Match: * prevents overwrite when destination exists", async () => {
-      server.createBucket("rename-cond", { type: "directory" });
+      await server.createBucket("rename-cond", { type: "directory" });
       await s3.send(
         new PutObjectCommand({ Bucket: "rename-cond", Key: "src.txt", Body: "source" }),
       );
@@ -334,7 +334,7 @@ describe("S3 RenameObject", () => {
     });
 
     it("If-None-Match: * succeeds when destination does not exist", async () => {
-      server.createBucket("rename-cond2", { type: "directory" });
+      await server.createBucket("rename-cond2", { type: "directory" });
       await s3.send(
         new PutObjectCommand({ Bucket: "rename-cond2", Key: "src.txt", Body: "source" }),
       );
@@ -348,7 +348,7 @@ describe("S3 RenameObject", () => {
 
   describe("source conditionals", () => {
     it("x-amz-rename-source-if-match succeeds with correct ETag", async () => {
-      server.createBucket("rename-src-cond", { type: "directory" });
+      await server.createBucket("rename-src-cond", { type: "directory" });
       await s3.send(
         new PutObjectCommand({ Bucket: "rename-src-cond", Key: "src.txt", Body: "data" }),
       );
@@ -363,7 +363,7 @@ describe("S3 RenameObject", () => {
     });
 
     it("x-amz-rename-source-if-match fails with wrong ETag", async () => {
-      server.createBucket("rename-src-cond2", { type: "directory" });
+      await server.createBucket("rename-src-cond2", { type: "directory" });
       await s3.send(
         new PutObjectCommand({ Bucket: "rename-src-cond2", Key: "src.txt", Body: "data" }),
       );
@@ -377,7 +377,7 @@ describe("S3 RenameObject", () => {
 
   describe("special characters", () => {
     it("handles URL-encoded source keys", async () => {
-      server.createBucket("rename-special", { type: "directory" });
+      await server.createBucket("rename-special", { type: "directory" });
       const specialKey = "path/to/file with spaces.txt";
       await s3.send(
         new PutObjectCommand({
@@ -404,7 +404,7 @@ describe("S3 RenameObject", () => {
 
   describe("spy events", () => {
     it("emits 'renamed' spy event", async () => {
-      server.createBucket("rename-spy", { type: "directory" });
+      await server.createBucket("rename-spy", { type: "directory" });
       await s3.send(
         new PutObjectCommand({ Bucket: "rename-spy", Key: "src.txt", Body: "spy-test" }),
       );

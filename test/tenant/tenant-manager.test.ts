@@ -33,7 +33,7 @@ describe("tenant management", () => {
         tenant: { ttlMs: 60_000, template: TEMPLATE },
       });
 
-      const result = server.instantiateTemplate("env1-");
+      const result = await server.instantiateTemplate("env1-");
       expect(result.queues).toHaveLength(2);
       expect(result.queues.map((q) => q.name).sort()).toEqual(["env1-notifications", "env1-orders"]);
       expect(result.topics).toHaveLength(1);
@@ -55,11 +55,11 @@ describe("tenant management", () => {
         tenant: { ttlMs: 60_000, template: TEMPLATE },
       });
 
-      const result1 = server.instantiateTemplate("env2-");
+      const result1 = await server.instantiateTemplate("env2-");
       expect(result1.queues).toHaveLength(2);
 
       // Second call — should return empty results (already exists, just bumped timestamps)
-      const result2 = server.instantiateTemplate("env2-");
+      const result2 = await server.instantiateTemplate("env2-");
       expect(result2.queues).toHaveLength(0);
     });
 
@@ -70,8 +70,8 @@ describe("tenant management", () => {
         tenant: { ttlMs: 60_000, template: TEMPLATE },
       });
 
-      server.instantiateTemplate("a-");
-      server.instantiateTemplate("b-");
+      await server.instantiateTemplate("a-");
+      await server.instantiateTemplate("b-");
 
       const tenants = server.listTenants();
       expect(tenants).toHaveLength(2);
@@ -88,13 +88,13 @@ describe("tenant management", () => {
         tenant: { ttlMs: 60_000, template: TEMPLATE },
       });
 
-      server.instantiateTemplate("del-");
+      await server.instantiateTemplate("del-");
 
       const sqs = createSqsClient(server.port);
       let queues = await sqs.send(new ListQueuesCommand({ QueueNamePrefix: "del-" }));
       expect(queues.QueueUrls).toHaveLength(2);
 
-      server.deleteTenant("del-");
+      await server.deleteTenant("del-");
 
       queues = await sqs.send(new ListQueuesCommand({ QueueNamePrefix: "del-" }));
       expect(queues.QueueUrls ?? []).toHaveLength(0);
@@ -124,7 +124,7 @@ describe("tenant management", () => {
         tenant: { ttlMs: 60_000, template: templateWithDlq },
       });
 
-      server.instantiateTemplate("env-");
+      await server.instantiateTemplate("env-");
 
       // Verify the prefixed main queue exists and its DLQ points to prefixed DLQ
       const inspection = server.inspectQueue("env-main");
@@ -139,9 +139,9 @@ describe("tenant management", () => {
 
     it("throws when tenant management is not enabled", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      expect(() => server.instantiateTemplate("x-")).toThrow("not enabled");
+      await expect(server.instantiateTemplate("x-")).rejects.toThrow("not enabled");
       expect(() => server.listTenants()).toThrow("not enabled");
-      expect(() => server.deleteTenant("x-")).toThrow("not enabled");
+      await expect(server.deleteTenant("x-")).rejects.toThrow("not enabled");
     });
   });
 
@@ -169,7 +169,7 @@ describe("tenant management", () => {
         tenant: { ttlMs: 60_000, template: TEMPLATE },
       });
 
-      server.instantiateTemplate("list-");
+      await server.instantiateTemplate("list-");
 
       const res = await fetch(`http://127.0.0.1:${server.port}/_fauxqs/tenants`);
       expect(res.ok).toBe(true);
@@ -185,7 +185,7 @@ describe("tenant management", () => {
         tenant: { ttlMs: 60_000, template: TEMPLATE },
       });
 
-      server.instantiateTemplate("rm-");
+      await server.instantiateTemplate("rm-");
 
       const res = await fetch(`http://127.0.0.1:${server.port}/_fauxqs/tenants/rm-`, {
         method: "DELETE",
@@ -230,7 +230,7 @@ describe("tenant management", () => {
         },
       });
 
-      server.instantiateTemplate("expire-");
+      await server.instantiateTemplate("expire-");
 
       const sqs = createSqsClient(server.port);
       let queues = await sqs.send(new ListQueuesCommand({ QueueNamePrefix: "expire-" }));
@@ -256,7 +256,7 @@ describe("tenant management", () => {
         },
       });
 
-      server.instantiateTemplate("alive-");
+      await server.instantiateTemplate("alive-");
 
       const sqs = createSqsClient(server.port);
 
@@ -292,8 +292,8 @@ describe("tenant management", () => {
         },
       });
 
-      server.instantiateTemplate("perm-");
-      server.instantiateTemplate("temp-");
+      await server.instantiateTemplate("perm-");
+      await server.instantiateTemplate("temp-");
 
       // Wait for TTL + sweep
       await new Promise((r) => setTimeout(r, 400));
@@ -326,7 +326,7 @@ describe("tenant management", () => {
       // base-queue is from init config, not tenant-managed (prefix: null)
       // It should be protected by "" in permanentPrefixes
 
-      server.instantiateTemplate("eph-");
+      await server.instantiateTemplate("eph-");
 
       await new Promise((r) => setTimeout(r, 400));
 
@@ -441,7 +441,7 @@ describe("tenant management", () => {
         tenant: { ttlMs: 60_000, template: TEMPLATE },
       });
 
-      server.instantiateTemplate("seed-");
+      await server.instantiateTemplate("seed-");
       expect(server.listTenants()).toHaveLength(1);
 
       // Verify resources are tracked
@@ -464,7 +464,7 @@ describe("tenant management", () => {
         },
       });
 
-      server.instantiateTemplate("list-touch-");
+      await server.instantiateTemplate("list-touch-");
 
       const sqs = createSqsClient(server.port);
 
@@ -522,7 +522,7 @@ describe("tenant management", () => {
         tenant: { ttlMs: 60_000, template: badTemplate },
       });
 
-      expect(() => server.instantiateTemplate("bad-")).toThrow(
+      await expect(server.instantiateTemplate("bad-")).rejects.toThrow(
         "Failed to prefix RedrivePolicy",
       );
     });
@@ -536,13 +536,13 @@ describe("tenant management", () => {
         tenant: { ttlMs: 60_000, template: TEMPLATE },
       });
 
-      server.instantiateTemplate("dup-");
+      await server.instantiateTemplate("dup-");
 
       // Verify resources created (including subscription)
       expect(server.listTenants()).toHaveLength(1);
 
       // Delete should succeed without leaking subscriptions
-      server.deleteTenant("dup-");
+      await server.deleteTenant("dup-");
       expect(server.listTenants()).toHaveLength(0);
 
       const sqs = createSqsClient(server.port);
@@ -604,15 +604,15 @@ describe("tenant management", () => {
         tenant: { ttlMs: 60_000, template: TEMPLATE },
       });
 
-      server.instantiateTemplate("purge-");
+      await server.instantiateTemplate("purge-");
       expect(server.listTenants()).toHaveLength(1);
 
-      server.purgeAll();
+      await server.purgeAll();
 
       // purgeAll() calls TenantManager.reset(), which calls
       // instantiatedPrefixes.clear() — both resources and tracking state are
       // cleared, so instantiateTemplate creates fresh resources
-      const result = server.instantiateTemplate("purge-");
+      const result = await server.instantiateTemplate("purge-");
       expect(result.queues).toHaveLength(2);
     });
   });

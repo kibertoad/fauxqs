@@ -64,11 +64,11 @@ export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
   app.put("/:bucket", async (request, reply) => {
     try {
       if ("lifecycle" in getQuery(request)) {
-        putBucketLifecycleConfiguration(request as any, reply, store);
+        await putBucketLifecycleConfiguration(request as any, reply, store);
       } else if ("notification" in getQuery(request)) {
-        putBucketNotificationConfiguration(request as any, reply, store);
+        await putBucketNotificationConfiguration(request as any, reply, store);
       } else {
-        createBucket(request as any, reply, store);
+        await createBucket(request as any, reply, store);
       }
     } catch (err) {
       handleError(err, reply);
@@ -105,9 +105,9 @@ export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
   app.delete("/:bucket", async (request, reply) => {
     try {
       if ("lifecycle" in getQuery(request)) {
-        deleteBucketLifecycleConfiguration(request as any, reply, store);
+        await deleteBucketLifecycleConfiguration(request as any, reply, store);
       } else {
-        deleteBucket(request as any, reply, store);
+        await deleteBucket(request as any, reply, store);
       }
     } catch (err) {
       handleError(err, reply);
@@ -117,9 +117,9 @@ export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
   app.post("/:bucket", async (request, reply) => {
     try {
       if (isPostObjectRequest(request.headers["content-type"])) {
-        postObject(request as any, reply, store);
+        await postObject(request as any, reply, store);
       } else {
-        deleteObjects(request as any, reply, store);
+        await deleteObjects(request as any, reply, store);
       }
     } catch (err) {
       handleError(err, reply);
@@ -133,21 +133,21 @@ export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
       const key = getKey(request.params as Record<string, unknown>);
       if (!key) {
         if ("lifecycle" in getQuery(request)) {
-          putBucketLifecycleConfiguration(request as any, reply, store);
+          await putBucketLifecycleConfiguration(request as any, reply, store);
         } else if ("notification" in getQuery(request)) {
-          putBucketNotificationConfiguration(request as any, reply, store);
+          await putBucketNotificationConfiguration(request as any, reply, store);
         } else {
-          createBucket(request as any, reply, store);
+          await createBucket(request as any, reply, store);
         }
         return;
       }
       const query = getQuery(request);
       if ("renameObject" in query) {
-        renameObject(request as any, reply, store);
+        await renameObject(request as any, reply, store);
       } else if (query["uploadId"] && query["partNumber"]) {
-        uploadPart(request as any, reply, store);
+        await uploadPart(request as any, reply, store);
       } else {
-        putObject(request as any, reply, store);
+        await putObject(request as any, reply, store);
       }
     } catch (err) {
       handleError(err, reply);
@@ -171,7 +171,7 @@ export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
         } else if ("attributes" in getQuery(request)) {
           getObjectAttributes(request as any, reply, store);
         } else {
-          getObject(request as any, reply, store);
+          await getObject(request as any, reply, store);
         }
       } catch (err) {
         handleError(err, reply);
@@ -184,17 +184,17 @@ export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
       const key = getKey(request.params as Record<string, unknown>);
       if (!key) {
         if ("lifecycle" in getQuery(request)) {
-          deleteBucketLifecycleConfiguration(request as any, reply, store);
+          await deleteBucketLifecycleConfiguration(request as any, reply, store);
         } else {
-          deleteBucket(request as any, reply, store);
+          await deleteBucket(request as any, reply, store);
         }
         return;
       }
       const query = getQuery(request);
       if (query["uploadId"]) {
-        abortMultipartUpload(request as any, reply, store);
+        await abortMultipartUpload(request as any, reply, store);
       } else {
-        deleteObject(request as any, reply, store);
+        await deleteObject(request as any, reply, store);
       }
     } catch (err) {
       handleError(err, reply);
@@ -218,19 +218,19 @@ export function registerS3Routes(app: FastifyInstance, store: S3Store): void {
       const key = getKey(request.params as Record<string, unknown>);
       if (!key) {
         if (isPostObjectRequest(request.headers["content-type"])) {
-          postObject(request as any, reply, store);
+          await postObject(request as any, reply, store);
         } else {
-          deleteObjects(request as any, reply, store);
+          await deleteObjects(request as any, reply, store);
         }
         return;
       }
       const query = getQuery(request);
       if ("uploads" in query) {
-        createMultipartUpload(request as any, reply, store);
+        await createMultipartUpload(request as any, reply, store);
       } else if (query["uploadId"]) {
-        completeMultipartUpload(request as any, reply, store);
+        await completeMultipartUpload(request as any, reply, store);
       } else {
-        deleteObjects(request as any, reply, store);
+        await deleteObjects(request as any, reply, store);
       }
     } catch (err) {
       handleError(err, reply);

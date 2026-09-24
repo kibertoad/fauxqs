@@ -12,10 +12,10 @@ interface BatchEntry {
   ReceiptHandle: string;
 }
 
-export function deleteMessageBatch(
+export async function deleteMessageBatch(
   body: Record<string, unknown>,
   store: SqsStore,
-): DeleteMessageBatchResult {
+): Promise<DeleteMessageBatchResult> {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -59,7 +59,7 @@ export function deleteMessageBatch(
   const failed: BatchResultErrorEntry[] = [];
 
   for (const entry of entries) {
-    const deleted = queue.deleteMessage(entry.ReceiptHandle);
+    const deleted = await queue.deleteMessage(entry.ReceiptHandle);
     if (deleted) {
       successful.push({ Id: entry.Id });
     } else {

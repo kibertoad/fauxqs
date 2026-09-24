@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { snsTopicArn, snsSubscriptionArn, parseArn } from "../common/arnHelper.ts";
 import { SnsError } from "../common/errors.ts";
 import type { MessageSpy } from "../spy.ts";
-import type { PersistenceManager } from "../persistence.ts";
+import type { PersistenceProvider } from "../persistence/index.ts";
 import type { SnsTopic, SnsSubscription } from "./snsTypes.ts";
 
 // NOTE: When adding new public methods that look up a topic by ARN,
@@ -13,14 +13,15 @@ export class SnsStore {
   subscriptions = new Map<string, SnsSubscription>();
   region?: string;
   spy?: MessageSpy;
-  persistence?: PersistenceManager;
+  persistence?: PersistenceProvider;
+  private subscriptionListTails = new Map<string, Promise<unknown>>();
 
-  createTopic(
+  async createTopic(
     name: string,
     attributes: Record<string, string> | undefined,
     tags: Record<string, string> | undefined,
     region: string,
-  ): SnsTopic {
+  ): Promise<SnsTopic> {
     const arn = snsTopicArn(name, region);
 
     const existing = this.topics.get(arn);
@@ -31,6 +32,7 @@ export class SnsStore {
       // and allows different callers (e.g. consumer vs publisher in @message-queue-toolkit)
       // to assertTopic with different attribute subsets without conflict.
       if (attributes) {
+        let adds = false;
         for (const [key, value] of Object.entries(attributes)) {
           if (key in existing.attributes && existing.attributes[key] !== value) {
             throw new SnsError(
@@ -38,8 +40,13 @@ export class SnsStore {
               "Invalid parameter: Attributes Reason: Topic already exists with different attributes",
             );
           }
+          if (!(key in existing.attributes)) adds = true;
         }
-        Object.assign(existing.attributes, attributes);
+        if (adds) {
+          const merged = { ...existing.attributes, ...attributes };
+          await this.persistence?.updateTopicAttributes(arn, merged);
+          existing.attributes = merged;
+        }
       }
       // Full tag set comparison: AWS rejects CreateTopic when the provided tags
       // don't exactly match the existing topic's tags (same keys, same values, same count).
@@ -67,23 +74,28 @@ export class SnsStore {
       tags: new Map(tags ? Object.entries(tags) : []),
       subscriptionArns: [],
     };
+    // Persisted before it becomes visible, so a failed write leaves no topic
+    // that exists only in memory.
+    await this.persistence?.insertTopic(topic);
     this.topics.set(arn, topic);
-    this.persistence?.insertTopic(topic);
     return topic;
   }
 
-  deleteTopic(arn: string): boolean {
+  async deleteTopic(arn: string): Promise<boolean> {
     const topic = this.topics.get(arn);
     if (!topic) return false;
 
-    // Remove associated subscriptions
-    for (const subArn of topic.subscriptionArns) {
-      this.subscriptions.delete(subArn);
-      this.persistence?.deleteSubscription(subArn);
+    // Persist the removals first; memory changes only once they have succeeded.
+    const subscriptionArns = [...topic.subscriptionArns];
+    for (const subArn of subscriptionArns) {
+      await this.persistence?.deleteSubscription(subArn);
     }
+    await this.persistence?.deleteTopic(arn);
 
+    for (const subArn of subscriptionArns) {
+      this.subscriptions.delete(subArn);
+    }
     this.topics.delete(arn);
-    this.persistence?.deleteTopic(arn);
     return true;
   }
 
@@ -107,15 +119,44 @@ export class SnsStore {
     return { topics };
   }
 
-  subscribe(
+  async subscribe(
     topicArn: string,
     protocol: string,
     endpoint: string,
     attributes?: Record<string, string>,
-  ): SnsSubscription | undefined {
+  ): Promise<SnsSubscription | undefined> {
     const topic = this.topics.get(topicArn);
     if (!topic) return undefined;
 
+    return this.withSubscriptionList(topicArn, () =>
+      this.subscribeLocked(topic, protocol, endpoint, attributes),
+    );
+  }
+
+  /**
+   * Runs changes to one topic's subscription list one at a time. Each change
+   * persists the whole list, so two overlapping ones would otherwise each write
+   * a list missing the other's arn.
+   */
+  private withSubscriptionList<T>(topicArn: string, fn: () => Promise<T>): Promise<T> {
+    const run = (this.subscriptionListTails.get(topicArn) ?? Promise.resolve()).then(fn);
+    const tail = run.catch(() => {});
+    this.subscriptionListTails.set(topicArn, tail);
+    void tail.then(() => {
+      if (this.subscriptionListTails.get(topicArn) === tail) {
+        this.subscriptionListTails.delete(topicArn);
+      }
+    });
+    return run;
+  }
+
+  private async subscribeLocked(
+    topic: SnsTopic,
+    protocol: string,
+    endpoint: string,
+    attributes?: Record<string, string>,
+  ): Promise<SnsSubscription> {
+    const topicArn = topic.arn;
     // Check for existing subscription with same (topicArn, protocol, endpoint)
     for (const subArn of topic.subscriptionArns) {
       const existing = this.subscriptions.get(subArn);
@@ -154,26 +195,45 @@ export class SnsStore {
       attributes: attributes ?? {},
     };
 
+    // Both writes land before the subscription becomes visible, so a publish
+    // never delivers to a subscription that is then rolled back.
+    await this.persistence?.insertSubscription(subscription);
+    try {
+      await this.persistence?.updateTopicSubscriptionArns(topicArn, [
+        ...topic.subscriptionArns,
+        arn,
+      ]);
+    } catch (err) {
+      try {
+        await this.persistence?.deleteSubscription(arn);
+      } catch {
+        // Best effort: the error being rethrown below is the one to report.
+      }
+      throw err;
+    }
     this.subscriptions.set(arn, subscription);
     topic.subscriptionArns.push(arn);
-    this.persistence?.insertSubscription(subscription);
-    this.persistence?.updateTopicSubscriptionArns(topicArn, topic.subscriptionArns);
     return subscription;
   }
 
-  unsubscribe(arn: string): boolean {
+  async unsubscribe(arn: string): Promise<boolean> {
     const sub = this.subscriptions.get(arn);
     if (!sub) return false;
 
-    const topic = this.topics.get(sub.topicArn);
-    if (topic) {
-      topic.subscriptionArns = topic.subscriptionArns.filter((s) => s !== arn);
-      this.persistence?.updateTopicSubscriptionArns(sub.topicArn, topic.subscriptionArns);
-    }
+    return this.withSubscriptionList(sub.topicArn, async () => {
+      // Already removed by a call that held the list before this one.
+      if (!this.subscriptions.has(arn)) return false;
+      const topic = this.topics.get(sub.topicArn);
+      if (topic) {
+        const remaining = topic.subscriptionArns.filter((s) => s !== arn);
+        await this.persistence?.updateTopicSubscriptionArns(sub.topicArn, remaining);
+        topic.subscriptionArns = remaining;
+      }
 
-    this.subscriptions.delete(arn);
-    this.persistence?.deleteSubscription(arn);
-    return true;
+      await this.persistence?.deleteSubscription(arn);
+      this.subscriptions.delete(arn);
+      return true;
+    });
   }
 
   getSubscription(arn: string): SnsSubscription | undefined {

@@ -13,10 +13,10 @@ interface BatchEntry {
   VisibilityTimeout: number;
 }
 
-export function changeMessageVisibilityBatch(
+export async function changeMessageVisibilityBatch(
   body: Record<string, unknown>,
   store: SqsStore,
-): ChangeMessageVisibilityBatchResult {
+): Promise<ChangeMessageVisibilityBatchResult> {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -75,7 +75,7 @@ export function changeMessageVisibilityBatch(
         Message: "The input receipt handle is invalid.",
       });
     } else {
-      queue.changeVisibility(entry.ReceiptHandle, entry.VisibilityTimeout);
+      await queue.changeVisibility(entry.ReceiptHandle, entry.VisibilityTimeout);
       successful.push({ Id: entry.Id });
     }
   }

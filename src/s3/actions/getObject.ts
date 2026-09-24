@@ -4,15 +4,15 @@ import type { S3Store } from "../s3Store.ts";
 import { checksumHeaderName } from "../checksum.ts";
 import { etagEquals } from "../conditionalWrites.ts";
 
-export function getObject(
+export async function getObject(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
   reply: FastifyReply,
   store: S3Store,
-): void {
+): Promise<void> {
   const bucket = request.params.bucket;
   const key = request.params["*"];
 
-  const obj = store.getObject(bucket, key);
+  const obj = await store.getObject(bucket, key);
 
   // partNumber support for multipart objects
   const query = (request.query ?? {}) as Record<string, string>;

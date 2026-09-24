@@ -50,9 +50,9 @@ describe("Standard queue delivery reordering", () => {
     return received;
   }
 
-  it("propagates a reseed to already-created queues", () => {
+  it("propagates a reseed to already-created queues", async () => {
     const store = new SqsStore();
-    const queue = store.createQueue(
+    const queue = await store.createQueue(
       "q",
       "http://localhost/q",
       "arn:aws:sqs:us-east-1:000000000000:q",

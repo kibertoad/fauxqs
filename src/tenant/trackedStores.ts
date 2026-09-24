@@ -120,7 +120,7 @@ export class TrackedS3Store extends S3Store {
       partChecksums?: string[];
     },
     eventName: "Put" | "Post" | "Copy" = "Put",
-  ): S3Object {
+  ): Promise<S3Object> {
     this.tracker.touch(bucket);
     return super.putObject(
       bucket,
@@ -134,14 +134,14 @@ export class TrackedS3Store extends S3Store {
     );
   }
 
-  override getObject(bucket: string, key: string): S3Object {
+  override getObject(bucket: string, key: string): Promise<S3Object> {
     this.tracker.touch(bucket);
     return super.getObject(bucket, key);
   }
 
-  override deleteObject(bucket: string, key: string): void {
+  override deleteObject(bucket: string, key: string): Promise<void> {
     this.tracker.touch(bucket);
-    super.deleteObject(bucket, key);
+    return super.deleteObject(bucket, key);
   }
 
   override headObject(bucket: string, key: string): S3Object {
@@ -163,9 +163,9 @@ export class TrackedS3Store extends S3Store {
     return super.listObjects(bucket, options);
   }
 
-  override renameObject(bucket: string, sourceKey: string, destKey: string): void {
+  override renameObject(bucket: string, sourceKey: string, destKey: string): Promise<void> {
     this.tracker.touch(bucket);
-    super.renameObject(bucket, sourceKey, destKey);
+    return super.renameObject(bucket, sourceKey, destKey);
   }
 
   override createMultipartUpload(
@@ -180,7 +180,7 @@ export class TrackedS3Store extends S3Store {
       contentEncoding?: string;
     },
     checksumAlgorithm?: ChecksumAlgorithm,
-  ): string {
+  ): Promise<string> {
     this.tracker.touch(bucket);
     return super.createMultipartUpload(
       bucket,
@@ -195,7 +195,7 @@ export class TrackedS3Store extends S3Store {
   override completeMultipartUpload(
     uploadId: string,
     partSpecs: { partNumber: number; etag: string }[],
-  ): S3Object {
+  ): Promise<S3Object> {
     const upload = this.multipartUploads.get(uploadId);
     if (upload) this.tracker.touch(upload.bucket);
     return super.completeMultipartUpload(uploadId, partSpecs);

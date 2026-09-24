@@ -5,7 +5,10 @@ import type { SnsStore } from "../snsStore.ts";
 import { validateFilterPolicyLimits } from "../filter.ts";
 import { validateSubscriptionRedrivePolicy } from "../subscriptionRedrivePolicy.ts";
 
-export function subscribe(params: Record<string, string>, snsStore: SnsStore): string {
+export async function subscribe(
+  params: Record<string, string>,
+  snsStore: SnsStore,
+): Promise<string> {
   const topicArn = params.TopicArn;
   if (!topicArn) {
     throw new SnsError("InvalidParameter", "TopicArn is required");
@@ -69,7 +72,7 @@ export function subscribe(params: Record<string, string>, snsStore: SnsStore): s
     validateSubscriptionRedrivePolicy(resolvedAttributes.RedrivePolicy);
   }
 
-  const subscription = snsStore.subscribe(
+  const subscription = await snsStore.subscribe(
     topicArn,
     protocol,
     endpoint,

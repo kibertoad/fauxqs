@@ -3,11 +3,11 @@ import { S3Error } from "../../common/errors.ts";
 import type { S3Store } from "../s3Store.ts";
 import { etagEquals, preconditionFailed } from "../conditionalWrites.ts";
 
-export function renameObject(
+export async function renameObject(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
   reply: FastifyReply,
   store: S3Store,
-): void {
+): Promise<void> {
   const bucket = request.params.bucket;
   const destKey = request.params["*"];
 
@@ -116,6 +116,6 @@ export function renameObject(
     }
   }
 
-  store.renameObject(bucket, sourceKey, destKey);
+  await store.renameObject(bucket, sourceKey, destKey);
   reply.status(200).send();
 }

@@ -1,7 +1,7 @@
 import { SqsError, QueueDoesNotExistError } from "../../common/errors.ts";
 import type { SqsStore } from "../sqsStore.ts";
 
-export function untagQueue(body: Record<string, unknown>, store: SqsStore): unknown {
+export async function untagQueue(body: Record<string, unknown>, store: SqsStore): Promise<unknown> {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -17,7 +17,7 @@ export function untagQueue(body: Record<string, unknown>, store: SqsStore): unkn
     queue.tags.delete(key);
   }
 
-  queue.persistence?.insertQueue(queue);
+  await queue.persistence?.insertQueue(queue);
 
   return {};
 }

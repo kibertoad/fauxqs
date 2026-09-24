@@ -413,7 +413,7 @@ describe("SQS Queue URL consistency across creation paths", () => {
 
   it("queue created via init config has same URL format as queue created via SDK", async () => {
     // Simulate Docker FAUXQS_INIT: queue pre-created at startup
-    server.setup({
+    await server.setup({
       queues: [{ name: "init-config-queue" }],
     });
 
@@ -435,7 +435,7 @@ describe("SQS Queue URL consistency across creation paths", () => {
   });
 
   it("queue from init config is accessible for send/receive via SDK", async () => {
-    server.setup({
+    await server.setup({
       queues: [{ name: "init-ops-queue" }],
     });
 
@@ -462,7 +462,7 @@ describe("SQS Queue URL consistency across creation paths", () => {
   });
 
   it("SDK CreateQueue is idempotent with init-config-created queue", async () => {
-    server.setup({
+    await server.setup({
       queues: [{ name: "idempotent-init-queue" }],
     });
 

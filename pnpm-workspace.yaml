@@ -1,3 +1,7 @@
+allowBuilds:
+  cpu-features: false
+  protobufjs: false
+  ssh2: false
 minimumReleaseAgeExclude:
   - '@aws-sdk/client-s3@3.1053.0'
   - '@aws-sdk/client-sns@3.1053.0'

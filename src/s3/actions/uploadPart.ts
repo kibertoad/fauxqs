@@ -4,11 +4,11 @@ import type { S3Store } from "../s3Store.ts";
 import { decodeAwsChunked } from "../chunkedEncoding.ts";
 import { checksumHeaderName, resolveUploadChecksum, validateContentMd5 } from "../checksum.ts";
 
-export function uploadPart(
+export async function uploadPart(
   request: FastifyRequest<{ Params: { bucket: string; "*": string } }>,
   reply: FastifyReply,
   store: S3Store,
-): void {
+): Promise<void> {
   const query = (request.query ?? {}) as Record<string, string>;
   const uploadId = query["uploadId"];
   const partNumber = parseInt(query["partNumber"], 10);
@@ -26,7 +26,7 @@ export function uploadPart(
     }
     const srcBucket = decoded.substring(0, slashIdx);
     const srcKey = decoded.substring(slashIdx + 1);
-    const srcObj = store.getObject(srcBucket, srcKey);
+    const srcObj = await store.getObject(srcBucket, srcKey);
 
     let partBody: Buffer;
     const copyRange = request.headers["x-amz-copy-source-range"] as string | undefined;
@@ -62,7 +62,7 @@ export function uploadPart(
 
     // No client checksum to pass: the store computes the part checksum from the
     // upload's algorithm, and real S3 reports it back in CopyPartResult.
-    const result = store.uploadPart(uploadId, partNumber, partBody);
+    const result = await store.uploadPart(uploadId, partNumber, partBody);
 
     const xml = [
       `<?xml version="1.0" encoding="UTF-8"?>`,
@@ -99,7 +99,7 @@ export function uploadPart(
   // Trailing headers first, then regular headers, then the algorithm-only form.
   const cksum = resolveUploadChecksum(headers, trailers, body, validateChecksums);
 
-  const result = store.uploadPart(uploadId, partNumber, body, cksum);
+  const result = await store.uploadPart(uploadId, partNumber, body, cksum);
 
   reply.header("etag", result.etag);
   if (result.checksum) {

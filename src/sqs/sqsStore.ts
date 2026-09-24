@@ -5,7 +5,7 @@ import { md5, md5OfMessageAttributes } from "../common/md5.ts";
 import { DEFAULT_ACCOUNT_ID } from "../common/types.ts";
 import { SqsError } from "../common/errors.ts";
 import { buildSqsSpyMessage, type MessageSpy } from "../spy.ts";
-import type { PersistenceManager } from "../persistence.ts";
+import type { PersistenceProvider } from "../persistence/index.ts";
 import type {
   SqsMessage,
   InflightEntry,
@@ -35,6 +35,24 @@ interface StandardGroupPicker {
 /** Cap on retained message move task history, so repeated redrives don't grow unbounded. */
 const MESSAGE_MOVE_TASK_HISTORY_LIMIT = 100;
 
+export type FifoSendResult = {
+  /** True when the dedup id matched an earlier send; nothing was enqueued. */
+  duplicate: boolean;
+  messageId: string;
+  sequenceNumber?: string;
+};
+
+function mergeGroups(
+  first: Map<string, SqsMessage[]>,
+  second: Map<string, SqsMessage[]>,
+): Map<string, SqsMessage[]> {
+  const merged = new Map(first);
+  for (const [groupId, msgs] of second) {
+    merged.set(groupId, [...(merged.get(groupId) ?? []), ...msgs]);
+  }
+  return merged;
+}
+
 export class SqsQueue {
   readonly name: string;
   readonly url: string;
@@ -55,7 +73,7 @@ export class SqsQueue {
   private parsedRedrivePolicy?: { deadLetterTargetArn?: string; maxReceiveCount?: number } | null;
 
   spy?: MessageSpy;
-  persistence?: PersistenceManager;
+  persistence?: PersistenceProvider;
   /** PRNG for standard-queue reordering; injected from the store so all queues share one (optionally seeded) stream. */
   random: () => number = Math.random;
 
@@ -68,6 +86,7 @@ export class SqsQueue {
     DEDUP_WINDOW_MS,
   );
   sequenceCounter = 0;
+  private fifoSendTail: Promise<unknown> = Promise.resolve();
 
   constructor(
     name: string,
@@ -140,16 +159,20 @@ export class SqsQueue {
     }
   }
 
-  setAttributes(attrs: Record<string, string>): void {
-    Object.assign(this.attributes, attrs);
+  async setAttributes(attrs: Record<string, string>): Promise<void> {
+    // Staged on a copy and applied only once persisted, so a failed write leaves
+    // the queue as it was.
+    const nextAttributes = { ...this.attributes, ...attrs };
     // Empty RedrivePolicy clears the DLQ association
     if (attrs.RedrivePolicy === "") {
-      delete this.attributes.RedrivePolicy;
+      delete nextAttributes.RedrivePolicy;
     }
-    // Invalidate the cached parse — the policy may have changed or been cleared.
+    const nextLastModified = Math.floor(Date.now() / 1000);
+    await this.persistence?.updateQueueAttributes(this.name, nextAttributes, nextLastModified);
+    this.attributes = nextAttributes;
+    this.lastModifiedTimestamp = nextLastModified;
+    // Invalidate the cached parse: the policy may have changed or been cleared.
     this.parsedRedrivePolicy = undefined;
-    this.lastModifiedTimestamp = Math.floor(Date.now() / 1000);
-    this.persistence?.updateQueueAttributes(this.name, this.attributes, this.lastModifiedTimestamp);
   }
 
   /**
@@ -173,12 +196,12 @@ export class SqsQueue {
     return this.parsedRedrivePolicy ?? undefined;
   }
 
-  enqueue(msg: SqsMessage): void {
+  async enqueue(msg: SqsMessage): Promise<void> {
+    await this.persistence?.insertMessage(this.name, msg);
+
     if (this.spy) {
       this.spy.addMessage(buildSqsSpyMessage(this.name, msg, "published"));
     }
-
-    this.persistence?.insertMessage(this.name, msg);
 
     if (this.isFifo()) {
       const groupId = msg.messageGroupId ?? DEFAULT_FIFO_GROUP_ID;
@@ -203,13 +226,65 @@ export class SqsQueue {
     }
   }
 
-  dequeue(
+  /**
+   * Hand a message that exceeded maxReceiveCount to its DLQ. The DLQ's insert
+   * upserts on message id, so the persisted row changes queue in one statement
+   * and there is no window where it belongs to neither queue. If that write
+   * fails, `putBack` returns the message to this queue and the error propagates.
+   */
+  private async moveToDlq(msg: SqsMessage, dlq: SqsQueue, putBack: () => void): Promise<void> {
+    // Record the origin queue so a message move task can redrive it back.
+    msg.deadLetterSourceArn = this.arn;
+    try {
+      await dlq.enqueue(msg);
+    } catch (err) {
+      msg.deadLetterSourceArn = undefined;
+      msg.approximateReceiveCount--;
+      putBack();
+      throw err;
+    }
+    if (this.spy) {
+      this.spy.addMessage(buildSqsSpyMessage(this.name, msg, "dlq"));
+    }
+  }
+
+  /**
+   * Deduplicate, sequence and enqueue a FIFO message as one step. Sends to a
+   * queue run one at a time: with persistence awaited in between, two sends
+   * sharing a dedup id could otherwise both pass the check, and sequence
+   * numbers could be enqueued out of order. The dedup entry is recorded only
+   * after the message is stored, so a send whose write failed can be retried.
+   */
+  sendFifo(msg: SqsMessage, dedupId: string | undefined): Promise<FifoSendResult> {
+    const run = this.fifoSendTail.then(async (): Promise<FifoSendResult> => {
+      if (dedupId) {
+        const dedup = this.checkDeduplication(dedupId);
+        if (dedup.isDuplicate) {
+          return {
+            duplicate: true,
+            messageId: dedup.originalMessageId!,
+            sequenceNumber: dedup.originalSequenceNumber,
+          };
+        }
+      }
+      msg.sequenceNumber = await this.nextSequenceNumber();
+      await this.enqueue(msg);
+      if (dedupId) {
+        this.recordDeduplication(dedupId, msg.messageId, msg.sequenceNumber);
+      }
+      return { duplicate: false, messageId: msg.messageId, sequenceNumber: msg.sequenceNumber };
+    });
+    this.fifoSendTail = run.catch(() => {});
+    return run;
+  }
+
+  async dequeue(
     maxCount: number,
     visibilityTimeoutOverride?: number,
     dlqResolver?: (arn: string) => SqsQueue | undefined,
-  ): ReceivedMessage[] {
+  ): Promise<ReceivedMessage[]> {
     if (this.isFifo()) {
-      return this.dequeueFifo(maxCount, visibilityTimeoutOverride, dlqResolver);
+      return await this.dequeueFifo(maxCount, visibilityTimeoutOverride, dlqResolver);
     }
 
     this.processTimers();
@@ -245,14 +320,7 @@ export class SqsQueue {
       if (dlqArn && dlqResolver && msg.approximateReceiveCount > maxReceiveCount) {
         const dlq = dlqResolver(dlqArn);
         if (dlq) {
-          if (this.spy) {
-            this.spy.addMessage(buildSqsSpyMessage(this.name, msg, "dlq"));
-          }
-          // Persistence: delete from this queue (dlq.enqueue will insert into DLQ)
-          this.persistence?.deleteMessage(msg.messageId);
-          // Record the origin queue so a message move task can redrive it back.
-          msg.deadLetterSourceArn = this.arn;
-          dlq.enqueue(msg);
+          await this.moveToDlq(msg, dlq, () => this.messages.push(msg));
           continue;
         }
       }
@@ -267,7 +335,7 @@ export class SqsQueue {
         visibilityDeadline,
       });
 
-      this.persistence?.updateMessageInflight(
+      await this.persistence?.updateMessageInflight(
         msg.messageId,
         receiptHandle,
         visibilityDeadline,
@@ -357,11 +425,11 @@ export class SqsQueue {
     return msg;
   }
 
-  private dequeueFifo(
+  private async dequeueFifo(
     maxCount: number,
     visibilityTimeoutOverride?: number,
     dlqResolver?: (arn: string) => SqsQueue | undefined,
-  ): ReceivedMessage[] {
+  ): Promise<ReceivedMessage[]> {
     this.processTimers();
 
     const visibilityTimeout =
@@ -393,13 +461,7 @@ export class SqsQueue {
         if (dlqArn && dlqResolver && msg.approximateReceiveCount > maxReceiveCount) {
           const dlq = dlqResolver(dlqArn);
           if (dlq) {
-            if (this.spy) {
-              this.spy.addMessage(buildSqsSpyMessage(this.name, msg, "dlq"));
-            }
-            this.persistence?.deleteMessage(msg.messageId);
-            // Record the origin queue so a message move task can redrive it back.
-            msg.deadLetterSourceArn = this.arn;
-            dlq.enqueue(msg);
+            await this.moveToDlq(msg, dlq, () => groupMsgs.unshift(msg));
             continue;
           }
         }
@@ -414,7 +476,7 @@ export class SqsQueue {
           visibilityDeadline,
         });
 
-        this.persistence?.updateMessageInflight(
+        await this.persistence?.updateMessageInflight(
           msg.messageId,
           receiptHandle,
           visibilityDeadline,
@@ -453,10 +515,10 @@ export class SqsQueue {
     return result;
   }
 
-  deleteMessage(receiptHandle: string): boolean {
+  async deleteMessage(receiptHandle: string): Promise<boolean> {
     const entry = this.inflightMessages.get(receiptHandle);
     if (entry) {
-      this.persistence?.deleteMessage(entry.message.messageId);
+      await this.persistence?.deleteMessage(entry.message.messageId);
       if (this.spy) {
         this.spy.addMessage(buildSqsSpyMessage(this.name, entry.message, "consumed"));
       }
@@ -480,15 +542,19 @@ export class SqsQueue {
     return this.inflightMessages.delete(receiptHandle);
   }
 
-  changeVisibility(receiptHandle: string, timeoutSeconds: number): void {
+  async changeVisibility(receiptHandle: string, timeoutSeconds: number): Promise<void> {
     const entry = this.inflightMessages.get(receiptHandle);
     if (!entry) {
       return;
     }
 
     if (timeoutSeconds === 0) {
+      // Persist first: until the write succeeds the message stays in flight, so a
+      // failure leaves it where it was instead of in neither place.
+      await this.persistence?.updateMessageReady(entry.message.messageId);
+      // Deleted or already made visible by a concurrent request while awaiting.
+      if (this.inflightMessages.get(receiptHandle) !== entry) return;
       this.inflightMessages.delete(receiptHandle);
-      this.persistence?.updateMessageReady(entry.message.messageId);
       if (this.isFifo()) {
         // Messages without a group id lock under the default group (see
         // dequeueFifo) and must return to it, not to the standard-queue array.
@@ -508,14 +574,15 @@ export class SqsQueue {
       }
       this.notifyWaiters();
     } else {
-      entry.visibilityDeadline = Date.now() + timeoutSeconds * 1000;
-      this.persistence?.updateMessageInflight(
+      const visibilityDeadline = Date.now() + timeoutSeconds * 1000;
+      await this.persistence?.updateMessageInflight(
         entry.message.messageId,
         receiptHandle,
-        entry.visibilityDeadline,
+        visibilityDeadline,
         entry.message.approximateReceiveCount,
         entry.message.approximateFirstReceiveTimestamp,
       );
+      entry.visibilityDeadline = visibilityDeadline;
     }
   }
 
@@ -624,14 +691,35 @@ export class SqsQueue {
     }
   }
 
-  purge(): void {
+  async purge(): Promise<void> {
+    // Cleared up front so no receive hands out a message that is being purged,
+    // and put back if the persisted delete fails. Messages enqueued while the
+    // delete is in flight are kept alongside the restored ones.
+    const snapshot = {
+      messages: this.messages,
+      delayedMessages: this.delayedMessages,
+      inflightMessages: this.inflightMessages,
+      fifoMessages: this.fifoMessages,
+      fifoDelayed: this.fifoDelayed,
+      fifoLockedGroups: this.fifoLockedGroups,
+    };
     this.messages = [];
     this.delayedMessages = [];
-    this.inflightMessages.clear();
-    this.fifoMessages.clear();
-    this.fifoDelayed.clear();
-    this.fifoLockedGroups.clear();
-    this.persistence?.deleteQueueMessages(this.name);
+    this.inflightMessages = new Map();
+    this.fifoMessages = new Map();
+    this.fifoDelayed = new Map();
+    this.fifoLockedGroups = new Map();
+    try {
+      await this.persistence?.deleteQueueMessages(this.name);
+    } catch (err) {
+      this.messages = [...snapshot.messages, ...this.messages];
+      this.delayedMessages = [...snapshot.delayedMessages, ...this.delayedMessages];
+      this.inflightMessages = new Map([...snapshot.inflightMessages, ...this.inflightMessages]);
+      this.fifoMessages = mergeGroups(snapshot.fifoMessages, this.fifoMessages);
+      this.fifoDelayed = mergeGroups(snapshot.fifoDelayed, this.fifoDelayed);
+      this.fifoLockedGroups = snapshot.fifoLockedGroups;
+      throw err;
+    }
   }
 
   /**
@@ -642,7 +730,7 @@ export class SqsQueue {
    * in-flight message, which this method does not remove. That lock is released
    * normally when the in-flight message is deleted or its visibility expires.
    */
-  removeAllReadyMessages(): SqsMessage[] {
+  async removeAllReadyMessages(): Promise<SqsMessage[]> {
     this.processTimers();
     const result: SqsMessage[] = [];
     if (this.isFifo()) {
@@ -660,7 +748,7 @@ export class SqsQueue {
       this.messages = [];
     }
     for (const msg of result) {
-      this.persistence?.deleteMessage(msg.messageId);
+      await this.persistence?.deleteMessage(msg.messageId);
     }
     return result;
   }
@@ -730,9 +818,9 @@ export class SqsQueue {
     this.deduplicationCache.set(dedupId, { messageId, sequenceNumber });
   }
 
-  nextSequenceNumber(): string {
+  async nextSequenceNumber(): Promise<string> {
     this.sequenceCounter++;
-    this.persistence?.updateQueueSequenceCounter(this.name, this.sequenceCounter);
+    await this.persistence?.updateQueueSequenceCounter(this.name, this.sequenceCounter);
     return String(this.sequenceCounter).padStart(20, "0");
   }
 
@@ -764,7 +852,7 @@ export class SqsStore {
   host: string = "localhost";
   region?: string;
   spy?: MessageSpy;
-  persistence?: PersistenceManager;
+  persistence?: PersistenceProvider;
   private _random: () => number = Math.random;
 
   /** PRNG shared with every queue for standard-queue reordering. Seeded via the `ordering` option. */
@@ -780,13 +868,13 @@ export class SqsStore {
     }
   }
 
-  createQueue(
+  async createQueue(
     name: string,
     url: string,
     arn: string,
     attributes?: Record<string, string>,
     tags?: Record<string, string>,
-  ): SqsQueue {
+  ): Promise<SqsQueue> {
     const queue = new SqsQueue(name, url, arn, attributes, tags);
     queue.random = this._random;
     if (this.spy) {
@@ -794,7 +882,7 @@ export class SqsStore {
     }
     if (this.persistence) {
       queue.persistence = this.persistence;
-      this.persistence.insertQueue(queue);
+      await this.persistence.insertQueue(queue);
     }
     this.queues.set(url, queue);
     this.queuesByName.set(name, queue);
@@ -802,11 +890,11 @@ export class SqsStore {
     return queue;
   }
 
-  deleteQueue(url: string): boolean {
+  async deleteQueue(url: string): Promise<boolean> {
     const queue = this.getQueue(url);
     if (!queue) return false;
     queue.cancelWaiters();
-    this.persistence?.deleteQueue(queue.name);
+    await this.persistence?.deleteQueue(queue.name);
     this.queues.delete(queue.url);
     this.queuesByName.delete(queue.name);
     this.queuesByArn.delete(queue.arn);
@@ -897,11 +985,11 @@ export class SqsStore {
    * synchronously, so the returned task is already COMPLETED;
    * `maxNumberOfMessagesPerSecond` is recorded for API fidelity but not enforced.
    */
-  startMessageMoveTask(
+  async startMessageMoveTask(
     sourceArn: string,
     destinationArn?: string,
     maxNumberOfMessagesPerSecond?: number,
-  ): MessageMoveTask {
+  ): Promise<MessageMoveTask> {
     const source = this.getQueueByArn(sourceArn);
     if (!source) {
       throw new SqsError(
@@ -931,7 +1019,7 @@ export class SqsStore {
       }
     }
 
-    const ready = source.removeAllReadyMessages();
+    const ready = await source.removeAllReadyMessages();
     let moved = 0;
     for (const msg of ready) {
       let target = destination;
@@ -949,11 +1037,11 @@ export class SqsStore {
         msg.approximateFirstReceiveTimestamp = undefined;
         msg.delayUntil = undefined;
         msg.deadLetterSourceArn = undefined;
-        target.enqueue(msg);
+        await target.enqueue(msg);
         moved++;
       } else {
         // Destination could not be resolved — leave the message in the source queue.
-        source.enqueue(msg);
+        await source.enqueue(msg);
       }
     }
 
@@ -1066,10 +1154,10 @@ export class SqsStore {
   }
 
   /** Clear all messages from all queues without removing the queues themselves. */
-  clearMessages(): void {
+  async clearMessages(): Promise<void> {
     this.shutdown();
     for (const queue of this.queues.values()) {
-      queue.purge();
+      await queue.purge();
     }
     // Move task history describes message movements that no longer exist.
     this.messageMoveTasks = [];

@@ -3,11 +3,11 @@ import { S3Error } from "../../common/errors.ts";
 import type { S3Store } from "../s3Store.ts";
 import { parseNotificationConfigXml } from "../notifications.ts";
 
-export function putBucketNotificationConfiguration(
+export async function putBucketNotificationConfiguration(
   request: FastifyRequest<{ Params: { bucket: string } }>,
   reply: FastifyReply,
   store: S3Store,
-): void {
+): Promise<void> {
   const bucket = request.params.bucket;
   if (!store.hasBucket(bucket)) {
     throw new S3Error("NoSuchBucket", "The specified bucket does not exist", 404);
@@ -33,6 +33,6 @@ export function putBucketNotificationConfiguration(
     );
   }
 
-  store.putBucketNotificationConfiguration(bucket, parseNotificationConfigXml(bodyStr));
+  await store.putBucketNotificationConfiguration(bucket, parseNotificationConfigXml(bodyStr));
   reply.status(200).send();
 }

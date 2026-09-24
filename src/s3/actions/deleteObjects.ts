@@ -93,11 +93,11 @@ function parseRequestedDeletes(body: string): RequestedDelete[] {
   });
 }
 
-export function deleteObjects(
+export async function deleteObjects(
   request: FastifyRequest<{ Params: { bucket: string } }>,
   reply: FastifyReply,
   store: S3Store,
-): void {
+): Promise<void> {
   const bucket = request.params.bucket;
   const body = Buffer.isBuffer(request.body)
     ? request.body.toString("utf-8")
@@ -143,7 +143,7 @@ export function deleteObjects(
         continue;
       }
     }
-    store.deleteObject(bucket, entry.key);
+    await store.deleteObject(bucket, entry.key);
     deleted.push(entry.key);
   }
 

@@ -3,7 +3,10 @@ import { SnsError } from "../../common/errors.ts";
 import { snsSuccessResponse, escapeXml } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
 
-export function tagResource(params: Record<string, string>, snsStore: SnsStore): string {
+export async function tagResource(
+  params: Record<string, string>,
+  snsStore: SnsStore,
+): Promise<string> {
   const resourceArn = params.ResourceArn;
   if (!resourceArn) {
     throw new SnsError("InvalidParameter", "ResourceArn is required");
@@ -24,12 +27,15 @@ export function tagResource(params: Record<string, string>, snsStore: SnsStore):
     }
   }
 
-  snsStore.persistence?.insertTopic(topic);
+  await snsStore.persistence?.insertTopic(topic);
 
   return snsSuccessResponse("TagResource", "");
 }
 
-export function untagResource(params: Record<string, string>, snsStore: SnsStore): string {
+export async function untagResource(
+  params: Record<string, string>,
+  snsStore: SnsStore,
+): Promise<string> {
   const resourceArn = params.ResourceArn;
   if (!resourceArn) {
     throw new SnsError("InvalidParameter", "ResourceArn is required");
@@ -48,7 +54,7 @@ export function untagResource(params: Record<string, string>, snsStore: SnsStore
     }
   }
 
-  snsStore.persistence?.insertTopic(topic);
+  await snsStore.persistence?.insertTopic(topic);
 
   return snsSuccessResponse("UntagResource", "");
 }

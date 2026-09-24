@@ -14,10 +14,10 @@ const VALID_SUBSCRIPTION_ATTRIBUTES = new Set([
   "SubscriptionRoleArn",
 ]);
 
-export function setSubscriptionAttributes(
+export async function setSubscriptionAttributes(
   params: Record<string, string>,
   snsStore: SnsStore,
-): string {
+): Promise<string> {
   const subscriptionArn = params.SubscriptionArn;
   if (!subscriptionArn) {
     throw new SnsError("InvalidParameter", "SubscriptionArn is required");
@@ -44,8 +44,19 @@ export function setSubscriptionAttributes(
     if (attributeName === "RedrivePolicy") {
       validateSubscriptionRedrivePolicy(attributeValue);
     }
+    // Applied in memory first (the helper also resets parsed caches), and
+    // rolled back if the write fails.
+    const before = { ...subscription, attributes: { ...subscription.attributes } };
     setSubscriptionAttribute(subscription, attributeName, attributeValue);
-    snsStore.persistence?.updateSubscriptionAttributes(subscriptionArn, subscription.attributes);
+    try {
+      await snsStore.persistence?.updateSubscriptionAttributes(
+        subscriptionArn,
+        subscription.attributes,
+      );
+    } catch (err) {
+      Object.assign(subscription, before);
+      throw err;
+    }
   }
 
   return snsSuccessResponse("SetSubscriptionAttributes", "");

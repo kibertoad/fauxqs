@@ -347,9 +347,9 @@ describe("Fair delivery across message groups", () => {
         const queueName = `fair-stat-${run}`;
         const queue = await sqs.send(new CreateQueueCommand({ QueueName: queueName }));
         for (let i = 0; i < 50; i++) {
-          server.sendMessage(queueName, `noisy-${i}`, { messageGroupId: "noisy" });
+          await server.sendMessage(queueName, `noisy-${i}`, { messageGroupId: "noisy" });
         }
-        server.sendMessage(queueName, "quiet-0", { messageGroupId: "quiet" });
+        await server.sendMessage(queueName, "quiet-0", { messageGroupId: "quiet" });
 
         const received = await sqs.send(
           new ReceiveMessageCommand({ QueueUrl: queue.QueueUrl!, MaxNumberOfMessages: 5 }),
@@ -379,10 +379,10 @@ describe("Fair delivery across message groups", () => {
         const queueName = `fair-tenant-${run}`;
         const queue = await sqs.send(new CreateQueueCommand({ QueueName: queueName }));
         for (let i = 0; i < 50; i++) {
-          server.sendMessage(queueName, `noisy-${i}`, { messageGroupId: "noisy" });
+          await server.sendMessage(queueName, `noisy-${i}`, { messageGroupId: "noisy" });
         }
         for (let i = 0; i < 20; i++) {
-          server.sendMessage(queueName, `quiet-${i}`);
+          await server.sendMessage(queueName, `quiet-${i}`);
         }
 
         const received = await sqs.send(

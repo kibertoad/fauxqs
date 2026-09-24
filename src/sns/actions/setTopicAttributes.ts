@@ -2,7 +2,10 @@ import { SnsError } from "../../common/errors.ts";
 import { snsSuccessResponse } from "../../common/xml.ts";
 import type { SnsStore } from "../snsStore.ts";
 
-export function setTopicAttributes(params: Record<string, string>, snsStore: SnsStore): string {
+export async function setTopicAttributes(
+  params: Record<string, string>,
+  snsStore: SnsStore,
+): Promise<string> {
   const topicArn = params.TopicArn;
   if (!topicArn) {
     throw new SnsError("InvalidParameter", "TopicArn is required");
@@ -30,8 +33,9 @@ export function setTopicAttributes(params: Record<string, string>, snsStore: Sns
     if (!VALID_TOPIC_ATTRIBUTES.has(attributeName)) {
       throw new SnsError("InvalidParameter", `Invalid parameter: AttributeName`);
     }
-    topic.attributes[attributeName] = attributeValue;
-    snsStore.persistence?.updateTopicAttributes(topicArn, topic.attributes);
+    const nextAttributes = { ...topic.attributes, [attributeName]: attributeValue };
+    await snsStore.persistence?.updateTopicAttributes(topicArn, nextAttributes);
+    topic.attributes = nextAttributes;
   }
 
   return snsSuccessResponse("SetTopicAttributes", "");

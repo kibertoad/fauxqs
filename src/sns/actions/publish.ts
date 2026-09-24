@@ -19,11 +19,11 @@ import { parseSubscriptionRedrivePolicy } from "../subscriptionRedrivePolicy.ts"
 /** AWS error text for a malformed MessageGroupId on the SNS paths (Publish, PublishBatch, and the programmatic publish). */
 export const INVALID_MESSAGE_GROUP_ID_MESSAGE = `Invalid parameter: MessageGroupId Reason: ${INVALID_MESSAGE_GROUP_ID_REASON}`;
 
-export function publish(
+export async function publish(
   params: Record<string, string>,
   snsStore: SnsStore,
   sqsStore: SqsStore,
-): string {
+): Promise<string> {
   const topicArn = params.TopicArn;
   if (!topicArn) {
     throw new SnsError("InvalidParameter", "TopicArn is required");
@@ -105,7 +105,7 @@ export function publish(
   }
 
   // Fan out to subscriptions
-  fanOutToSubscriptions({
+  await fanOutToSubscriptions({
     topicArn,
     topic,
     messageId,
@@ -122,11 +122,11 @@ export function publish(
   return snsSuccessResponse("Publish", `<MessageId>${result.MessageId}</MessageId>`);
 }
 
-export function publishBatch(
+export async function publishBatch(
   params: Record<string, string>,
   snsStore: SnsStore,
   sqsStore: SqsStore,
-): string {
+): Promise<string> {
   const topicArn = params.TopicArn;
   if (!topicArn) {
     throw new SnsError("InvalidParameter", "TopicArn is required");
@@ -245,7 +245,7 @@ export function publishBatch(
     }
 
     // Fan out each entry
-    fanOutToSubscriptions({
+    await fanOutToSubscriptions({
       topicArn,
       topic,
       messageId,
@@ -267,7 +267,7 @@ export function publishBatch(
   );
 }
 
-export function fanOutToSubscriptions(params: {
+export async function fanOutToSubscriptions(params: {
   topicArn: string;
   topic: { subscriptionArns: string[]; name: string };
   messageId: string;
@@ -278,7 +278,7 @@ export function fanOutToSubscriptions(params: {
   messageDeduplicationId?: string;
   snsStore: SnsStore;
   sqsStore: SqsStore;
-}): void {
+}): Promise<void> {
   const {
     topicArn,
     topic,
@@ -407,23 +407,13 @@ export function fanOutToSubscriptions(params: {
     );
 
     if (targetQueue.isFifo()) {
-      if (messageDeduplicationId) {
-        const dedupResult = targetQueue.checkDeduplication(messageDeduplicationId);
-        if (dedupResult.isDuplicate) continue;
-      }
       // Every message enqueued on a FIFO queue gets a sequence number, even
       // from a standard topic, where no MessageDeduplicationId is present.
-      sqsMsg.sequenceNumber = targetQueue.nextSequenceNumber();
-      if (messageDeduplicationId) {
-        targetQueue.recordDeduplication(
-          messageDeduplicationId,
-          sqsMsg.messageId,
-          sqsMsg.sequenceNumber,
-        );
-      }
+      const sent = await targetQueue.sendFifo(sqsMsg, messageDeduplicationId);
+      if (sent.duplicate) continue;
+    } else {
+      await targetQueue.enqueue(sqsMsg);
     }
-
-    targetQueue.enqueue(sqsMsg);
 
     if (routedToDlq && snsStore.spy) {
       snsStore.spy.addMessage(

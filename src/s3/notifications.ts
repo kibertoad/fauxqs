@@ -40,7 +40,7 @@ export interface S3EventInfo {
 
 /** Delivers S3 object events to configured SQS/SNS destinations. */
 export interface S3EventDispatcher {
-  notify(event: S3EventInfo, config: S3NotificationConfiguration): void;
+  notify(event: S3EventInfo, config: S3NotificationConfiguration): void | Promise<void>;
   /**
    * Validate a configuration's destination ARNs and event names, throwing an
    * `S3Error` on the first problem. Real S3 rejects unknown destinations and
@@ -224,7 +224,7 @@ export class S3NotificationDispatcher implements S3EventDispatcher {
     private readonly region: string,
   ) {}
 
-  notify(event: S3EventInfo, config: S3NotificationConfiguration): void {
+  async notify(event: S3EventInfo, config: S3NotificationConfiguration): Promise<void> {
     if (config.queueConfigurations.length === 0 && config.topicConfigurations.length === 0) {
       return;
     }
@@ -239,7 +239,13 @@ export class S3NotificationDispatcher implements S3EventDispatcher {
       const message = queue.isFifo()
         ? SqsStore.createMessage(body, {}, undefined, event.bucket, randomUUID())
         : SqsStore.createMessage(body);
-      queue.enqueue(message);
+      if (queue.isFifo()) {
+        // The dedup id is fresh per event, so there is nothing to deduplicate
+        // against; sendFifo is still what assigns the sequence number.
+        await queue.sendFifo(message, undefined);
+      } else {
+        await queue.enqueue(message);
+      }
     }
 
     for (const target of config.topicConfigurations) {
@@ -250,7 +256,7 @@ export class S3NotificationDispatcher implements S3EventDispatcher {
       // FIFO topics require a group + dedup id; group events per bucket so they
       // stay ordered, and give each event a distinct dedup id.
       const isFifoTopic = topic.attributes.FifoTopic === "true";
-      fanOutToSubscriptions({
+      await fanOutToSubscriptions({
         topicArn: target.arn,
         topic,
         messageId: randomUUID(),

@@ -19,8 +19,8 @@ describe("S3 Conditional Deletes", () => {
   beforeAll(async () => {
     server = await startFauxqsTestServer();
     s3 = createS3Client(server.port);
-    server.createBucket(bucket);
-    server.createBucket(dirBucket, { type: "directory" });
+    await server.createBucket(bucket);
+    await server.createBucket(dirBucket, { type: "directory" });
   });
 
   afterAll(async () => {

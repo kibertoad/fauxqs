@@ -1,7 +1,10 @@
 import { SqsError, QueueDoesNotExistError } from "../../common/errors.ts";
 import type { SqsStore } from "../sqsStore.ts";
 
-export function changeMessageVisibility(body: Record<string, unknown>, store: SqsStore): unknown {
+export async function changeMessageVisibility(
+  body: Record<string, unknown>,
+  store: SqsStore,
+): Promise<unknown> {
   const queueUrl = body.QueueUrl as string | undefined;
   if (!queueUrl) {
     throw new SqsError("InvalidParameterValue", "QueueUrl is required");
@@ -39,6 +42,6 @@ export function changeMessageVisibility(body: Record<string, unknown>, store: Sq
     );
   }
 
-  queue.changeVisibility(receiptHandle, visibilityTimeout);
+  await queue.changeVisibility(receiptHandle, visibilityTimeout);
   return {};
 }

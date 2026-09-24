@@ -35,6 +35,7 @@ export class TenantManager {
   private sweepIntervalMs = 0;
   private sweepRunning = false;
   private adminPollTimer?: ReturnType<typeof setInterval>;
+  private adminPollInFlight = false;
 
   constructor(
     config: TenantConfig,
@@ -76,7 +77,7 @@ export class TenantManager {
   }
 
   /** Start sweep timer and admin queue polling (if enabled). */
-  start(): void {
+  async start(): Promise<void> {
     // Seed the usage tracker from existing store state so that resources loaded
     // from persistence (or created via init config before start()) begin with a
     // fresh "just used" timestamp instead of being absent from the tracker and
@@ -94,20 +95,23 @@ export class TenantManager {
 
     // Create and start polling the admin queue if enabled
     if (this.adminQueueName) {
-      this.createAdminQueue();
-      this.adminPollTimer = setInterval(() => this.pollAdminQueue(), ADMIN_POLL_INTERVAL_MS);
+      await this.createAdminQueue();
+      this.adminPollTimer = setInterval(
+        () => void this.pollAdminQueueOnce(),
+        ADMIN_POLL_INTERVAL_MS,
+      );
     }
   }
 
   /** Reset all tenant state (called on purgeAll). */
-  reset(): void {
+  async reset(): Promise<void> {
     this.usageTracker.clear();
     this.instantiatedPrefixes.clear();
     this.pendingExpired.clear();
     this.sweepCursor = undefined;
     // Recreate admin queue if it was enabled (purgeAll wipes all queues)
     if (this.adminQueueName) {
-      this.createAdminQueue();
+      await this.createAdminQueue();
     }
   }
 
@@ -125,7 +129,7 @@ export class TenantManager {
   }
 
   /** Instantiate the template with a given prefix. Idempotent. */
-  instantiateTemplate(prefix: string): SetupResult {
+  async instantiateTemplate(prefix: string): Promise<SetupResult> {
     if (!this.template) {
       throw new Error("No template configured for tenant instantiation");
     }
@@ -137,10 +141,16 @@ export class TenantManager {
     }
 
     const prefixedConfig = this.prefixConfig(this.template, prefix);
-    const result = applyInitConfig(prefixedConfig, this.sqsStore, this.snsStore, this.s3Store, {
-      port: this.port,
-      region: this.region,
-    });
+    const result = await applyInitConfig(
+      prefixedConfig,
+      this.sqsStore,
+      this.snsStore,
+      this.s3Store,
+      {
+        port: this.port,
+        region: this.region,
+      },
+    );
 
     // Register all created resources with explicit prefix in the usage tracker
     this.registerTemplateResources(prefix);
@@ -167,9 +177,9 @@ export class TenantManager {
   }
 
   /** Force-delete all resources for a given prefix. */
-  deleteTenant(prefix: string): void {
+  async deleteTenant(prefix: string): Promise<void> {
     if (!this.instantiatedPrefixes.has(prefix)) return;
-    this.deleteResourceSet(prefix);
+    await this.deleteResourceSet(prefix);
     this.instantiatedPrefixes.delete(prefix);
     this.pendingExpired.delete(prefix);
   }
@@ -178,13 +188,17 @@ export class TenantManager {
 
   private scheduleSweep(): void {
     if (!this.sweepRunning) return;
-    this.sweepTimer = setTimeout(() => {
-      this.sweepTick();
+    this.sweepTimer = setTimeout(async () => {
+      try {
+        await this.sweepTick();
+      } catch (err) {
+        this.logger.warn(`Tenant sweep failed: ${err instanceof Error ? err.message : err}`);
+      }
       this.scheduleSweep();
     }, this.sweepIntervalMs);
   }
 
-  private sweepTick(): void {
+  private async sweepTick(): Promise<void> {
     const cutoff = Date.now() - this.config.ttlMs;
     const { visited, nextCursor, wrapped } = this.usageTracker.scan(
       this.sweepCursor,
@@ -213,11 +227,11 @@ export class TenantManager {
 
     // Only process deletions after a full cycle (wrapped around)
     if (wrapped) {
-      this.processPendingDeletions();
+      await this.processPendingDeletions();
     }
   }
 
-  private processPendingDeletions(): void {
+  private async processPendingDeletions(): Promise<void> {
     const cutoff = Date.now() - this.config.ttlMs;
     const toDelete: Array<string | null> = [];
     const deletedNames = new Set<string>();
@@ -260,10 +274,10 @@ export class TenantManager {
       if (!toDelete.includes(prefix)) continue;
       if (prefix === null) {
         for (const name of pendingNames) {
-          this.deleteIndividualResource(name);
+          await this.deleteIndividualResource(name);
         }
       } else {
-        this.deleteResourceSet(prefix);
+        await this.deleteResourceSet(prefix);
         this.instantiatedPrefixes.delete(prefix);
       }
     }
@@ -294,7 +308,7 @@ export class TenantManager {
 
   // --- Private: Resource deletion ---
 
-  private deleteResourceSet(prefix: string): void {
+  private async deleteResourceSet(prefix: string): Promise<void> {
     if (!this.template) return;
 
     // 1. Remove subscriptions first
@@ -302,7 +316,7 @@ export class TenantManager {
       for (const sub of this.template.subscriptions) {
         const topicArn = snsTopicArn(prefix + sub.topic, this.region);
         const queueArn = sqsQueueArn(prefix + sub.queue, this.region);
-        this.removeSubscription(topicArn, queueArn);
+        await this.removeSubscription(topicArn, queueArn);
       }
     }
 
@@ -312,7 +326,7 @@ export class TenantManager {
         const fullName = prefix + t.name;
         const arn = snsTopicArn(fullName, this.region);
         try {
-          this.snsStore.deleteTopic(arn);
+          await this.snsStore.deleteTopic(arn);
         } catch {
           // Topic may already be deleted
         }
@@ -328,7 +342,7 @@ export class TenantManager {
           const queue = this.sqsStore.getQueueByName(fullName);
           if (queue) {
             queue.cancelWaiters();
-            this.sqsStore.deleteQueue(queue.url);
+            await this.sqsStore.deleteQueue(queue.url);
           }
         } catch {
           // Queue may already be deleted
@@ -342,9 +356,9 @@ export class TenantManager {
       for (const entry of this.template.buckets) {
         const baseName = typeof entry === "string" ? entry : entry.name;
         const fullName = prefix + baseName;
-        this.s3Store.emptyBucket(fullName);
+        await this.s3Store.emptyBucket(fullName);
         try {
-          this.s3Store.deleteBucket(fullName);
+          await this.s3Store.deleteBucket(fullName);
         } catch {
           // Bucket may not exist or may have concurrent uploads — skip, retry next cycle
         }
@@ -353,29 +367,29 @@ export class TenantManager {
     }
   }
 
-  private deleteIndividualResource(name: string): void {
+  private async deleteIndividualResource(name: string): Promise<void> {
     // Try to find and delete the resource by name across all stores.
     // Queue and bucket lookups are O(1). Topic uses ARN construction
     // with the known region to avoid O(n) scan over all topics.
     const queue = this.sqsStore.getQueueByName(name);
     if (queue) {
       queue.cancelWaiters();
-      this.sqsStore.deleteQueue(queue.url);
+      await this.sqsStore.deleteQueue(queue.url);
       this.usageTracker.delete(name);
       return;
     }
 
     const topicArn = snsTopicArn(name, this.region);
     if (this.snsStore.getTopic(topicArn)) {
-      this.snsStore.deleteTopic(topicArn);
+      await this.snsStore.deleteTopic(topicArn);
       this.usageTracker.delete(name);
       return;
     }
 
     if (this.s3Store.hasBucket(name)) {
-      this.s3Store.emptyBucket(name);
+      await this.s3Store.emptyBucket(name);
       try {
-        this.s3Store.deleteBucket(name);
+        await this.s3Store.deleteBucket(name);
       } catch {
         // Skip on error
       }
@@ -383,7 +397,7 @@ export class TenantManager {
     }
   }
 
-  private removeSubscription(topicArn: string, queueArn: string): void {
+  private async removeSubscription(topicArn: string, queueArn: string): Promise<void> {
     // Find and remove all subscriptions matching this topic+queue pair.
     // Collect ARNs first to avoid mutating the map during iteration.
     const toRemove: string[] = [];
@@ -393,7 +407,7 @@ export class TenantManager {
       }
     }
     for (const subArn of toRemove) {
-      this.snsStore.unsubscribe(subArn);
+      await this.snsStore.unsubscribe(subArn);
     }
   }
 
@@ -553,7 +567,7 @@ export class TenantManager {
 
   // --- Private: Admin queue ---
 
-  private createAdminQueue(): void {
+  private async createAdminQueue(): Promise<void> {
     if (!this.adminQueueName) return;
     const existing = this.sqsStore.getQueueByName(this.adminQueueName);
     if (existing) return;
@@ -566,22 +580,35 @@ export class TenantManager {
       defaultHost,
       this.region,
     );
-    this.sqsStore.createQueue(this.adminQueueName, url, arn);
+    await this.sqsStore.createQueue(this.adminQueueName, url, arn);
     // Register as non-tenant-managed; always exempt from cleanup via isResourcePermanent()
     this.usageTracker.register(this.adminQueueName, null);
   }
 
-  private pollAdminQueue(): void {
+  /** Skips a tick while the previous poll is still awaiting persistence, so polls never overlap. */
+  private async pollAdminQueueOnce(): Promise<void> {
+    if (this.adminPollInFlight) return;
+    this.adminPollInFlight = true;
+    try {
+      await this.pollAdminQueue();
+    } catch (err) {
+      this.logger.warn(`Admin queue poll failed: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      this.adminPollInFlight = false;
+    }
+  }
+
+  private async pollAdminQueue(): Promise<void> {
     if (!this.adminQueueName) return;
     const queue = this.sqsStore.getQueueByName(this.adminQueueName);
     if (!queue) return;
 
-    const messages = queue.dequeue(10);
+    const messages = await queue.dequeue(10);
     for (const msg of messages) {
       try {
         const request = JSON.parse(msg.Body) as TemplateRequest;
         if (request.action === "instantiate" && typeof request.prefix === "string") {
-          this.instantiateTemplate(request.prefix);
+          await this.instantiateTemplate(request.prefix);
         } else {
           this.logger.warn(`Admin queue: ignoring message with unrecognized payload: ${msg.Body}`);
         }

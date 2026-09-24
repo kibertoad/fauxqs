@@ -40,7 +40,7 @@ describe("env vars", () => {
   it("FAUXQS_HOST sets queue URL host", async () => {
     setEnv("FAUXQS_HOST", "myhost");
     server = await startFauxqs({ port: 0, logger: false });
-    server.createQueue("env-host-q");
+    await server.createQueue("env-host-q");
 
     const sqs = createSqsClient(server.port);
     const result = await sqs.send(new ListQueuesCommand({}));
@@ -50,7 +50,7 @@ describe("env vars", () => {
   it("FAUXQS_DEFAULT_REGION sets region in ARNs", async () => {
     setEnv("FAUXQS_DEFAULT_REGION", "eu-west-1");
     server = await startFauxqs({ port: 0, logger: false });
-    server.createTopic("env-region-t");
+    await server.createTopic("env-region-t");
 
     const sns = createSnsClient(server.port, "eu-west-1");
     const result = await sns.send(new ListTopicsCommand({}));
@@ -103,7 +103,7 @@ describe("env vars", () => {
   it("FAUXQS_DISABLE_CHECKSUM_VALIDATION=true accepts a body that does not match its checksum", async () => {
     setEnv("FAUXQS_DISABLE_CHECKSUM_VALIDATION", "true");
     server = await startFauxqs({ port: 0, logger: false });
-    server.createBucket("env-checksum-b");
+    await server.createBucket("env-checksum-b");
 
     const response = await fetch(`http://127.0.0.1:${server.port}/env-checksum-b/object.txt`, {
       method: "PUT",
@@ -123,7 +123,7 @@ describe("env vars", () => {
       logger: false,
       relaxedRules: { disableChecksumValidation: false },
     });
-    server.createBucket("env-checksum-off-b");
+    await server.createBucket("env-checksum-off-b");
 
     const response = await fetch(`http://127.0.0.1:${server.port}/env-checksum-off-b/object.txt`, {
       method: "PUT",
@@ -138,7 +138,7 @@ describe("env vars", () => {
   it("programmatic options take precedence over env vars", async () => {
     setEnv("FAUXQS_DEFAULT_REGION", "ap-southeast-1");
     server = await startFauxqs({ port: 0, logger: false, defaultRegion: "eu-central-1" });
-    server.createTopic("precedence-t");
+    await server.createTopic("precedence-t");
 
     const sns = createSnsClient(server.port, "eu-central-1");
     const result = await sns.send(new ListTopicsCommand({}));

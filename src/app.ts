@@ -62,7 +62,7 @@ import { DEFAULT_REGION, SNS_MAX_MESSAGE_SIZE_BYTES } from "./common/types.ts";
 import { mulberry32 } from "./common/prng.ts";
 import { loadInitConfig, applyInitConfig } from "./initConfig.ts";
 import { MessageSpy, buildSnsSpyMessage, type MessageSpyReader } from "./spy.ts";
-import { PersistenceManager } from "./persistence.ts";
+import { SqlitePersistence } from "./persistence/index.ts";
 import { FileS3Persistence } from "./s3/fileS3Persistence.ts";
 import type { S3PersistenceProvider } from "./s3/s3Persistence.ts";
 import { TenantManager } from "./tenant/tenantManager.ts";
@@ -335,7 +335,7 @@ export function buildApp(options?: BuildAppOptions) {
 
     app.post<{ Params: { prefix: string } }>("/_fauxqs/tenants/:prefix", async (request, reply) => {
       try {
-        const result = tenantManager.instantiateTemplate(request.params.prefix);
+        const result = await tenantManager.instantiateTemplate(request.params.prefix);
         return { prefix: request.params.prefix, ...result };
       } catch (err) {
         reply.status(400);
@@ -346,7 +346,7 @@ export function buildApp(options?: BuildAppOptions) {
     app.delete<{ Params: { prefix: string } }>(
       "/_fauxqs/tenants/:prefix",
       async (request, reply) => {
-        tenantManager.deleteTenant(request.params.prefix);
+        await tenantManager.deleteTenant(request.params.prefix);
         reply.status(204);
       },
     );
@@ -388,7 +388,7 @@ export interface FauxqsServer {
       attributes?: Record<string, string>;
       tags?: Record<string, string>;
     },
-  ): { queueUrl: string; queueArn: string; queueName: string };
+  ): Promise<{ queueUrl: string; queueArn: string; queueName: string }>;
   /** Non-destructive inspection of all messages in a queue. Returns undefined if queue doesn't exist. */
   inspectQueue(name: string):
     | {
@@ -414,23 +414,23 @@ export interface FauxqsServer {
       attributes?: Record<string, string>;
       tags?: Record<string, string>;
     },
-  ): { topicArn: string };
+  ): Promise<{ topicArn: string }>;
   subscribe(options: {
     topic: string;
     queue: string;
     region?: string;
     attributes?: Record<string, string>;
-  }): void;
+  }): Promise<void>;
   createBucket(
     name: string,
     options?: { type?: "general-purpose" | "directory" },
-  ): { bucketName: string };
+  ): Promise<{ bucketName: string }>;
   /** Delete a queue by name. No-op if the queue does not exist. */
-  deleteQueue(name: string, options?: { region?: string }): void;
+  deleteQueue(name: string, options?: { region?: string }): Promise<void>;
   /** Delete a topic by name, including its subscriptions. No-op if the topic does not exist. */
-  deleteTopic(name: string, options?: { region?: string }): void;
+  deleteTopic(name: string, options?: { region?: string }): Promise<void>;
   /** Remove all objects from a bucket but keep the bucket itself. No-op if the bucket does not exist. */
-  emptyBucket(name: string): void;
+  emptyBucket(name: string): Promise<void>;
   /** Enqueue a message into an SQS queue by name. Supports messageAttributes, delaySeconds, and FIFO fields.
    *  messageGroupId is also accepted on standard queues (AWS fair queues). Spy events emitted automatically. */
   sendMessage(
@@ -443,12 +443,12 @@ export interface FauxqsServer {
       messageDeduplicationId?: string;
       region?: string;
     },
-  ): {
+  ): Promise<{
     messageId: string;
     md5OfBody: string;
     md5OfMessageAttributes?: string;
     sequenceNumber?: string;
-  };
+  }>;
   /** Publish a message to an SNS topic by name, with full fan-out to SQS subscriptions (filter policies, raw delivery).
    *  messageGroupId is also accepted on standard topics (AWS fair queues) and forwarded to subscribed queues. Spy events emitted automatically. */
   publish(
@@ -461,18 +461,20 @@ export interface FauxqsServer {
       messageDeduplicationId?: string;
       region?: string;
     },
-  ): { messageId: string };
-  setup(config: import("./initConfig.ts").FauxqsInitConfig): import("./initConfig.ts").SetupResult;
+  ): Promise<{ messageId: string }>;
+  setup(
+    config: import("./initConfig.ts").FauxqsInitConfig,
+  ): Promise<import("./initConfig.ts").SetupResult>;
   /** Clear all messages from queues and all objects from buckets, but keep queues, topics, subscriptions, and buckets intact. Also clears the spy buffer. */
-  reset(): void;
-  purgeAll(): void;
+  reset(): Promise<void>;
+  purgeAll(): Promise<void>;
 
   /** Instantiate the template with the given prefix. Throws if tenant management is not enabled. */
-  instantiateTemplate(prefix: string): import("./initConfig.ts").SetupResult;
+  instantiateTemplate(prefix: string): Promise<import("./initConfig.ts").SetupResult>;
   /** List all instantiated tenant prefixes and their last-used timestamps. Throws if tenant management is not enabled. */
   listTenants(): Array<{ prefix: string; lastUsedMs: number }>;
   /** Force-delete a tenant prefix and all its resources. Throws if tenant management is not enabled. */
-  deleteTenant(prefix: string): void;
+  deleteTenant(prefix: string): Promise<void>;
 }
 
 export async function startFauxqs(options?: {
@@ -492,6 +494,10 @@ export async function startFauxqs(options?: {
   dataDir?: string;
   /** Directory for file-based S3 object storage. When set, S3 objects are stored as inspectable files on disk instead of in SQLite. Independent of dataDir. */
   s3StorageDir?: string;
+  /** Persistence backend to use. Defaults to "sqlite". */
+  persistenceBackend?: "sqlite" | "postgresql";
+  /** PostgreSQL connection URL. Required when persistenceBackend is "postgresql". */
+  postgresqlUrl?: string;
   /** Multi-tenant configuration. When set, enables auto-cleanup, templated creation, and permanent prefix management. */
   tenant?: TenantConfig;
   /** Seed for the standard-queue reordering PRNG. Standard queues always reorder (real SQS/SNS give no
@@ -531,7 +537,22 @@ export async function startFauxqs(options?: {
   }
 
   // Persistence: create managers and wire into stores before any data is loaded
-  const persistenceManager = options?.dataDir ? new PersistenceManager(options.dataDir) : undefined;
+  const backend = options?.persistenceBackend ?? "sqlite";
+  if (backend === "postgresql" && !options?.postgresqlUrl) {
+    throw new Error("postgresqlUrl is required when persistenceBackend is 'postgresql'");
+  }
+  let persistenceManager:
+    | import("./persistence/persistenceProvider.ts").PersistenceProvider
+    | undefined;
+  if (backend === "postgresql" && options?.postgresqlUrl) {
+    const { createPersistence } = await import("./persistence/index.ts");
+    persistenceManager = await createPersistence({
+      type: "postgresql",
+      connectionString: options.postgresqlUrl,
+    });
+  } else if (options?.dataDir) {
+    persistenceManager = new SqlitePersistence(options.dataDir);
+  }
 
   // S3 persistence: s3StorageDir (files) takes priority over dataDir (SQLite)
   const s3Persistence: S3PersistenceProvider | undefined = options?.s3StorageDir
@@ -542,14 +563,14 @@ export async function startFauxqs(options?: {
   // This avoids INSERT OR REPLACE triggering ON DELETE CASCADE during load.
   if (persistenceManager && s3Persistence === persistenceManager) {
     // Single persistence backend for everything (existing behavior)
-    persistenceManager.load(sqsStore, snsStore, s3Store);
+    await persistenceManager.load(sqsStore, snsStore, s3Store);
   } else {
     // Separate backends: SQLite for SQS/SNS, file-based (or none) for S3
     if (persistenceManager) {
-      persistenceManager.loadSqsAndSns(sqsStore, snsStore);
+      await persistenceManager.loadSqsAndSns(sqsStore, snsStore);
     }
     if (s3Persistence) {
-      s3Persistence.loadS3(s3Store);
+      await s3Persistence.loadS3(s3Store);
     }
   }
 
@@ -605,13 +626,13 @@ export async function startFauxqs(options?: {
   });
 
   if (persistenceManager) {
-    app.addHook("preClose", () => {
-      persistenceManager.close();
+    app.addHook("preClose", async () => {
+      await persistenceManager.close();
     });
   }
   if (s3Persistence && s3Persistence !== persistenceManager) {
-    app.addHook("preClose", () => {
-      s3Persistence.close();
+    app.addHook("preClose", async () => {
+      await s3Persistence.close();
     });
   }
   if (tenantManager) {
@@ -649,48 +670,48 @@ export async function startFauxqs(options?: {
     stop() {
       return app.close();
     },
-    createQueue(name, opts) {
+    async createQueue(name, opts) {
       const r = opts?.region ?? region;
       const arn = sqsQueueArn(name, r);
       const queueUrl = makeQueueUrl(name, r);
-      sqsStore.createQueue(name, queueUrl, arn, opts?.attributes, opts?.tags);
+      await sqsStore.createQueue(name, queueUrl, arn, opts?.attributes, opts?.tags);
       return { queueUrl, queueArn: arn, queueName: name };
     },
     inspectQueue(name) {
       return sqsStore.inspectQueue(name);
     },
-    createTopic(name, opts) {
+    async createTopic(name, opts) {
       const r = opts?.region ?? region;
-      snsStore.createTopic(name, opts?.attributes, opts?.tags, r);
+      await snsStore.createTopic(name, opts?.attributes, opts?.tags, r);
       return { topicArn: snsTopicArn(name, r) };
     },
-    subscribe(opts) {
+    async subscribe(opts) {
       const r = opts.region ?? region;
       const topicArn = snsTopicArn(opts.topic, r);
       const queueArn = sqsQueueArn(opts.queue, r);
-      snsStore.subscribe(topicArn, "sqs", queueArn, opts.attributes);
+      await snsStore.subscribe(topicArn, "sqs", queueArn, opts.attributes);
     },
-    createBucket(name, options) {
-      s3Store.createBucket(name, options?.type);
+    async createBucket(name, options) {
+      await s3Store.createBucket(name, options?.type);
       return { bucketName: name };
     },
-    deleteQueue(name, opts) {
+    async deleteQueue(name, opts) {
       const r = opts?.region ?? region;
       const arn = sqsQueueArn(name, r);
       const queue = sqsStore.getQueueByArn(arn);
       if (queue) {
-        sqsStore.deleteQueue(queue.url);
+        await sqsStore.deleteQueue(queue.url);
       }
     },
-    deleteTopic(name, opts) {
+    async deleteTopic(name, opts) {
       const r = opts?.region ?? region;
       const arn = snsTopicArn(name, r);
-      snsStore.deleteTopic(arn);
+      await snsStore.deleteTopic(arn);
     },
-    emptyBucket(name) {
-      s3Store.emptyBucket(name);
+    async emptyBucket(name) {
+      await s3Store.emptyBucket(name);
     },
-    sendMessage(queueName, body, opts) {
+    async sendMessage(queueName, body, opts) {
       const r = opts?.region ?? region;
       const arn = sqsQueueArn(queueName, r);
       const queue = sqsStore.getQueueByArn(arn);
@@ -743,17 +764,6 @@ export async function startFauxqs(options?: {
           }
         }
 
-        const dedupResult = queue.checkDeduplication(dedupId);
-        if (dedupResult.isDuplicate) {
-          const attrsDigest = md5OfMessageAttributes(messageAttributes);
-          return {
-            messageId: dedupResult.originalMessageId!,
-            md5OfBody: md5(body),
-            ...(attrsDigest ? { md5OfMessageAttributes: attrsDigest } : {}),
-            sequenceNumber: dedupResult.originalSequenceNumber,
-          };
-        }
-
         // Queue-level delay applies to FIFO queues
         const queueDelay = parseInt(queue.attributes.DelaySeconds);
         const msg = SqsStore.createMessage(
@@ -763,9 +773,16 @@ export async function startFauxqs(options?: {
           messageGroupId,
           dedupId,
         );
-        msg.sequenceNumber = queue.nextSequenceNumber();
-        queue.recordDeduplication(dedupId, msg.messageId, msg.sequenceNumber);
-        queue.enqueue(msg);
+        const sent = await queue.sendFifo(msg, dedupId);
+        if (sent.duplicate) {
+          const attrsDigest = md5OfMessageAttributes(messageAttributes);
+          return {
+            messageId: sent.messageId,
+            md5OfBody: md5(body),
+            ...(attrsDigest ? { md5OfMessageAttributes: attrsDigest } : {}),
+            sequenceNumber: sent.sequenceNumber,
+          };
+        }
         return {
           messageId: msg.messageId,
           md5OfBody: msg.md5OfBody,
@@ -784,7 +801,7 @@ export async function startFauxqs(options?: {
         delaySeconds > 0 ? delaySeconds : undefined,
         messageGroupId,
       );
-      queue.enqueue(msg);
+      await queue.enqueue(msg);
       return {
         messageId: msg.messageId,
         md5OfBody: msg.md5OfBody,
@@ -793,7 +810,7 @@ export async function startFauxqs(options?: {
           : {}),
       };
     },
-    publish(topicName, message, opts) {
+    async publish(topicName, message, opts) {
       const r = opts?.region ?? region;
       const topicArn = snsTopicArn(topicName, r);
       const topic = snsStore.getTopic(topicArn);
@@ -860,7 +877,7 @@ export async function startFauxqs(options?: {
         );
       }
 
-      fanOutToSubscriptions({
+      await fanOutToSubscriptions({
         topicArn,
         topic,
         messageId,
@@ -875,42 +892,42 @@ export async function startFauxqs(options?: {
 
       return { messageId };
     },
-    setup(config) {
+    async setup(config) {
       return applyInitConfig(config, sqsStore, snsStore, s3Store, {
         port: actualPort,
         region,
       });
     },
-    reset() {
-      sqsStore.clearMessages();
+    async reset() {
+      await sqsStore.clearMessages();
       s3Store.clearObjects();
       if (s3Persistence && s3Persistence !== persistenceManager) {
         // Separate S3 persistence — clear S3 files independently
-        s3Persistence.deleteAllObjects();
-        s3Persistence.deleteAllMultipartUploads();
-        persistenceManager?.clearMessagesAndObjects();
+        await s3Persistence.deleteAllObjects();
+        await s3Persistence.deleteAllMultipartUploads();
+        await persistenceManager?.clearMessagesAndObjects();
       } else {
         // Unified persistence — single call handles both SQS/SNS messages and S3
-        persistenceManager?.clearMessagesAndObjects();
+        await persistenceManager?.clearMessagesAndObjects();
       }
       if (messageSpy) {
         messageSpy.clear();
       }
     },
-    purgeAll() {
+    async purgeAll() {
       sqsStore.purgeAll();
       snsStore.purgeAll();
       s3Store.purgeAll();
       if (s3Persistence && s3Persistence !== persistenceManager) {
         // Separate file-based S3 persistence — purge everything
-        s3Persistence.purgeAll();
+        await s3Persistence.purgeAll();
       }
-      persistenceManager?.purgeAll();
+      await persistenceManager?.purgeAll();
       if (tenantManager) {
-        tenantManager.reset();
+        await tenantManager.reset();
       }
     },
-    instantiateTemplate(prefix) {
+    async instantiateTemplate(prefix) {
       if (!tenantManager) {
         throw new Error(
           "Tenant management is not enabled. Pass { tenant: { ttlMs: ... } } to startFauxqs() to enable.",
@@ -926,25 +943,25 @@ export async function startFauxqs(options?: {
       }
       return tenantManager.listTenants();
     },
-    deleteTenant(prefix) {
+    async deleteTenant(prefix) {
       if (!tenantManager) {
         throw new Error(
           "Tenant management is not enabled. Pass { tenant: { ttlMs: ... } } to startFauxqs() to enable.",
         );
       }
-      tenantManager.deleteTenant(prefix);
+      await tenantManager.deleteTenant(prefix);
     },
   };
 
   // Apply init config if provided
   if (initConfig) {
-    server.setup(initConfig);
+    await server.setup(initConfig);
   }
 
   // Start tenant manager after server is listening and init config is applied
   if (tenantManager) {
     tenantManager.setPort(actualPort);
-    tenantManager.start();
+    await tenantManager.start();
   }
 
   return server;

@@ -270,7 +270,7 @@ describe("SQS DLQ redrive (message move tasks)", () => {
     const before = await sqs.send(new ListMessageMoveTasksCommand({ SourceArn: dlqArn }));
     expect(before.Results).toHaveLength(1);
 
-    server.reset();
+    await server.reset();
 
     const after = await sqs.send(new ListMessageMoveTasksCommand({ SourceArn: dlqArn }));
     expect(after.Results ?? []).toHaveLength(0);

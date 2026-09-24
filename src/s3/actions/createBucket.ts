@@ -2,11 +2,11 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import type { S3Store } from "../s3Store.ts";
 import type { BucketType } from "../s3Store.ts";
 
-export function createBucket(
+export async function createBucket(
   request: FastifyRequest<{ Params: { bucket: string } }>,
   reply: FastifyReply,
   store: S3Store,
-): void {
+): Promise<void> {
   const bucket = request.params.bucket;
   let bucketType: BucketType | undefined;
 
@@ -20,7 +20,7 @@ export function createBucket(
     }
   }
 
-  store.createBucket(bucket, bucketType);
+  await store.createBucket(bucket, bucketType);
   reply.header("location", `/${bucket}`);
   reply.status(200).send();
 }

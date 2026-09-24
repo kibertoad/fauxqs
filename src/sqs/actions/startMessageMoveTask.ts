@@ -7,10 +7,10 @@ import type { SqsStore } from "../sqsStore.ts";
  * DestinationArn is omitted, each message is moved back to the queue it
  * originally came from.
  */
-export function startMessageMoveTask(
+export async function startMessageMoveTask(
   body: Record<string, unknown>,
   store: SqsStore,
-): StartMessageMoveTaskResult {
+): Promise<StartMessageMoveTaskResult> {
   const sourceArn = body.SourceArn as string | undefined;
   if (!sourceArn) {
     throw new SqsError("InvalidParameterValue", "SourceArn is required");
@@ -30,7 +30,11 @@ export function startMessageMoveTask(
     );
   }
 
-  const task = store.startMessageMoveTask(sourceArn, destinationArn, maxNumberOfMessagesPerSecond);
+  const task = await store.startMessageMoveTask(
+    sourceArn,
+    destinationArn,
+    maxNumberOfMessagesPerSecond,
+  );
 
   return { TaskHandle: task.taskHandle } satisfies StartMessageMoveTaskResult;
 }
