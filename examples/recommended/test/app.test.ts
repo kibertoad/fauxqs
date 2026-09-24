@@ -15,7 +15,7 @@
  *   - inspectQueue() for non-destructive queue state inspection
  *   - purgeAll() for resetting all state between test groups
  *
- * Run with: npm test
+ * Run with: pnpm test
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { SQSClient, ReceiveMessageCommand } from "@aws-sdk/client-sqs";

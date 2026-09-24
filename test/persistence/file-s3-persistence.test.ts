@@ -191,7 +191,7 @@ describe("File-based S3 Persistence", () => {
   it("directory bucket type survives restart", async () => {
     let server = await startFauxqs({ port: 0, logger: false, s3StorageDir });
 
-    server.createBucket("dir-file-bucket--useast1-az1--x-s3", { type: "directory" });
+    await server.createBucket("dir-file-bucket--useast1-az1--x-s3", { type: "directory" });
 
     await server.stop();
 
@@ -383,9 +383,9 @@ describe("File-based S3 Persistence", () => {
   it("purgeAll() clears all S3 file storage", async () => {
     let server = await startFauxqs({ port: 0, logger: false, s3StorageDir });
 
-    server.createBucket("purge-file-bucket");
+    await server.createBucket("purge-file-bucket");
 
-    server.purgeAll();
+    await server.purgeAll();
     await server.stop();
 
     // Restart — nothing should exist
@@ -493,7 +493,7 @@ describe("File-based S3 Persistence", () => {
     let server = await startFauxqs({ port: 0, logger: false, s3StorageDir });
     let s3 = makeS3Client(server.port);
 
-    server.createBucket("rename-file-bucket", { type: "directory" });
+    await server.createBucket("rename-file-bucket", { type: "directory" });
 
     await s3.send(
       new PutObjectCommand({
@@ -543,7 +543,7 @@ describe("File-based S3 Persistence", () => {
       new PutObjectCommand({ Bucket: "empty-file-bucket", Key: "b.txt", Body: "bbb" }),
     );
 
-    server.emptyBucket("empty-file-bucket");
+    await server.emptyBucket("empty-file-bucket");
     await server.stop();
 
     // Restart — bucket exists but objects are gone

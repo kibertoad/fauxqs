@@ -53,7 +53,10 @@ describe("SQS Send/Receive/Delete", () => {
     expect(received.Messages![0].Body).toBe("hello world");
     expect(received.Messages![0].MessageId).toBe(sent.MessageId);
     expect(received.Messages![0].MD5OfBody).toBe(sent.MD5OfMessageBody);
-    expect(received.Messages![0].ReceiptHandle).toBeDefined();
+    // Real AWS receipt handles are ~350-char base64 opaque tokens, not UUIDs.
+    const handle = received.Messages![0].ReceiptHandle!;
+    expect(handle.length).toBeGreaterThan(100);
+    expect(handle).toMatch(/^[A-Za-z0-9+/=]+$/);
   });
 
   it("receives empty when no messages", async () => {
@@ -288,6 +291,33 @@ describe("SQS Send/Receive/Delete", () => {
       }),
     );
     expect(sent.MessageId).toBeDefined();
+  });
+
+  it("accepts supplementary-plane characters (emoji), like AWS SQS does", async () => {
+    const body = "\u{1F527} What you’ll need \u{1F4A1}";
+    const sent = await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: queueUrl,
+        MessageBody: body,
+      }),
+    );
+    expect(sent.MessageId).toBeDefined();
+
+    const received = await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: queueUrl, MaxNumberOfMessages: 1 }),
+    );
+    expect(received.Messages?.[0]?.Body).toBe(body);
+  });
+
+  it("rejects a lone surrogate", async () => {
+    await expect(
+      sqs.send(
+        new SendMessageCommand({
+          QueueUrl: queueUrl,
+          MessageBody: "broken \uD83D pair",
+        }),
+      ),
+    ).rejects.toThrow("Invalid characters");
   });
 
   it("rejects message exceeding 1 MiB size limit", async () => {

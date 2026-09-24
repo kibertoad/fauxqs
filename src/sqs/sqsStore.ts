@@ -1,21 +1,39 @@
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID, randomBytes, createHash } from "node:crypto";
 import type { QueueAttributeName } from "@aws-sdk/client-sqs";
 import { FifoMap } from "toad-cache";
 import { md5, md5OfMessageAttributes } from "../common/md5.ts";
 import { DEFAULT_ACCOUNT_ID } from "../common/types.ts";
-import type { MessageSpy } from "../spy.ts";
+import { SqsError } from "../common/errors.ts";
+import { buildSqsSpyMessage, type MessageSpy } from "../spy.ts";
 import type { PersistenceProvider } from "../persistence/index.ts";
 import type {
   SqsMessage,
   InflightEntry,
   ReceivedMessage,
   MessageAttributeValue,
+  MessageMoveTask,
 } from "./sqsTypes.ts";
 import { DEFAULT_QUEUE_ATTRIBUTES, ALL_ATTRIBUTE_NAMES } from "./sqsTypes.ts";
 
 const DEDUP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const DEDUP_CACHE_MAX_SIZE = 10_000;
 const DEFAULT_FIFO_GROUP_ID = "__default";
+
+/**
+ * Per-receive picker state for group-fair standard-queue dispatch: candidate
+ * lists per tenant, built once per dequeue() and maintained across picks so
+ * the backlog is not rescanned for every delivered message. String keys are
+ * MessageGroupIds; numeric keys are backlog indexes standing in for ungrouped
+ * messages, each of which AWS treats as its own distinct tenant.
+ */
+interface StandardGroupPicker {
+  /** Tenant draw order; a drained tenant is swap-removed. */
+  keys: Array<string | number>;
+  members: Map<string | number, SqsMessage[]>;
+}
+
+/** Cap on retained message move task history, so repeated redrives don't grow unbounded. */
+const MESSAGE_MOVE_TASK_HISTORY_LIMIT = 100;
 
 export class SqsQueue {
   readonly name: string;
@@ -33,9 +51,13 @@ export class SqsQueue {
     timer: ReturnType<typeof setTimeout>;
   }> = [];
   private pollTimer?: ReturnType<typeof setInterval>;
+  /** Lazily-parsed RedrivePolicy. `undefined` = not parsed yet; `null` = unset/malformed. */
+  private parsedRedrivePolicy?: { deadLetterTargetArn?: string; maxReceiveCount?: number } | null;
 
   spy?: MessageSpy;
   persistence?: PersistenceProvider;
+  /** PRNG for standard-queue reordering; injected from the store so all queues share one (optionally seeded) stream. */
+  random: () => number = Math.random;
 
   // FIFO-specific fields
   fifoMessages: Map<string, SqsMessage[]> = new Map();
@@ -124,6 +146,8 @@ export class SqsQueue {
     if (attrs.RedrivePolicy === "") {
       delete this.attributes.RedrivePolicy;
     }
+    // Invalidate the cached parse — the policy may have changed or been cleared.
+    this.parsedRedrivePolicy = undefined;
     this.lastModifiedTimestamp = Math.floor(Date.now() / 1000);
     await this.persistence?.updateQueueAttributes(
       this.name,
@@ -132,17 +156,30 @@ export class SqsQueue {
     );
   }
 
+  /**
+   * Parsed RedrivePolicy for this queue, or undefined when unset or malformed.
+   * The result is cached and invalidated by {@link setAttributes}, so hot paths
+   * (dequeue, DLQ resolution) avoid re-parsing JSON on every call.
+   */
+  getRedrivePolicy(): { deadLetterTargetArn?: string; maxReceiveCount?: number } | undefined {
+    if (this.parsedRedrivePolicy === undefined) {
+      const raw = this.attributes.RedrivePolicy;
+      if (!raw) {
+        this.parsedRedrivePolicy = null;
+      } else {
+        try {
+          this.parsedRedrivePolicy = JSON.parse(raw);
+        } catch {
+          this.parsedRedrivePolicy = null;
+        }
+      }
+    }
+    return this.parsedRedrivePolicy ?? undefined;
+  }
+
   async enqueue(msg: SqsMessage): Promise<void> {
     if (this.spy) {
-      this.spy.addMessage({
-        service: "sqs",
-        queueName: this.name,
-        messageId: msg.messageId,
-        body: msg.body,
-        messageAttributes: msg.messageAttributes,
-        status: "published",
-        timestamp: Date.now(),
-      });
+      this.spy.addMessage(buildSqsSpyMessage(this.name, msg, "published"));
     }
 
     await this.persistence?.insertMessage(this.name, msg);
@@ -184,25 +221,23 @@ export class SqsQueue {
     const visibilityTimeout =
       visibilityTimeoutOverride ?? parseInt(this.attributes.VisibilityTimeout);
 
-    // Parse RedrivePolicy for DLQ
-    let maxReceiveCount = Infinity;
-    let dlqArn: string | undefined;
-    if (this.attributes.RedrivePolicy) {
-      try {
-        const policy = JSON.parse(this.attributes.RedrivePolicy);
-        maxReceiveCount = policy.maxReceiveCount ?? Infinity;
-        dlqArn = policy.deadLetterTargetArn;
-      } catch {
-        // Invalid policy, ignore
-      }
-    }
+    // DLQ config from the (cached) RedrivePolicy
+    const redrivePolicy = this.getRedrivePolicy();
+    const maxReceiveCount = redrivePolicy?.maxReceiveCount ?? Infinity;
+    const dlqArn = redrivePolicy?.deadLetterTargetArn;
 
     const count = Math.min(maxCount, this.messages.length, 10);
     const result: ReceivedMessage[] = [];
     let collected = 0;
 
+    // Fair-dispatch state, built once per receive. Undefined when no ready
+    // message carries a group id — picks are then plain uniform.
+    const picker = this.buildGroupPicker();
+
     while (collected < count && this.messages.length > 0) {
-      const msg = this.messages.shift();
+      // Standard queues give no ordering guarantee — select a random ready message
+      // instead of strict FIFO. Use a FIFO queue if ordering is required.
+      const msg = this.takeRandomStandardMessage(picker);
       if (!msg) break;
 
       msg.approximateReceiveCount++;
@@ -215,24 +250,19 @@ export class SqsQueue {
         const dlq = dlqResolver(dlqArn);
         if (dlq) {
           if (this.spy) {
-            this.spy.addMessage({
-              service: "sqs",
-              queueName: this.name,
-              messageId: msg.messageId,
-              body: msg.body,
-              messageAttributes: msg.messageAttributes,
-              status: "dlq",
-              timestamp: Date.now(),
-            });
+            this.spy.addMessage(buildSqsSpyMessage(this.name, msg, "dlq"));
           }
           // Persistence: delete from this queue (dlq.enqueue will insert into DLQ)
           await this.persistence?.deleteMessage(msg.messageId);
+          // Record the origin queue so a message move task can redrive it back.
+          msg.deadLetterSourceArn = this.arn;
           await dlq.enqueue(msg);
           continue;
         }
       }
 
-      const receiptHandle = randomUUID();
+      // Real AWS receipt handles are ~350-char base64 opaque tokens, not UUIDs.
+      const receiptHandle = randomBytes(256).toString("base64");
       const visibilityDeadline = Date.now() + visibilityTimeout * 1000;
 
       this.inflightMessages.set(receiptHandle, {
@@ -271,6 +301,66 @@ export class SqsQueue {
     return result;
   }
 
+  /**
+   * Build the group-fair picker for one standard-queue receive, or undefined
+   * when no ready message carries a MessageGroupId. Without a picker each pick
+   * is uniform over messages with exactly one PRNG draw, so seeded orderings
+   * for ungrouped queues match releases without fair dispatch. With a picker
+   * each pick consumes two draws (group, then message within it), so seeded
+   * orderings of grouped queues — and of other queues interleaved on the
+   * shared PRNG stream — differ from releases without fair dispatch.
+   */
+  private buildGroupPicker(): StandardGroupPicker | undefined {
+    if (!this.messages.some((msg) => msg.messageGroupId !== undefined)) {
+      return undefined;
+    }
+    const members = new Map<string | number, SqsMessage[]>();
+    for (let i = 0; i < this.messages.length; i++) {
+      const key = this.messages[i].messageGroupId ?? i;
+      const list = members.get(key);
+      if (list) {
+        list.push(this.messages[i]);
+      } else {
+        members.set(key, [this.messages[i]]);
+      }
+    }
+    return { keys: [...members.keys()], members };
+  }
+
+  /**
+   * Remove and return the next ready message for a standard-queue receive.
+   *
+   * Without a picker the pick is uniform over messages. With one, emulate AWS
+   * fair queues: pick a uniformly random *tenant* first, then a random message
+   * within it, so a backlogged group cannot starve quiet groups. Each message
+   * without a group id is its own tenant (as on AWS), so a noisy group cannot
+   * delay ungrouped messages either.
+   */
+  private takeRandomStandardMessage(
+    picker: StandardGroupPicker | undefined,
+  ): SqsMessage | undefined {
+    // No grouped messages — or the picker drained while messages re-entered
+    // the queue mid-receive (e.g. a DLQ that targets its own queue).
+    if (!picker || picker.keys.length === 0) {
+      if (this.messages.length <= 1) {
+        return this.messages.shift();
+      }
+      const idx = Math.floor(this.random() * this.messages.length);
+      return this.messages.splice(idx, 1)[0];
+    }
+
+    const keyIdx = Math.floor(this.random() * picker.keys.length);
+    const list = picker.members.get(picker.keys[keyIdx])!;
+    const msg = list.splice(Math.floor(this.random() * list.length), 1)[0];
+    if (list.length === 0) {
+      picker.members.delete(picker.keys[keyIdx]);
+      picker.keys[keyIdx] = picker.keys[picker.keys.length - 1];
+      picker.keys.pop();
+    }
+    this.messages.splice(this.messages.indexOf(msg), 1);
+    return msg;
+  }
+
   private async dequeueFifo(
     maxCount: number,
     visibilityTimeoutOverride?: number,
@@ -281,18 +371,10 @@ export class SqsQueue {
     const visibilityTimeout =
       visibilityTimeoutOverride ?? parseInt(this.attributes.VisibilityTimeout);
 
-    // Parse RedrivePolicy for DLQ
-    let maxReceiveCount = Infinity;
-    let dlqArn: string | undefined;
-    if (this.attributes.RedrivePolicy) {
-      try {
-        const policy = JSON.parse(this.attributes.RedrivePolicy);
-        maxReceiveCount = policy.maxReceiveCount ?? Infinity;
-        dlqArn = policy.deadLetterTargetArn;
-      } catch {
-        // Invalid policy, ignore
-      }
-    }
+    // DLQ config from the (cached) RedrivePolicy
+    const redrivePolicy = this.getRedrivePolicy();
+    const maxReceiveCount = redrivePolicy?.maxReceiveCount ?? Infinity;
+    const dlqArn = redrivePolicy?.deadLetterTargetArn;
 
     const result: ReceivedMessage[] = [];
     const count = Math.min(maxCount, 10);
@@ -316,23 +398,18 @@ export class SqsQueue {
           const dlq = dlqResolver(dlqArn);
           if (dlq) {
             if (this.spy) {
-              this.spy.addMessage({
-                service: "sqs",
-                queueName: this.name,
-                messageId: msg.messageId,
-                body: msg.body,
-                messageAttributes: msg.messageAttributes,
-                status: "dlq",
-                timestamp: Date.now(),
-              });
+              this.spy.addMessage(buildSqsSpyMessage(this.name, msg, "dlq"));
             }
             await this.persistence?.deleteMessage(msg.messageId);
+            // Record the origin queue so a message move task can redrive it back.
+            msg.deadLetterSourceArn = this.arn;
             await dlq.enqueue(msg);
             continue;
           }
         }
 
-        const receiptHandle = randomUUID();
+        // Real AWS receipt handles are ~350-char base64 opaque tokens, not UUIDs.
+        const receiptHandle = randomBytes(256).toString("base64");
         const visibilityDeadline = Date.now() + visibilityTimeout * 1000;
 
         this.inflightMessages.set(receiptHandle, {
@@ -385,19 +462,13 @@ export class SqsQueue {
     if (entry) {
       await this.persistence?.deleteMessage(entry.message.messageId);
       if (this.spy) {
-        this.spy.addMessage({
-          service: "sqs",
-          queueName: this.name,
-          messageId: entry.message.messageId,
-          body: entry.message.body,
-          messageAttributes: entry.message.messageAttributes,
-          status: "consumed",
-          timestamp: Date.now(),
-        });
+        this.spy.addMessage(buildSqsSpyMessage(this.name, entry.message, "consumed"));
       }
-      // Decrement FIFO locked group count
-      if (entry.message.messageGroupId) {
-        const groupId = entry.message.messageGroupId;
+      // Decrement FIFO locked group count. Messages without a group id lock
+      // under the default group (see dequeueFifo), so the release must not be
+      // gated on messageGroupId being present.
+      if (this.isFifo()) {
+        const groupId = entry.message.messageGroupId ?? DEFAULT_FIFO_GROUP_ID;
         const count = (this.fifoLockedGroups.get(groupId) ?? 1) - 1;
         if (count <= 0) {
           this.fifoLockedGroups.delete(groupId);
@@ -422,8 +493,10 @@ export class SqsQueue {
     if (timeoutSeconds === 0) {
       this.inflightMessages.delete(receiptHandle);
       await this.persistence?.updateMessageReady(entry.message.messageId);
-      if (this.isFifo() && entry.message.messageGroupId) {
-        const groupId = entry.message.messageGroupId;
+      if (this.isFifo()) {
+        // Messages without a group id lock under the default group (see
+        // dequeueFifo) and must return to it, not to the standard-queue array.
+        const groupId = entry.message.messageGroupId ?? DEFAULT_FIFO_GROUP_ID;
         // Decrement locked group count
         const lockCount = (this.fifoLockedGroups.get(groupId) ?? 1) - 1;
         if (lockCount <= 0) {
@@ -565,6 +638,37 @@ export class SqsQueue {
     await this.persistence?.deleteQueueMessages(this.name);
   }
 
+  /**
+   * Remove and return all currently-visible (ready) messages. Used by message
+   * move tasks (DLQ redrive). Delayed and in-flight messages are left in place.
+   *
+   * `fifoLockedGroups` is intentionally left untouched: a locked group tracks an
+   * in-flight message, which this method does not remove. That lock is released
+   * normally when the in-flight message is deleted or its visibility expires.
+   */
+  async removeAllReadyMessages(): Promise<SqsMessage[]> {
+    this.processTimers();
+    const result: SqsMessage[] = [];
+    if (this.isFifo()) {
+      // A locked group has an in-flight message; the rest of that group is not
+      // visible and must not be redriven. Drain only unlocked groups.
+      for (const [groupId, msgs] of this.fifoMessages) {
+        if (this.fifoLockedGroups.has(groupId)) {
+          continue;
+        }
+        result.push(...msgs);
+        this.fifoMessages.delete(groupId);
+      }
+    } else {
+      result.push(...this.messages);
+      this.messages = [];
+    }
+    for (const msg of result) {
+      await this.persistence?.deleteMessage(msg.messageId);
+    }
+    return result;
+  }
+
   /** Return a non-destructive snapshot of all messages in the queue, grouped by state. */
   inspectMessages(): {
     ready: SqsMessage[];
@@ -653,14 +757,32 @@ export class SqsQueue {
   }
 }
 
+// NOTE: When adding new public methods that look up a queue (by URL, name, or ARN),
+// also override them in src/tenant/trackedStores.ts → TrackedSqsStore so that
+// tenant usage tracking stays accurate.
 export class SqsStore {
   private queues = new Map<string, SqsQueue>();
   private queuesByName = new Map<string, SqsQueue>();
   private queuesByArn = new Map<string, SqsQueue>();
+  private messageMoveTasks: MessageMoveTask[] = [];
   host: string = "localhost";
   region?: string;
   spy?: MessageSpy;
   persistence?: PersistenceProvider;
+  private _random: () => number = Math.random;
+
+  /** PRNG shared with every queue for standard-queue reordering. Seeded via the `ordering` option. */
+  get random(): () => number {
+    return this._random;
+  }
+
+  /** Reseeding propagates to already-created queues, not just future ones. */
+  set random(random: () => number) {
+    this._random = random;
+    for (const queue of this.queues.values()) {
+      queue.random = random;
+    }
+  }
 
   async createQueue(
     name: string,
@@ -670,6 +792,7 @@ export class SqsStore {
     tags?: Record<string, string>,
   ): Promise<SqsQueue> {
     const queue = new SqsQueue(name, url, arn, attributes, tags);
+    queue.random = this._random;
     if (this.spy) {
       queue.spy = this.spy;
     }
@@ -736,7 +859,10 @@ export class SqsStore {
     if (prefix) {
       queues = queues.filter((q) => q.name.startsWith(prefix));
     }
-    queues.sort((a, b) => a.name.localeCompare(b.name));
+    // Code-unit ordering, consistent with the `q.name > nextToken` cursor below.
+    // A locale-aware sort can order mixed-case names differently from `>` and
+    // silently drop queues at a page boundary.
+    queues.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
     if (nextToken) {
       queues = queues.filter((q) => q.name > nextToken);
@@ -753,6 +879,154 @@ export class SqsStore {
 
   getQueueByArn(arn: string): SqsQueue | undefined {
     return this.queuesByArn.get(arn);
+  }
+
+  // --- Dead-letter queue redrive ---
+
+  /** Queues whose RedrivePolicy designates `dlqArn` as their dead-letter target. */
+  deadLetterSourceQueues(dlqArn: string): SqsQueue[] {
+    const result: SqsQueue[] = [];
+    for (const queue of this.queues.values()) {
+      if (queue.getRedrivePolicy()?.deadLetterTargetArn === dlqArn) {
+        result.push(queue);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Start a message move task (DLQ redrive). Ready messages in the source
+   * dead-letter queue are moved to `destinationArn`, or — when omitted — back to
+   * the queue each message originally came from. The move is performed
+   * synchronously, so the returned task is already COMPLETED;
+   * `maxNumberOfMessagesPerSecond` is recorded for API fidelity but not enforced.
+   */
+  async startMessageMoveTask(
+    sourceArn: string,
+    destinationArn?: string,
+    maxNumberOfMessagesPerSecond?: number,
+  ): Promise<MessageMoveTask> {
+    const source = this.getQueueByArn(sourceArn);
+    if (!source) {
+      throw new SqsError(
+        "ResourceNotFoundException",
+        "The resource that you specified for the SourceArn parameter doesn't exist.",
+        404,
+      );
+    }
+
+    const sourceQueues = this.deadLetterSourceQueues(sourceArn);
+    if (sourceQueues.length === 0) {
+      throw new SqsError(
+        "InvalidParameterValue",
+        "The source queue must be configured as a dead-letter queue before a message move task can be started.",
+      );
+    }
+
+    let destination: SqsQueue | undefined;
+    if (destinationArn) {
+      destination = this.getQueueByArn(destinationArn);
+      if (!destination) {
+        throw new SqsError(
+          "ResourceNotFoundException",
+          "The resource that you specified for the DestinationArn parameter doesn't exist.",
+          404,
+        );
+      }
+    }
+
+    const ready = await source.removeAllReadyMessages();
+    let moved = 0;
+    for (const msg of ready) {
+      let target = destination;
+      if (!target) {
+        if (msg.deadLetterSourceArn) {
+          target = this.getQueueByArn(msg.deadLetterSourceArn);
+        }
+        if (!target && sourceQueues.length === 1) {
+          target = sourceQueues[0];
+        }
+      }
+      if (target) {
+        // Redriven messages start fresh so they are not immediately re-dead-lettered.
+        msg.approximateReceiveCount = 0;
+        msg.approximateFirstReceiveTimestamp = undefined;
+        msg.delayUntil = undefined;
+        msg.deadLetterSourceArn = undefined;
+        await target.enqueue(msg);
+        moved++;
+      } else {
+        // Destination could not be resolved — leave the message in the source queue.
+        await source.enqueue(msg);
+      }
+    }
+
+    const taskId = randomUUID();
+    const taskHandle = Buffer.from(JSON.stringify({ taskId, sourceArn }), "utf8").toString(
+      "base64",
+    );
+    const task: MessageMoveTask = {
+      taskId,
+      taskHandle,
+      sourceArn,
+      destinationArn,
+      maxNumberOfMessagesPerSecond,
+      status: "COMPLETED",
+      approximateNumberOfMessagesMoved: moved,
+      approximateNumberOfMessagesToMove: ready.length,
+      startedTimestamp: Date.now(),
+    };
+    this.messageMoveTasks.push(task);
+    if (this.messageMoveTasks.length > MESSAGE_MOVE_TASK_HISTORY_LIMIT) {
+      this.messageMoveTasks.splice(
+        0,
+        this.messageMoveTasks.length - MESSAGE_MOVE_TASK_HISTORY_LIMIT,
+      );
+    }
+    return task;
+  }
+
+  /** List message move tasks for a source ARN, most recent first. */
+  listMessageMoveTasks(sourceArn: string, maxResults: number): MessageMoveTask[] {
+    return this.messageMoveTasks
+      .filter((task) => task.sourceArn === sourceArn)
+      .sort((a, b) => b.startedTimestamp - a.startedTimestamp)
+      .slice(0, Math.max(1, maxResults));
+  }
+
+  /**
+   * Cancel a running message move task. fauxqs runs move tasks synchronously, so
+   * by the time a caller could cancel one it has already completed — and, like
+   * real AWS, a task that is not RUNNING cannot be cancelled. The error message
+   * distinguishes an unknown handle from an already-finished task so callers are
+   * not misled into thinking a valid handle was rejected.
+   */
+  cancelMessageMoveTask(taskHandle: string): number {
+    let taskId: string | undefined;
+    try {
+      taskId = JSON.parse(Buffer.from(taskHandle, "base64").toString("utf8")).taskId;
+    } catch {
+      // Invalid handle — treated as not found below
+    }
+    const task = taskId
+      ? this.messageMoveTasks.find((candidate) => candidate.taskId === taskId)
+      : undefined;
+    if (!task) {
+      throw new SqsError(
+        "ResourceNotFoundException",
+        "There is no message move task with the specified task handle.",
+        404,
+      );
+    }
+    if (task.status !== "RUNNING") {
+      throw new SqsError(
+        "ResourceNotFoundException",
+        `The message move task is already in status ${task.status} and cannot be cancelled.`,
+        404,
+      );
+    }
+    task.status = "CANCELLED";
+    return task.approximateNumberOfMessagesMoved;
   }
 
   inspectQueue(name: string):
@@ -801,6 +1075,8 @@ export class SqsStore {
     for (const queue of this.queues.values()) {
       await queue.purge();
     }
+    // Move task history describes message movements that no longer exist.
+    this.messageMoveTasks = [];
   }
 
   purgeAll(): void {
@@ -808,6 +1084,7 @@ export class SqsStore {
     this.queues.clear();
     this.queuesByName.clear();
     this.queuesByArn.clear();
+    this.messageMoveTasks = [];
   }
 
   static createMessage(

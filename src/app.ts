@@ -1,8 +1,15 @@
 import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
+import cors from "@fastify/cors";
+import { generateS3RequestId } from "./common/errors.ts";
 import { SqsStore } from "./sqs/sqsStore.ts";
 import type { MessageAttributeValue } from "./sqs/sqsTypes.ts";
-import { INVALID_MESSAGE_BODY_CHAR, calculateMessageSize } from "./sqs/sqsTypes.ts";
+import {
+  INVALID_MESSAGE_BODY_CHAR,
+  INVALID_MESSAGE_BODY_CHAR_MESSAGE,
+  calculateMessageSize,
+  parseOptionalMessageGroupId,
+} from "./sqs/sqsTypes.ts";
 import { md5, md5OfMessageAttributes } from "./common/md5.ts";
 import { SqsRouter } from "./sqs/sqsRouter.ts";
 import { SnsStore } from "./sns/snsStore.ts";
@@ -24,6 +31,10 @@ import { changeMessageVisibilityBatch } from "./sqs/actions/changeMessageVisibil
 import { tagQueue } from "./sqs/actions/tagQueue.ts";
 import { untagQueue } from "./sqs/actions/untagQueue.ts";
 import { listQueueTags } from "./sqs/actions/listQueueTags.ts";
+import { listDeadLetterSourceQueues } from "./sqs/actions/listDeadLetterSourceQueues.ts";
+import { startMessageMoveTask } from "./sqs/actions/startMessageMoveTask.ts";
+import { listMessageMoveTasks } from "./sqs/actions/listMessageMoveTasks.ts";
+import { cancelMessageMoveTask } from "./sqs/actions/cancelMessageMoveTask.ts";
 import { createTopic } from "./sns/actions/createTopic.ts";
 import { deleteTopic } from "./sns/actions/deleteTopic.ts";
 import { listTopics } from "./sns/actions/listTopics.ts";
@@ -35,18 +46,29 @@ import { confirmSubscription } from "./sns/actions/confirmSubscription.ts";
 import { listSubscriptions, listSubscriptionsByTopic } from "./sns/actions/listSubscriptions.ts";
 import { getSubscriptionAttributes } from "./sns/actions/getSubscriptionAttributes.ts";
 import { setSubscriptionAttributes } from "./sns/actions/setSubscriptionAttributes.ts";
-import { publish, publishBatch, fanOutToSubscriptions } from "./sns/actions/publish.ts";
+import {
+  publish,
+  publishBatch,
+  fanOutToSubscriptions,
+  INVALID_MESSAGE_GROUP_ID_MESSAGE,
+} from "./sns/actions/publish.ts";
 import { tagResource, untagResource, listTagsForResource } from "./sns/actions/tagResource.ts";
 import { S3Store } from "./s3/s3Store.ts";
 import { registerS3Routes } from "./s3/s3Router.ts";
+import { S3NotificationDispatcher } from "./s3/notifications.ts";
 import { getCallerIdentity } from "./sts/getCallerIdentity.ts";
 import { sqsQueueArn, snsTopicArn } from "./common/arnHelper.ts";
 import { DEFAULT_REGION, SNS_MAX_MESSAGE_SIZE_BYTES } from "./common/types.ts";
+import { mulberry32 } from "./common/prng.ts";
 import { loadInitConfig, applyInitConfig } from "./initConfig.ts";
-import { MessageSpy, type MessageSpyReader } from "./spy.ts";
+import { MessageSpy, buildSnsSpyMessage, type MessageSpyReader } from "./spy.ts";
 import { SqlitePersistence } from "./persistence/index.ts";
 import { FileS3Persistence } from "./s3/fileS3Persistence.ts";
 import type { S3PersistenceProvider } from "./s3/s3Persistence.ts";
+import { TenantManager } from "./tenant/tenantManager.ts";
+import { UsageTracker } from "./tenant/usageTracker.ts";
+import { TrackedSqsStore, TrackedSnsStore, TrackedS3Store } from "./tenant/trackedStores.ts";
+import type { TenantConfig } from "./tenant/tenantTypes.ts";
 export type {
   FauxqsInitConfig,
   SetupResult,
@@ -56,6 +78,7 @@ export type {
   SetupBucketResult,
 } from "./initConfig.ts";
 export type { MessageAttributeValue } from "./sqs/sqsTypes.ts";
+export type { TenantConfig } from "./tenant/tenantTypes.ts";
 export { createLocalhostHandler, interceptLocalhostDns } from "./localhost.ts";
 export type {
   MessageSpyReader,
@@ -76,6 +99,10 @@ export type {
 export interface RelaxedRules {
   /** Disable the 5 MiB minimum source size requirement for UploadPartCopy byte-range copies. */
   disableMinCopySourceSize?: boolean;
+  /** Stop verifying uploaded bodies against the `x-amz-checksum-*`/`Content-MD5` header the client
+   *  sent. fauxqs validates by default, the way real S3 does; disabling that lets a corrupted upload
+   *  succeed locally and fail against AWS. */
+  disableChecksumValidation?: boolean;
 }
 
 export interface BuildAppOptions {
@@ -84,6 +111,10 @@ export interface BuildAppOptions {
   defaultRegion?: string;
   stores?: { sqsStore: SqsStore; snsStore: SnsStore; s3Store: S3Store };
   relaxedRules?: RelaxedRules;
+  tenantManager?: TenantManager;
+  /** Seed for the standard-queue reordering PRNG. Standard queues always reorder (real SQS/SNS give no
+   *  ordering guarantee); a seed only makes that reordering deterministic. Use a FIFO queue if you need ordering. */
+  ordering?: { seed?: number };
 }
 
 export function buildApp(options?: BuildAppOptions) {
@@ -94,6 +125,11 @@ export function buildApp(options?: BuildAppOptions) {
     // Support S3 virtual-hosted-style requests: bucket name in Host header (e.g. bucket.localhost:port)
     // Rewrites to path-style (e.g. /bucket/key) before routing.
     rewriteUrl: (req) => {
+      // CORS preflight requests have no content-type and are handled by @fastify/cors
+      // before routing — skip the virtual-hosted-style rewrite for them.
+      if (req.method === "OPTIONS") {
+        return req.url ?? "/";
+      }
       const host = req.headers.host ?? "";
       const hostname = host.split(":")[0];
       // No rewrite for plain hostnames (localhost) or IP addresses
@@ -114,12 +150,38 @@ export function buildApp(options?: BuildAppOptions) {
     },
   });
 
+  // Permissive CORS — matches real S3 behavior when a bucket has a wildcard CORS config.
+  // Required for browser-based presigned URL uploads to work against the local mock.
+  app.register(cors, {
+    origin: true,
+    methods: ["GET", "PUT", "POST", "DELETE", "HEAD"],
+    // allowedHeaders omitted — @fastify/cors reflects the request's
+    // Access-Control-Request-Headers back, so arbitrary x-amz-meta-* headers
+    // (and any other headers) pass preflight without an explicit allowlist.
+    exposedHeaders: [
+      "etag",
+      "x-amz-request-id",
+      "x-amz-id-2",
+      "content-length",
+      "content-type",
+      "content-range",
+      "last-modified",
+      "x-amz-version-id",
+      "x-amz-mp-parts-count",
+    ],
+    credentials: true,
+    maxAge: 86400,
+  });
+
   const sqsStore = options?.stores?.sqsStore ?? new SqsStore();
   if (options?.host) {
     sqsStore.host = options.host;
   }
   if (options?.defaultRegion) {
     sqsStore.region = options.defaultRegion;
+  }
+  if (options?.ordering?.seed !== undefined) {
+    sqsStore.random = mulberry32(options.ordering.seed);
   }
   const snsStore = options?.stores?.snsStore ?? new SnsStore();
   if (options?.defaultRegion) {
@@ -144,6 +206,10 @@ export function buildApp(options?: BuildAppOptions) {
   sqsRouter.register("TagQueue", tagQueue);
   sqsRouter.register("UntagQueue", untagQueue);
   sqsRouter.register("ListQueueTags", listQueueTags);
+  sqsRouter.register("ListDeadLetterSourceQueues", listDeadLetterSourceQueues);
+  sqsRouter.register("StartMessageMoveTask", startMessageMoveTask);
+  sqsRouter.register("ListMessageMoveTasks", listMessageMoveTasks);
+  sqsRouter.register("CancelMessageMoveTask", cancelMessageMoveTask);
 
   const snsRouter = new SnsRouter(snsStore, sqsStore);
   snsRouter.register("CreateTopic", createTopic);
@@ -211,12 +277,18 @@ export function buildApp(options?: BuildAppOptions) {
   if (options?.relaxedRules) {
     s3Store.relaxedRules = options.relaxedRules;
   }
+  // Wire S3 object events to SQS queues and SNS topics (bucket notification configs).
+  s3Store.notificationDispatcher = new S3NotificationDispatcher(
+    sqsStore,
+    snsStore,
+    options?.defaultRegion ?? DEFAULT_REGION,
+  );
   registerS3Routes(app, s3Store);
 
   // Add x-amz-request-id and x-amz-id-2 headers to S3 responses
   app.addHook("onSend", (_request, reply, payload, done) => {
     if (!reply.hasHeader("x-amz-request-id")) {
-      reply.header("x-amz-request-id", randomUUID().replaceAll("-", "").toUpperCase().slice(0, 16));
+      reply.header("x-amz-request-id", generateS3RequestId());
       reply.header("x-amz-id-2", "fauxqs");
     }
     done();
@@ -253,6 +325,32 @@ export function buildApp(options?: BuildAppOptions) {
       return result;
     },
   );
+
+  // Tenant management endpoints — only registered when TenantManager is active
+  const tenantManager = options?.tenantManager;
+  if (tenantManager) {
+    app.get("/_fauxqs/tenants", async () => {
+      return tenantManager.listTenants();
+    });
+
+    app.post<{ Params: { prefix: string } }>("/_fauxqs/tenants/:prefix", async (request, reply) => {
+      try {
+        const result = await tenantManager.instantiateTemplate(request.params.prefix);
+        return { prefix: request.params.prefix, ...result };
+      } catch (err) {
+        reply.status(400);
+        return { error: (err as Error).message };
+      }
+    });
+
+    app.delete<{ Params: { prefix: string } }>(
+      "/_fauxqs/tenants/:prefix",
+      async (request, reply) => {
+        await tenantManager.deleteTenant(request.params.prefix);
+        reply.status(204);
+      },
+    );
+  }
 
   app.post("/", async (request, reply) => {
     const contentType = request.headers["content-type"] ?? "";
@@ -326,14 +424,15 @@ export interface FauxqsServer {
   createBucket(
     name: string,
     options?: { type?: "general-purpose" | "directory" },
-  ): { bucketName: string };
+  ): Promise<{ bucketName: string }>;
   /** Delete a queue by name. No-op if the queue does not exist. */
   deleteQueue(name: string, options?: { region?: string }): Promise<void>;
   /** Delete a topic by name, including its subscriptions. No-op if the topic does not exist. */
   deleteTopic(name: string, options?: { region?: string }): Promise<void>;
   /** Remove all objects from a bucket but keep the bucket itself. No-op if the bucket does not exist. */
-  emptyBucket(name: string): void;
-  /** Enqueue a message into an SQS queue by name. Supports messageAttributes, delaySeconds, and FIFO fields. Spy events emitted automatically. */
+  emptyBucket(name: string): Promise<void>;
+  /** Enqueue a message into an SQS queue by name. Supports messageAttributes, delaySeconds, and FIFO fields.
+   *  messageGroupId is also accepted on standard queues (AWS fair queues). Spy events emitted automatically. */
   sendMessage(
     queueName: string,
     body: string,
@@ -350,7 +449,8 @@ export interface FauxqsServer {
     md5OfMessageAttributes?: string;
     sequenceNumber?: string;
   }>;
-  /** Publish a message to an SNS topic by name, with full fan-out to SQS subscriptions (filter policies, raw delivery). Spy events emitted automatically. */
+  /** Publish a message to an SNS topic by name, with full fan-out to SQS subscriptions (filter policies, raw delivery).
+   *  messageGroupId is also accepted on standard topics (AWS fair queues) and forwarded to subscribed queues. Spy events emitted automatically. */
   publish(
     topicName: string,
     message: string,
@@ -367,7 +467,14 @@ export interface FauxqsServer {
   ): Promise<import("./initConfig.ts").SetupResult>;
   /** Clear all messages from queues and all objects from buckets, but keep queues, topics, subscriptions, and buckets intact. Also clears the spy buffer. */
   reset(): Promise<void>;
-  purgeAll(): void;
+  purgeAll(): Promise<void>;
+
+  /** Instantiate the template with the given prefix. Throws if tenant management is not enabled. */
+  instantiateTemplate(prefix: string): Promise<import("./initConfig.ts").SetupResult>;
+  /** List all instantiated tenant prefixes and their last-used timestamps. Throws if tenant management is not enabled. */
+  listTenants(): Array<{ prefix: string; lastUsedMs: number }>;
+  /** Force-delete a tenant prefix and all its resources. Throws if tenant management is not enabled. */
+  deleteTenant(prefix: string): Promise<void>;
 }
 
 export async function startFauxqs(options?: {
@@ -380,7 +487,8 @@ export async function startFauxqs(options?: {
   init?: string | import("./initConfig.ts").FauxqsInitConfig;
   /** Enable message spying. Pass `true` for defaults or `MessageSpyParams` to configure buffer size. */
   messageSpies?: boolean | import("./spy.ts").MessageSpyParams;
-  /** Relax certain AWS-strict validations for local development convenience. */
+  /** Relax certain AWS-strict validations for local development convenience.
+   *  Env fallback for `disableChecksumValidation`: FAUXQS_DISABLE_CHECKSUM_VALIDATION. */
   relaxedRules?: RelaxedRules;
   /** Directory for SQLite persistence. When set, state survives restarts. No env var fallback — explicit opt-in only. */
   dataDir?: string;
@@ -390,6 +498,12 @@ export async function startFauxqs(options?: {
   persistenceBackend?: "sqlite" | "postgresql";
   /** PostgreSQL connection URL. Required when persistenceBackend is "postgresql". */
   postgresqlUrl?: string;
+  /** Multi-tenant configuration. When set, enables auto-cleanup, templated creation, and permanent prefix management. */
+  tenant?: TenantConfig;
+  /** Seed for the standard-queue reordering PRNG. Standard queues always reorder (real SQS/SNS give no
+   *  ordering guarantee); a seed only makes that reordering deterministic. Use a FIFO queue if you need ordering.
+   *  Env fallback: FAUXQS_ORDERING_SEED. */
+  ordering?: { seed?: number };
 }): Promise<FauxqsServer> {
   const port = options?.port ?? parseInt(process.env.FAUXQS_PORT ?? "4566");
   const host = options?.host ?? process.env.FAUXQS_HOST;
@@ -397,10 +511,30 @@ export async function startFauxqs(options?: {
   const loggerEnv = process.env.FAUXQS_LOGGER;
   const logger = options?.logger ?? (loggerEnv !== undefined ? loggerEnv !== "false" : true);
   const init = options?.init ?? process.env.FAUXQS_INIT;
+  // Spread rather than rebuild, so a rule added to RelaxedRules is forwarded
+  // without having to be repeated here.
+  const relaxedRules: RelaxedRules = {
+    ...options?.relaxedRules,
+    disableChecksumValidation:
+      options?.relaxedRules?.disableChecksumValidation ??
+      process.env.FAUXQS_DISABLE_CHECKSUM_VALIDATION === "true",
+  };
 
-  const sqsStore = new SqsStore();
-  const snsStore = new SnsStore();
-  const s3Store = new S3Store();
+  // When tenant management is enabled, use tracked store subclasses that record
+  // usage timestamps on every lookup. When disabled, plain stores — zero overhead.
+  const usageTracker = options?.tenant ? new UsageTracker() : undefined;
+  const sqsStore = usageTracker ? new TrackedSqsStore(usageTracker) : new SqsStore();
+  const snsStore = usageTracker ? new TrackedSnsStore(usageTracker) : new SnsStore();
+  const s3Store = usageTracker ? new TrackedS3Store(usageTracker) : new S3Store();
+
+  // Seed the standard-queue reordering PRNG before any queues are created (incl. during
+  // persistence load, which uses createQueue and propagates this.random to each queue).
+  const orderingSeed =
+    options?.ordering?.seed ??
+    (process.env.FAUXQS_ORDERING_SEED ? parseInt(process.env.FAUXQS_ORDERING_SEED) : undefined);
+  if (orderingSeed !== undefined && !Number.isNaN(orderingSeed)) {
+    sqsStore.random = mulberry32(orderingSeed);
+  }
 
   // Persistence: create managers and wire into stores before any data is loaded
   const backend = options?.persistenceBackend ?? "sqlite";
@@ -462,22 +596,48 @@ export async function startFauxqs(options?: {
     s3Store.spy = messageSpy;
   }
 
+  // Tenant management: create manager and wire usage tracker into stores
+  // We need the init config to use as a template, so resolve it here but defer application
+  const initConfig = init ? (typeof init === "string" ? loadInitConfig(init) : init) : undefined;
+
+  let tenantManager: TenantManager | undefined;
+  if (options?.tenant) {
+    // We don't know the actual port yet (it's resolved after listen), so the TenantManager
+    // will be started after listen. For now, create it with port 0 — we'll set the real
+    // context once we know the port.
+    tenantManager = new TenantManager(
+      options.tenant,
+      sqsStore,
+      snsStore,
+      s3Store,
+      usageTracker!,
+      { region: defaultRegion ?? DEFAULT_REGION, port: 0 }, // port updated after listen
+      initConfig,
+    );
+  }
+
   const app = buildApp({
     logger,
     host,
     defaultRegion,
     stores: { sqsStore, snsStore, s3Store },
-    relaxedRules: options?.relaxedRules,
+    relaxedRules,
+    tenantManager,
   });
 
   if (persistenceManager) {
-    app.addHook("preClose", () => {
-      persistenceManager.close();
+    app.addHook("preClose", async () => {
+      await persistenceManager.close();
     });
   }
   if (s3Persistence && s3Persistence !== persistenceManager) {
+    app.addHook("preClose", async () => {
+      await s3Persistence.close();
+    });
+  }
+  if (tenantManager) {
     app.addHook("preClose", () => {
-      s3Persistence.close();
+      tenantManager!.shutdown();
     });
   }
 
@@ -531,8 +691,8 @@ export async function startFauxqs(options?: {
       const queueArn = sqsQueueArn(opts.queue, r);
       await snsStore.subscribe(topicArn, "sqs", queueArn, opts.attributes);
     },
-    createBucket(name, options) {
-      s3Store.createBucket(name, options?.type);
+    async createBucket(name, options) {
+      await s3Store.createBucket(name, options?.type);
       return { bucketName: name };
     },
     async deleteQueue(name, opts) {
@@ -548,8 +708,8 @@ export async function startFauxqs(options?: {
       const arn = snsTopicArn(name, r);
       await snsStore.deleteTopic(arn);
     },
-    emptyBucket(name) {
-      s3Store.emptyBucket(name);
+    async emptyBucket(name) {
+      await s3Store.emptyBucket(name);
     },
     async sendMessage(queueName, body, opts) {
       const r = opts?.region ?? region;
@@ -561,9 +721,7 @@ export async function startFauxqs(options?: {
 
       // Validate message body characters (same as SDK handler)
       if (INVALID_MESSAGE_BODY_CHAR.test(body)) {
-        throw new Error(
-          "Invalid characters found. Valid unicode characters are #x9 | #xA | #xD | #x20 to #xD7FF and #xE000 to #xFFFD.",
-        );
+        throw new Error(INVALID_MESSAGE_BODY_CHAR_MESSAGE);
       }
 
       const messageAttributes = opts?.messageAttributes ?? {};
@@ -575,8 +733,16 @@ export async function startFauxqs(options?: {
         throw new Error(`Message must be shorter than ${maxMessageSize} bytes.`);
       }
 
+      // Optional on standard queues (fair queues), required on FIFO — but when
+      // provided it must satisfy the same format constraints on both queue types.
+      const groupIdResult = parseOptionalMessageGroupId(opts?.messageGroupId);
+      if (!groupIdResult.ok) {
+        throw new Error(groupIdResult.message);
+      }
+      const messageGroupId = groupIdResult.messageGroupId;
+
       if (queue.isFifo()) {
-        if (!opts?.messageGroupId) {
+        if (!messageGroupId) {
           throw new Error("messageGroupId is required for FIFO queues");
         }
 
@@ -615,7 +781,7 @@ export async function startFauxqs(options?: {
           body,
           messageAttributes,
           queueDelay > 0 ? queueDelay : undefined,
-          opts.messageGroupId,
+          messageGroupId,
           dedupId,
         );
         msg.sequenceNumber = await queue.nextSequenceNumber();
@@ -637,6 +803,7 @@ export async function startFauxqs(options?: {
         body,
         messageAttributes,
         delaySeconds > 0 ? delaySeconds : undefined,
+        messageGroupId,
       );
       await queue.enqueue(msg);
       return {
@@ -674,12 +841,18 @@ export async function startFauxqs(options?: {
       const messageId = randomUUID();
       const subject = opts?.subject;
 
+      // Required on FIFO topics, optional on standard topics (fair queues) —
+      // where it is forwarded to subscribed SQS standard queues.
       const isFifoTopic = topic.attributes.FifoTopic === "true";
-      let messageGroupId: string | undefined;
+      const groupIdResult = parseOptionalMessageGroupId(opts?.messageGroupId);
+      if (!groupIdResult.ok) {
+        // Same SNS-worded error the HTTP Publish path raises.
+        throw new Error(INVALID_MESSAGE_GROUP_ID_MESSAGE);
+      }
+      const messageGroupId = groupIdResult.messageGroupId;
       let messageDeduplicationId: string | undefined;
 
       if (isFifoTopic) {
-        messageGroupId = opts?.messageGroupId;
         if (!messageGroupId) {
           throw new Error("messageGroupId is required for FIFO topics");
         }
@@ -698,16 +871,14 @@ export async function startFauxqs(options?: {
 
       // Emit SNS spy event
       if (snsStore.spy) {
-        snsStore.spy.addMessage({
-          service: "sns",
-          topicArn,
-          topicName: topic.name,
-          messageId,
-          body: message,
-          messageAttributes,
-          status: "published",
-          timestamp: Date.now(),
-        });
+        snsStore.spy.addMessage(
+          buildSnsSpyMessage(
+            topicArn,
+            topic.name,
+            { messageId, body: message, messageAttributes, messageGroupId },
+            "published",
+          ),
+        );
       }
 
       await fanOutToSubscriptions({
@@ -747,22 +918,54 @@ export async function startFauxqs(options?: {
         messageSpy.clear();
       }
     },
-    purgeAll() {
+    async purgeAll() {
       sqsStore.purgeAll();
       snsStore.purgeAll();
       s3Store.purgeAll();
       if (s3Persistence && s3Persistence !== persistenceManager) {
         // Separate file-based S3 persistence — purge everything
-        s3Persistence.purgeAll();
+        await s3Persistence.purgeAll();
       }
-      persistenceManager?.purgeAll();
+      await persistenceManager?.purgeAll();
+      if (tenantManager) {
+        await tenantManager.reset();
+      }
+    },
+    async instantiateTemplate(prefix) {
+      if (!tenantManager) {
+        throw new Error(
+          "Tenant management is not enabled. Pass { tenant: { ttlMs: ... } } to startFauxqs() to enable.",
+        );
+      }
+      return tenantManager.instantiateTemplate(prefix);
+    },
+    listTenants() {
+      if (!tenantManager) {
+        throw new Error(
+          "Tenant management is not enabled. Pass { tenant: { ttlMs: ... } } to startFauxqs() to enable.",
+        );
+      }
+      return tenantManager.listTenants();
+    },
+    async deleteTenant(prefix) {
+      if (!tenantManager) {
+        throw new Error(
+          "Tenant management is not enabled. Pass { tenant: { ttlMs: ... } } to startFauxqs() to enable.",
+        );
+      }
+      await tenantManager.deleteTenant(prefix);
     },
   };
 
   // Apply init config if provided
-  if (init) {
-    const config = typeof init === "string" ? loadInitConfig(init) : init;
-    await server.setup(config);
+  if (initConfig) {
+    await server.setup(initConfig);
+  }
+
+  // Start tenant manager after server is listening and init config is applied
+  if (tenantManager) {
+    tenantManager.setPort(actualPort);
+    await tenantManager.start();
   }
 
   return server;

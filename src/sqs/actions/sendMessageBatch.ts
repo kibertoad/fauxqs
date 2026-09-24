@@ -10,9 +10,11 @@ import { SqsStore as SqsStoreClass } from "../sqsStore.ts";
 import type { MessageAttributeValue } from "../sqsTypes.ts";
 import {
   INVALID_MESSAGE_BODY_CHAR,
+  INVALID_MESSAGE_BODY_CHAR_MESSAGE,
   SQS_MAX_MESSAGE_SIZE_BYTES,
   VALID_BATCH_ENTRY_ID,
   calculateMessageSize,
+  parseOptionalMessageGroupId,
 } from "../sqsTypes.ts";
 
 interface BatchEntry {
@@ -91,8 +93,7 @@ export async function sendMessageBatch(
         Id: entry.Id,
         SenderFault: true,
         Code: "InvalidMessageContents",
-        Message:
-          "Invalid characters found. Valid unicode characters are #x9 | #xA | #xD | #x20 to #xD7FF and #xE000 to #xFFFD.",
+        Message: INVALID_MESSAGE_BODY_CHAR_MESSAGE,
       });
       continue;
     }
@@ -109,9 +110,23 @@ export async function sendMessageBatch(
       continue;
     }
 
+    // Optional on standard queues (fair queues), required on FIFO — but when
+    // provided it must satisfy the same format constraints on both queue types.
+    const groupIdResult = parseOptionalMessageGroupId(entry.MessageGroupId);
+    if (!groupIdResult.ok) {
+      failed.push({
+        Id: entry.Id,
+        SenderFault: true,
+        Code: "InvalidParameterValue",
+        Message: groupIdResult.message,
+      });
+      continue;
+    }
+    const messageGroupId = groupIdResult.messageGroupId;
+
     if (isFifo) {
       // FIFO validations
-      if (!entry.MessageGroupId) {
+      if (!messageGroupId) {
         failed.push({
           Id: entry.Id,
           SenderFault: true,
@@ -169,7 +184,7 @@ export async function sendMessageBatch(
         entry.MessageBody,
         entry.MessageAttributes ?? {},
         queueDelay > 0 ? queueDelay : undefined,
-        entry.MessageGroupId,
+        messageGroupId,
         dedupId,
       );
 
@@ -197,6 +212,7 @@ export async function sendMessageBatch(
         entry.MessageBody,
         entry.MessageAttributes ?? {},
         delaySeconds > 0 ? delaySeconds : undefined,
+        messageGroupId,
       );
 
       await queue.enqueue(msg);

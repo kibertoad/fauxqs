@@ -19,6 +19,28 @@ export interface SqsMessage {
   messageGroupId?: string;
   messageDeduplicationId?: string;
   sequenceNumber?: string;
+  /**
+   * ARN of the queue this message was moved to a dead-letter queue from.
+   * Set when a message exceeds maxReceiveCount; used to redrive it back to its
+   * origin during a message move task that omits an explicit DestinationArn.
+   */
+  deadLetterSourceArn?: string;
+}
+
+export type MessageMoveTaskStatus = "RUNNING" | "COMPLETED" | "CANCELLING" | "CANCELLED" | "FAILED";
+
+/** An SQS message move task (DLQ redrive). See StartMessageMoveTask. */
+export interface MessageMoveTask {
+  taskId: string;
+  taskHandle: string;
+  sourceArn: string;
+  destinationArn?: string;
+  maxNumberOfMessagesPerSecond?: number;
+  status: MessageMoveTaskStatus;
+  approximateNumberOfMessagesMoved: number;
+  approximateNumberOfMessagesToMove: number;
+  failureReason?: string;
+  startedTimestamp: number;
 }
 
 export interface InflightEntry {
@@ -63,9 +85,49 @@ export const SETTABLE_ATTRIBUTES: ReadonlySet<string> = new Set([
 
 export const VALID_BATCH_ENTRY_ID = /^[a-zA-Z0-9_-]+$/;
 
-// AWS SQS allowed unicode characters: #x9 | #xA | #xD | #x20 to #xD7FF | #xE000 to #xFFFD
-// eslint-disable-next-line no-control-regex
-export const INVALID_MESSAGE_BODY_CHAR = /[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD]/;
+// MessageGroupId: 1-128 alphanumeric or punctuation characters. Required on FIFO
+// queues; optional on standard queues since AWS fair queues (2025-07), where it
+// identifies a tenant for fair delivery without any ordering guarantees.
+export const VALID_MESSAGE_GROUP_ID = /^[a-zA-Z0-9!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]{1,128}$/;
+
+/** AWS reason clause for a malformed MessageGroupId, shared by the SQS and SNS error texts. */
+export const INVALID_MESSAGE_GROUP_ID_REASON =
+  "MessageGroupId can only include alphanumeric and punctuation characters. 1 to 128 in length";
+
+/** AWS error text for a malformed MessageGroupId on the SQS paths (SendMessage, SendMessageBatch, and the programmatic sendMessage). */
+export function invalidMessageGroupIdMessage(value: unknown): string {
+  return `Value ${value} for parameter MessageGroupId is invalid. Reason: ${INVALID_MESSAGE_GROUP_ID_REASON}.`;
+}
+
+/**
+ * Validate and normalize an optional MessageGroupId from an unvalidated request
+ * body. Absent or empty values normalize to `undefined` so FIFO paths raise
+ * their own MissingParameter error, matching real AWS error precedence.
+ * Non-string values are rejected rather than coerced by `RegExp.test`.
+ */
+export function parseOptionalMessageGroupId(
+  raw: unknown,
+): { ok: true; messageGroupId?: string } | { ok: false; message: string } {
+  if (raw === undefined || raw === null || raw === "") {
+    return { ok: true };
+  }
+  if (typeof raw !== "string" || !VALID_MESSAGE_GROUP_ID.test(raw)) {
+    return { ok: false, message: invalidMessageGroupIdMessage(raw) };
+  }
+  return { ok: true, messageGroupId: raw };
+}
+
+// AWS SQS allowed unicode characters:
+// #x9 | #xA | #xD | #x20 to #xD7FF | #xE000 to #xFFFD | #x10000 to #x10FFFF
+// https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SendMessage.html
+// The `u` flag makes the class operate on code points, so well-formed surrogate
+// pairs (emoji etc.) are allowed while lone surrogates are still rejected.
+export const INVALID_MESSAGE_BODY_CHAR =
+  // eslint-disable-next-line no-control-regex
+  /[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]/u;
+
+export const INVALID_MESSAGE_BODY_CHAR_MESSAGE =
+  "Invalid characters found. Valid unicode characters are #x9 | #xA | #xD | #x20 to #xD7FF | #xE000 to #xFFFD | #x10000 to #x10FFFF.";
 
 // Max message size: 1 MiB (1,048,576 bytes) for SQS
 export const SQS_MAX_MESSAGE_SIZE_BYTES = 1_048_576;

@@ -5,7 +5,7 @@ import type { SnsStore } from "../sns/snsStore.ts";
 import type { SnsTopic, SnsSubscription } from "../sns/snsTypes.ts";
 import type { S3Store, BucketType } from "../s3/s3Store.ts";
 import type { S3Object, MultipartUpload, MultipartPart } from "../s3/s3Types.ts";
-import type { ChecksumAlgorithm } from "../s3/s3Types.ts";
+import { toChecksumAlgorithm } from "../s3/checksum.ts";
 import type { PersistenceProvider } from "./persistenceProvider.ts";
 
 const SCHEMA_STATEMENTS = [
@@ -34,8 +34,11 @@ const SCHEMA_STATEMENTS = [
     message_deduplication_id TEXT,
     sequence_number TEXT,
     receipt_handle TEXT,
-    visibility_deadline BIGINT
+    visibility_deadline BIGINT,
+    dead_letter_source_arn TEXT
   )`,
+  // Databases created before dead-letter redrive support lack this column.
+  `ALTER TABLE sqs_messages ADD COLUMN IF NOT EXISTS dead_letter_source_arn TEXT`,
   `CREATE TABLE IF NOT EXISTS sns_topics (
     arn TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -57,6 +60,10 @@ const SCHEMA_STATEMENTS = [
     type TEXT NOT NULL DEFAULT 'general-purpose'
   )`,
   `CREATE TABLE IF NOT EXISTS s3_bucket_lifecycle_configurations (
+    bucket TEXT PRIMARY KEY REFERENCES s3_buckets(name) ON DELETE CASCADE,
+    configuration TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS s3_bucket_notification_configurations (
     bucket TEXT PRIMARY KEY REFERENCES s3_buckets(name) ON DELETE CASCADE,
     configuration TEXT NOT NULL
   )`,
@@ -186,8 +193,8 @@ export class PgPersistence implements PersistenceProvider {
         message_id, queue_name, body, md5_of_body, message_attributes, md5_of_message_attributes,
         sent_timestamp, approximate_receive_count, approximate_first_receive_timestamp,
         delay_until, message_group_id, message_deduplication_id, sequence_number,
-        receipt_handle, visibility_deadline
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        receipt_handle, visibility_deadline, dead_letter_source_arn
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
       ON CONFLICT (message_id) DO UPDATE SET
         queue_name = EXCLUDED.queue_name,
         body = EXCLUDED.body,
@@ -202,7 +209,8 @@ export class PgPersistence implements PersistenceProvider {
         message_deduplication_id = EXCLUDED.message_deduplication_id,
         sequence_number = EXCLUDED.sequence_number,
         receipt_handle = EXCLUDED.receipt_handle,
-        visibility_deadline = EXCLUDED.visibility_deadline`,
+        visibility_deadline = EXCLUDED.visibility_deadline,
+        dead_letter_source_arn = EXCLUDED.dead_letter_source_arn`,
       [
         msg.messageId,
         queueName,
@@ -219,6 +227,7 @@ export class PgPersistence implements PersistenceProvider {
         msg.sequenceNumber ?? null,
         null,
         null,
+        msg.deadLetterSourceArn ?? null,
       ],
     );
   }
@@ -361,6 +370,14 @@ export class PgPersistence implements PersistenceProvider {
     await this.pool.query("DELETE FROM s3_bucket_lifecycle_configurations WHERE bucket = $1", [
       bucket,
     ]);
+  }
+
+  async saveBucketNotificationConfiguration(bucket: string, config: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO s3_bucket_notification_configurations (bucket, configuration) VALUES ($1, $2)
+       ON CONFLICT (bucket) DO UPDATE SET configuration = EXCLUDED.configuration`,
+      [bucket, config],
+    );
   }
 
   // ── S3 Object write-through ──
@@ -661,6 +678,7 @@ export class PgPersistence implements PersistenceProvider {
       await client.query("DELETE FROM s3_objects");
       await client.query("DELETE FROM sqs_messages");
       await client.query("DELETE FROM s3_bucket_lifecycle_configurations");
+      await client.query("DELETE FROM s3_bucket_notification_configurations");
       await client.query("DELETE FROM s3_buckets");
       await client.query("DELETE FROM sns_subscriptions");
       await client.query("DELETE FROM sns_topics");
@@ -690,6 +708,7 @@ export class PgPersistence implements PersistenceProvider {
   async loadS3(s3Store: S3Store): Promise<void> {
     await this.loadS3Buckets(s3Store);
     await this.loadS3BucketLifecycleConfigurations(s3Store);
+    await this.loadS3BucketNotificationConfigurations(s3Store);
     await this.loadS3Objects(s3Store);
     await this.loadS3MultipartUploads(s3Store);
   }
@@ -735,6 +754,7 @@ export class PgPersistence implements PersistenceProvider {
         messageGroupId: row.message_group_id ?? undefined,
         messageDeduplicationId: row.message_deduplication_id ?? undefined,
         sequenceNumber: row.sequence_number ?? undefined,
+        deadLetterSourceArn: row.dead_letter_source_arn ?? undefined,
       };
 
       // Recalculate message state from persisted timestamps
@@ -841,6 +861,14 @@ export class PgPersistence implements PersistenceProvider {
     }
   }
 
+  private async loadS3BucketNotificationConfigurations(s3Store: S3Store): Promise<void> {
+    const result = await this.pool.query("SELECT * FROM s3_bucket_notification_configurations");
+
+    for (const row of result.rows) {
+      s3Store.restoreBucketNotificationConfiguration(row.bucket, row.configuration);
+    }
+  }
+
   private async loadS3Objects(s3Store: S3Store): Promise<void> {
     // Load metadata only — bodies are read on demand via readBody()
     const result = await this.pool.query(
@@ -851,6 +879,7 @@ export class PgPersistence implements PersistenceProvider {
     );
 
     for (const row of result.rows) {
+      const checksumAlgorithm = toChecksumAlgorithm(row.checksum_algorithm);
       const obj: S3Object = {
         key: row.key,
         body: Buffer.alloc(0),
@@ -864,9 +893,7 @@ export class PgPersistence implements PersistenceProvider {
         ...(row.cache_control && { cacheControl: row.cache_control }),
         ...(row.content_encoding && { contentEncoding: row.content_encoding }),
         ...(row.parts && { parts: JSON.parse(row.parts) }),
-        ...(row.checksum_algorithm && {
-          checksumAlgorithm: row.checksum_algorithm as ChecksumAlgorithm,
-        }),
+        ...(checksumAlgorithm && { checksumAlgorithm }),
         ...(row.checksum_value && { checksumValue: row.checksum_value }),
         ...(row.checksum_type && {
           checksumType: row.checksum_type as "FULL_OBJECT" | "COMPOSITE",
@@ -881,6 +908,7 @@ export class PgPersistence implements PersistenceProvider {
     const uploadResult = await this.pool.query("SELECT * FROM s3_multipart_uploads");
 
     for (const row of uploadResult.rows) {
+      const checksumAlgorithm = toChecksumAlgorithm(row.checksum_algorithm);
       const upload: MultipartUpload = {
         uploadId: row.upload_id,
         bucket: row.bucket,
@@ -893,9 +921,7 @@ export class PgPersistence implements PersistenceProvider {
         ...(row.content_disposition && { contentDisposition: row.content_disposition }),
         ...(row.cache_control && { cacheControl: row.cache_control }),
         ...(row.content_encoding && { contentEncoding: row.content_encoding }),
-        ...(row.checksum_algorithm && {
-          checksumAlgorithm: row.checksum_algorithm as ChecksumAlgorithm,
-        }),
+        ...(checksumAlgorithm && { checksumAlgorithm }),
       };
 
       const partResult = await this.pool.query(

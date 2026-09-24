@@ -7,7 +7,7 @@ import type { SnsStore } from "../sns/snsStore.ts";
 import type { SnsTopic, SnsSubscription } from "../sns/snsTypes.ts";
 import type { S3Store, BucketType } from "../s3/s3Store.ts";
 import type { S3Object, MultipartUpload, MultipartPart } from "../s3/s3Types.ts";
-import type { ChecksumAlgorithm } from "../s3/s3Types.ts";
+import { toChecksumAlgorithm } from "../s3/checksum.ts";
 import type { PersistenceProvider } from "./persistenceProvider.ts";
 
 const SCHEMA = `
@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS sqs_messages (
   message_deduplication_id TEXT,
   sequence_number TEXT,
   receipt_handle TEXT,
-  visibility_deadline INTEGER
+  visibility_deadline INTEGER,
+  dead_letter_source_arn TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sns_topics (
@@ -64,6 +65,11 @@ CREATE TABLE IF NOT EXISTS s3_buckets (
 );
 
 CREATE TABLE IF NOT EXISTS s3_bucket_lifecycle_configurations (
+  bucket TEXT PRIMARY KEY REFERENCES s3_buckets(name) ON DELETE CASCADE,
+  configuration TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS s3_bucket_notification_configurations (
   bucket TEXT PRIMARY KEY REFERENCES s3_buckets(name) ON DELETE CASCADE,
   configuration TEXT NOT NULL
 );
@@ -141,6 +147,8 @@ interface PreparedStatements {
   saveBucketLifecycleConfiguration: StatementSync;
   deleteBucketLifecycleConfiguration: StatementSync;
   loadBucketLifecycleConfigurations: StatementSync;
+  saveBucketNotificationConfiguration: StatementSync;
+  loadBucketNotificationConfigurations: StatementSync;
   upsertObject: StatementSync;
   deleteObject: StatementSync;
   deleteObjectsByBucket: StatementSync;
@@ -167,7 +175,23 @@ export class SqlitePersistence implements PersistenceProvider {
     this.db = new DatabaseSync(dbPath, { enableForeignKeyConstraints: true });
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec(SCHEMA);
+    this.migrate();
     this.stmts = this.prepareStatements();
+  }
+
+  /**
+   * Apply schema additions to databases created by an older fauxqs version.
+   * SQLite has no `ADD COLUMN IF NOT EXISTS`, so existing columns are checked
+   * before each `ALTER TABLE`.
+   */
+  private migrate(): void {
+    const hasColumn = (table: string, column: string): boolean => {
+      const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return cols.some((c) => c.name === column);
+    };
+    if (!hasColumn("sqs_messages", "dead_letter_source_arn")) {
+      this.db.exec("ALTER TABLE sqs_messages ADD COLUMN dead_letter_source_arn TEXT");
+    }
   }
 
   private prepareStatements(): PreparedStatements {
@@ -189,8 +213,8 @@ export class SqlitePersistence implements PersistenceProvider {
           message_id, queue_name, body, md5_of_body, message_attributes, md5_of_message_attributes,
           sent_timestamp, approximate_receive_count, approximate_first_receive_timestamp,
           delay_until, message_group_id, message_deduplication_id, sequence_number,
-          receipt_handle, visibility_deadline
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          receipt_handle, visibility_deadline, dead_letter_source_arn
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `),
       deleteMessage: this.db.prepare("DELETE FROM sqs_messages WHERE message_id = ?"),
       updateMessageInflight: this.db.prepare(`
@@ -232,6 +256,12 @@ export class SqlitePersistence implements PersistenceProvider {
       ),
       loadBucketLifecycleConfigurations: this.db.prepare(
         "SELECT * FROM s3_bucket_lifecycle_configurations",
+      ),
+      saveBucketNotificationConfiguration: this.db.prepare(
+        "INSERT OR REPLACE INTO s3_bucket_notification_configurations (bucket, configuration) VALUES (?, ?)",
+      ),
+      loadBucketNotificationConfigurations: this.db.prepare(
+        "SELECT * FROM s3_bucket_notification_configurations",
       ),
       upsertObject: this.db.prepare(`
         INSERT OR REPLACE INTO s3_objects (
@@ -329,6 +359,7 @@ export class SqlitePersistence implements PersistenceProvider {
       msg.sequenceNumber ?? null,
       null,
       null,
+      msg.deadLetterSourceArn ?? null,
     );
   }
 
@@ -425,6 +456,10 @@ export class SqlitePersistence implements PersistenceProvider {
 
   deleteBucketLifecycleConfiguration(bucket: string): void {
     this.stmts.deleteBucketLifecycleConfiguration.run(bucket);
+  }
+
+  saveBucketNotificationConfiguration(bucket: string, config: string): void {
+    this.stmts.saveBucketNotificationConfiguration.run(bucket, config);
   }
 
   // ── S3 Object write-through ──
@@ -588,6 +623,7 @@ export class SqlitePersistence implements PersistenceProvider {
   loadS3(s3Store: S3Store): void {
     this.loadS3Buckets(s3Store);
     this.loadS3BucketLifecycleConfigurations(s3Store);
+    this.loadS3BucketNotificationConfigurations(s3Store);
     this.loadS3Objects(s3Store);
     this.loadS3MultipartUploads(s3Store);
   }
@@ -637,6 +673,7 @@ export class SqlitePersistence implements PersistenceProvider {
       sequence_number: string | null;
       receipt_handle: string | null;
       visibility_deadline: number | null;
+      dead_letter_source_arn: string | null;
     }>;
 
     for (const row of rows) {
@@ -653,6 +690,7 @@ export class SqlitePersistence implements PersistenceProvider {
         messageGroupId: row.message_group_id ?? undefined,
         messageDeduplicationId: row.message_deduplication_id ?? undefined,
         sequenceNumber: row.sequence_number ?? undefined,
+        deadLetterSourceArn: row.dead_letter_source_arn ?? undefined,
       };
 
       // Recalculate message state from persisted timestamps
@@ -771,6 +809,17 @@ export class SqlitePersistence implements PersistenceProvider {
     }
   }
 
+  private loadS3BucketNotificationConfigurations(s3Store: S3Store): void {
+    const rows = this.stmts.loadBucketNotificationConfigurations.all() as Array<{
+      bucket: string;
+      configuration: string;
+    }>;
+
+    for (const row of rows) {
+      s3Store.restoreBucketNotificationConfiguration(row.bucket, row.configuration);
+    }
+  }
+
   private loadS3Objects(s3Store: S3Store): void {
     // Load metadata only — bodies are read on demand via readBody()
     const rows = this.stmts.loadObjectsMeta.all() as Array<{
@@ -793,6 +842,7 @@ export class SqlitePersistence implements PersistenceProvider {
     }>;
 
     for (const row of rows) {
+      const checksumAlgorithm = toChecksumAlgorithm(row.checksum_algorithm);
       const obj: S3Object = {
         key: row.key,
         body: Buffer.alloc(0),
@@ -806,9 +856,7 @@ export class SqlitePersistence implements PersistenceProvider {
         ...(row.cache_control && { cacheControl: row.cache_control }),
         ...(row.content_encoding && { contentEncoding: row.content_encoding }),
         ...(row.parts && { parts: JSON.parse(row.parts) }),
-        ...(row.checksum_algorithm && {
-          checksumAlgorithm: row.checksum_algorithm as ChecksumAlgorithm,
-        }),
+        ...(checksumAlgorithm && { checksumAlgorithm }),
         ...(row.checksum_value && { checksumValue: row.checksum_value }),
         ...(row.checksum_type && {
           checksumType: row.checksum_type as "FULL_OBJECT" | "COMPOSITE",
@@ -835,6 +883,7 @@ export class SqlitePersistence implements PersistenceProvider {
     }>;
 
     for (const row of uploadRows) {
+      const checksumAlgorithm = toChecksumAlgorithm(row.checksum_algorithm);
       const upload: MultipartUpload = {
         uploadId: row.upload_id,
         bucket: row.bucket,
@@ -847,9 +896,7 @@ export class SqlitePersistence implements PersistenceProvider {
         ...(row.content_disposition && { contentDisposition: row.content_disposition }),
         ...(row.cache_control && { cacheControl: row.cache_control }),
         ...(row.content_encoding && { contentEncoding: row.content_encoding }),
-        ...(row.checksum_algorithm && {
-          checksumAlgorithm: row.checksum_algorithm as ChecksumAlgorithm,
-        }),
+        ...(checksumAlgorithm && { checksumAlgorithm }),
       };
 
       const partRows = this.stmts.loadMultipartParts.all(row.upload_id) as Array<{

@@ -10,7 +10,7 @@
     "bench:localstack": "node src/runners/localstack.ts",
     "bench:merge": "node src/merge-results.ts",
     "bench:clean": "del-cli results/*",
-    "bench:all": "node --run bench:clean && npm run bench:fauxqs-library && npm run bench:fauxqs-docker-official && npm run bench:fauxqs-docker-lite && npm run bench:localstack && npm run bench:merge"
+    "bench:all": "node --run bench:clean && pnpm bench:fauxqs-library && pnpm bench:fauxqs-docker-official && pnpm bench:fauxqs-docker-lite && pnpm bench:localstack && pnpm bench:merge"
   },
   "dependencies": {
     "fauxqs": "file:..",
@@ -22,5 +22,6 @@
     "typescript": "^5.6.0",
     "@types/node": "^22.0.0",
     "del-cli": "^6.0.0"
-  }
+  },
+  "packageManager": "pnpm@11.2.1"
 }

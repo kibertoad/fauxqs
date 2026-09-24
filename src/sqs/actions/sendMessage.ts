@@ -4,7 +4,12 @@ import { md5, md5OfMessageAttributes } from "../../common/md5.ts";
 import type { SqsStore } from "../sqsStore.ts";
 import { SqsStore as SqsStoreClass } from "../sqsStore.ts";
 import type { MessageAttributeValue } from "../sqsTypes.ts";
-import { INVALID_MESSAGE_BODY_CHAR, calculateMessageSize } from "../sqsTypes.ts";
+import {
+  INVALID_MESSAGE_BODY_CHAR,
+  INVALID_MESSAGE_BODY_CHAR_MESSAGE,
+  calculateMessageSize,
+  parseOptionalMessageGroupId,
+} from "../sqsTypes.ts";
 
 export async function sendMessage(
   body: Record<string, unknown>,
@@ -26,10 +31,7 @@ export async function sendMessage(
   }
 
   if (INVALID_MESSAGE_BODY_CHAR.test(messageBody)) {
-    throw new SqsError(
-      "InvalidMessageContents",
-      "Invalid characters found. Valid unicode characters are #x9 | #xA | #xD | #x20 to #xD7FF and #xE000 to #xFFFD.",
-    );
+    throw new SqsError("InvalidMessageContents", INVALID_MESSAGE_BODY_CHAR_MESSAGE);
   }
 
   const messageAttributes = (body.MessageAttributes as Record<string, MessageAttributeValue>) ?? {};
@@ -43,8 +45,16 @@ export async function sendMessage(
     );
   }
 
+  // Optional on standard queues (fair queues), required on FIFO — but when
+  // provided it must satisfy the same format constraints on both queue types.
+  const groupIdResult = parseOptionalMessageGroupId(body.MessageGroupId);
+  if (!groupIdResult.ok) {
+    throw new SqsError("InvalidParameterValue", groupIdResult.message);
+  }
+  const messageGroupId = groupIdResult.messageGroupId;
+
   if (queue.isFifo()) {
-    return await sendFifoMessage(body, queue, messageBody, messageAttributes);
+    return await sendFifoMessage(body, queue, messageBody, messageAttributes, messageGroupId);
   }
 
   // DelaySeconds: per-message override or queue default
@@ -55,6 +65,7 @@ export async function sendMessage(
     messageBody,
     messageAttributes,
     delaySeconds > 0 ? delaySeconds : undefined,
+    messageGroupId,
   );
 
   await queue.enqueue(msg);
@@ -71,8 +82,8 @@ async function sendFifoMessage(
   queue: import("../sqsStore.ts").SqsQueue,
   messageBody: string,
   messageAttributes: Record<string, MessageAttributeValue>,
+  messageGroupId: string | undefined,
 ): Promise<SendMessageResult> {
-  const messageGroupId = body.MessageGroupId as string | undefined;
   if (!messageGroupId) {
     throw new SqsError(
       "MissingParameter",

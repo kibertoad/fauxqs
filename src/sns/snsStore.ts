@@ -5,6 +5,9 @@ import type { MessageSpy } from "../spy.ts";
 import type { PersistenceProvider } from "../persistence/index.ts";
 import type { SnsTopic, SnsSubscription } from "./snsTypes.ts";
 
+// NOTE: When adding new public methods that look up a topic by ARN,
+// also override them in src/tenant/trackedStores.ts → TrackedSnsStore so that
+// tenant usage tracking stays accurate.
 export class SnsStore {
   topics = new Map<string, SnsTopic>();
   subscriptions = new Map<string, SnsSubscription>();
@@ -38,20 +41,20 @@ export class SnsStore {
         }
         Object.assign(existing.attributes, attributes);
       }
-      // One-directional tag check: only reject when a provided tag conflicts with an existing
-      // tag value. New tags are merged into the existing topic.
+      // Full tag set comparison: AWS rejects CreateTopic when the provided tags
+      // don't exactly match the existing topic's tags (same keys, same values, same count).
       if (tags) {
         const newTags = new Map(Object.entries(tags));
-        for (const [key, value] of newTags) {
-          if (existing.tags.has(key) && existing.tags.get(key) !== value) {
-            throw new SnsError(
-              "InvalidParameter",
-              "Invalid parameter: Tags Reason: Topic already exists with different tags",
-            );
-          }
-        }
-        for (const [key, value] of newTags) {
-          existing.tags.set(key, value);
+        const tagsMatch =
+          newTags.size === existing.tags.size &&
+          [...newTags].every(
+            ([key, value]) => existing.tags.has(key) && existing.tags.get(key) === value,
+          );
+        if (!tagsMatch) {
+          throw new SnsError(
+            "InvalidParameter",
+            "Invalid parameter: Tags Reason: Topic already exists with different tags",
+          );
         }
       }
       return existing;
@@ -86,6 +89,10 @@ export class SnsStore {
 
   getTopic(arn: string): SnsTopic | undefined {
     return this.topics.get(arn);
+  }
+
+  allTopics(): Iterable<SnsTopic> {
+    return this.topics.values();
   }
 
   listTopics(nextToken?: string): { topics: SnsTopic[]; nextToken?: string } {
@@ -208,5 +215,25 @@ export class SnsStore {
   purgeAll(): void {
     this.topics.clear();
     this.subscriptions.clear();
+  }
+}
+
+/**
+ * Write a subscription attribute and invalidate any cached parsed form. The
+ * only sanctioned way to mutate `subscription.attributes` for keys that have
+ * derived caches (FilterPolicy, FilterPolicyScope, RedrivePolicy) — callers
+ * that reach into `attributes` directly will leave stale cache entries.
+ */
+export function setSubscriptionAttribute(
+  subscription: SnsSubscription,
+  name: string,
+  value: string,
+): void {
+  subscription.attributes[name] = value;
+  if (name === "FilterPolicy" || name === "FilterPolicyScope") {
+    subscription.parsedFilterPolicy = undefined;
+  }
+  if (name === "RedrivePolicy") {
+    subscription.parsedRedrivePolicy = undefined;
   }
 }

@@ -1,7 +1,5 @@
 import * as assert from "node:assert";
-import { execSync } from "node:child_process";
 import {
-  S3Client,
   CreateBucketCommand,
   PutObjectCommand,
   GetObjectCommand,
@@ -9,11 +7,18 @@ import {
   ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
 import {
-  SQSClient,
   CreateQueueCommand,
   SendMessageCommand,
   ReceiveMessageCommand,
 } from "@aws-sdk/client-sqs";
+import {
+  getLogs,
+  makeS3Client,
+  makeSqsClient,
+  pollHealth,
+  run,
+  runWithEnv,
+} from "./dockerTestUtils.ts";
 
 const IMAGE = process.env.FAUXQS_TEST_IMAGE ?? "fauxqs-s3-storage-test";
 const VOLUME_NAME = `fauxqs-s3-test-${Date.now()}`;
@@ -25,61 +30,6 @@ const MIXED_CONTAINER = `fauxqs-mixed-${Date.now()}`;
 const COMPOSE_PROJECT = `fauxqs-compose-s3-${Date.now()}`;
 const COMPOSE_FILE = "docker-acceptance/docker-compose.s3-storage.yml";
 const HOST_PORT = 14568;
-
-function run(cmd: string): string {
-  return execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
-}
-
-function runWithEnv(cmd: string, env: Record<string, string>): string {
-  return execSync(cmd, {
-    encoding: "utf-8",
-    stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, ...env },
-  }).trim();
-}
-
-function getLogs(containerName: string): string {
-  try {
-    return run(`docker logs ${containerName} 2>&1`);
-  } catch {
-    return "(could not retrieve logs)";
-  }
-}
-
-async function pollHealth(port: number, containerName: string, timeoutMs = 30_000): Promise<void> {
-  const start = Date.now();
-  const url = `http://localhost:${port}/health`;
-  let lastError: unknown;
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-      lastError = new Error(`Health check returned ${res.status}`);
-    } catch (err) {
-      lastError = err;
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  console.error("Container logs:\n" + getLogs(containerName));
-  throw new Error(`Health check timed out after ${timeoutMs}ms (last error: ${lastError})`);
-}
-
-function makeS3Client(port: number): S3Client {
-  return new S3Client({
-    endpoint: `http://localhost:${port}`,
-    region: "us-east-1",
-    credentials: { accessKeyId: "test", secretAccessKey: "test" },
-    forcePathStyle: true,
-  });
-}
-
-function makeSqsClient(port: number): SQSClient {
-  return new SQSClient({
-    endpoint: `http://localhost:${port}`,
-    region: "us-east-1",
-    credentials: { accessKeyId: "test", secretAccessKey: "test" },
-  });
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Scenario 1: S3 file storage with volume — state survives restart

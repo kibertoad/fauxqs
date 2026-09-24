@@ -38,7 +38,8 @@ describe("S3 Multipart Upload", () => {
       );
 
       expect(result.UploadId).toBeDefined();
-      expect(result.UploadId!.length).toBeGreaterThan(0);
+      expect(result.UploadId!.length).toBe(128);
+      expect(result.UploadId).toMatch(/^[A-Za-z0-9.]+$/);
       expect(result.Bucket).toBe("multipart-bucket");
       expect(result.Key).toBe("test-multipart.txt");
 

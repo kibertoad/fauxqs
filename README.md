@@ -1,5 +1,5 @@
 <img src="logo-readme.jpg" alt="fauxqs" width="360" />
-
+ 
 [![npm version](https://img.shields.io/npm/v/fauxqs.svg)](https://www.npmjs.com/package/fauxqs)
 
 # fauxqs
@@ -15,6 +15,7 @@ All state is in-memory by default. Optional SQLite-based persistence is availabl
   - [Running the server](#running-the-server)
   - [Running in the background](#running-in-the-background)
   - [Running with Docker](#running-with-docker)
+    - [Container user](#container-user)
   - [Running in Docker Compose](#running-in-docker-compose)
     - [Container-to-container S3 virtual-hosted-style](#container-to-container-s3-virtual-hosted-style)
   - [Configuring AWS SDK clients](#configuring-aws-sdk-clients)
@@ -26,6 +27,7 @@ All state is in-memory by default. Optional SQLite-based persistence is availabl
     - [Init config schema reference](#init-config-schema-reference)
     - [Message spy](#message-spy)
     - [Queue inspection](#queue-inspection)
+    - [Multi-tenant management](#multi-tenant-management)
   - [Persistence](#persistence)
   - [Configurable queue URL host](#configurable-queue-url-host)
   - [Region](#region)
@@ -38,6 +40,7 @@ All state is in-memory by default. Optional SQLite-based persistence is availabl
 - [SNS Features](#sns-features)
 - [S3 Features](#s3-features)
   - [S3 URL styles](#s3-url-styles)
+  - [CORS](#cors)
   - [Using with AWS CLI](#using-with-aws-cli)
 - [Testing Strategies](#testing-strategies)
   - [Library mode for tests](#library-mode-for-tests)
@@ -91,8 +94,12 @@ The server starts on port `4566` and handles SQS, SNS, and S3 on a single endpoi
 | `FAUXQS_DATA_DIR` | Directory for SQLite persistence (see [Persistence](#persistence)). Omit to keep all state in-memory. | (none) |
 | `FAUXQS_PERSISTENCE` | Set to `true` to enable persistence when `FAUXQS_DATA_DIR` is set | `false` |
 | `FAUXQS_S3_STORAGE_DIR` | Directory for file-based S3 object storage (see [File-based S3 storage](#file-based-s3-storage)). Independent of `FAUXQS_DATA_DIR`. | (none) |
+| `FAUXQS_DISABLE_CHECKSUM_VALIDATION` | Set to `true` to stop verifying uploaded bodies against the `x-amz-checksum-*`/`Content-MD5` header the client sent (see [Relaxed rules](#relaxed-rules)) | `false` |
+| `FAUXQS_ORDERING_SEED` | Seed for the standard-queue reordering PRNG, for deterministic delivery order (see [Message ordering](#message-ordering)). Omit for non-deterministic ordering. | (none) |
 | `FAUXQS_DNS_NAME` | Domain that dnsmasq resolves (including all subdomains) to the container IP. Only needed when the container hostname doesn't match the docker-compose service name — e.g., when using `container_name` or running with plain `docker run`. In docker-compose the hostname is set to the service name automatically, so this is rarely needed. (Docker only) | container hostname |
 | `FAUXQS_DNS_UPSTREAM` | Where dnsmasq forwards non-fauxqs DNS queries (e.g., `registry.npmjs.org`). Change this if you're in a corporate network with an internal DNS server, or if you prefer a different public resolver like `1.1.1.1`. (Docker only) | `8.8.8.8` |
+| `FAUXQS_RUN_USER` | User the server process runs as (see [Container user](#container-user)). Accepts a name, a uid, or `uid:gid`. (Docker only) | `node` (uid 1000) |
+| `FAUXQS_RUN_AS_ROOT` | Set to `true` to keep the server running as root instead of dropping privileges (see [Container user](#container-user)). (Docker only) | `false` |
 
 ```bash
 FAUXQS_PORT=3000 FAUXQS_INIT=init.json npx fauxqs
@@ -155,6 +162,44 @@ docker run -p 4566:4566 \
   -e FAUXQS_INIT=/app/init.json \
   kibertoad/fauxqs
 ```
+
+#### Container user
+
+By default the server does not run as root. The entrypoint starts as root to do the two things that need privileges: bind dnsmasq to port 53, and take ownership of the mounted directories. It then drops to the unprivileged `node` user (uid 1000) before starting the server.
+
+This keeps bind mounts working: `-v ./volume:/data` gives you a root-owned host directory, which the entrypoint hands over to `node` on startup. Nothing to prepare on the host.
+
+The handover only happens when it is needed. If the unprivileged user can already write to a directory, because you prepared it or because a previous run did, its ownership is left alone. So `chown -R` never touches host files that do not need it, and restart time does not grow with the number of stored objects.
+
+Two environment variables, both Docker only:
+
+- **`FAUXQS_RUN_USER`** — run as a different user, e.g. `FAUXQS_RUN_USER=1001` or `FAUXQS_RUN_USER=501:20`. Useful when a host directory must keep a specific owner, so you'd rather match it than have it chowned. A value the server cannot run as is reported at startup; it does not quietly fall back to root.
+- **`FAUXQS_RUN_AS_ROOT=true`** — keep the server as root. For setups that genuinely need it; not recommended.
+
+If you'd rather have no root phase at all, start the container as a non-root user:
+
+```bash
+docker run -p 4566:4566 --user 1000:1000 -v fauxqs-data:/data -e FAUXQS_PERSISTENCE=true kibertoad/fauxqs
+```
+
+dnsmasq carries `cap_net_bind_service` as a file capability, so wildcard DNS still works this way. With an *empty* named volume, Docker copies the image's ownership of `/data` (uid 1000), so persistence works out of the box. A bind-mounted host directory has to be writable by the uid you pass, since the container can no longer fix the ownership itself.
+
+If a directory the server writes to cannot be made writable (a read-only mount, or any mount the entrypoint lacks the privileges to fix), it names the directory and refuses to start. A server that started anyway would fail on its first write. Some remote filesystems accept a `chown` without applying it while root can still write; there the server stays root and logs a warning. That case and `FAUXQS_RUN_AS_ROOT=true` are the two situations where it ends up as root, so non-root is the default rather than a guarantee. Both are visible in the log.
+
+Wildcard DNS needs the `NET_BIND_SERVICE` capability only where port 53 counts as privileged. Docker sets `net.ipv4.ip_unprivileged_port_start=0` by default, so it keeps working there even under `--cap-drop=ALL`. Most Kubernetes clusters leave port 53 privileged, so under the `restricted` Pod Security Standard, which drops every capability, add that one back:
+
+```yaml
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop: ["ALL"]
+    add: ["NET_BIND_SERVICE"]   # omit if you don't need wildcard DNS
+```
+
+Without the capability on a privileged-port runtime, dnsmasq does not start. The container and the API are unaffected, and the log says wildcard DNS is unavailable.
+
+The only clients that lose anything are the ones resolving `<bucket>.s3.<container-hostname>` through the container's own DNS, which means [other containers on the same network](#container-to-container-s3-virtual-hosted-style). Clients on the host use the public `*.localhost.fauxqs.dev` wildcard, so they are unaffected. For a container client, give it an endpoint its own resolver can reach, such as the compose service name `http://fauxqs:4566`, and set `forcePathStyle: true`. Setting `forcePathStyle` on its own does not help, because it does not change the endpoint host.
 
 ### Running in Docker Compose
 
@@ -319,6 +364,7 @@ const server = await startFauxqs({
   port: 0,
   relaxedRules: {
     disableMinCopySourceSize: true,
+    disableChecksumValidation: true,
   },
 });
 ```
@@ -326,6 +372,24 @@ const server = await startFauxqs({
 | Rule | Default | Description |
 |------|---------|-------------|
 | `disableMinCopySourceSize` | `false` | AWS requires the source object to be [larger than 5 MiB](https://docs.aws.amazon.com/AmazonS3/latest/API/API_UploadPartCopy.html) for byte-range `UploadPartCopy`. Set to `true` to allow byte-range copies from smaller sources. |
+| `disableChecksumValidation` | `false` | fauxqs recomputes the body checksum on `PutObject`, `UploadPart` and `CopyObject` and rejects a mismatch with `400 BadDigest`, the way real S3 does — a corrupted upload should not succeed locally and fail against AWS. Set to `true` to store whatever `x-amz-checksum-*`/`Content-MD5` value the client sends without checking it. Env fallback: `FAUXQS_DISABLE_CHECKSUM_VALIDATION=true`. |
+
+#### Message ordering
+
+Standard (non-FIFO) SQS queues and standard SNS topics give **no ordering guarantee** on real AWS — messages can be delivered out of the order they were sent. fauxqs reflects this: it delivers standard-queue messages in a **random order** so that consumers which implicitly rely on ordering fail locally instead of in production. This applies to messages received directly from a standard queue as well as messages fanned out from a standard SNS topic.
+
+There is intentionally **no option to force strict ordering on a standard queue** — that would replicate behaviour real AWS does not provide. If you need ordering, use a **FIFO queue** (`.fifo` suffix / `FifoQueue: "true"`), which fauxqs delivers in strict per-message-group order.
+
+For deterministic tests or to reproduce a specific interleaving, seed the reordering PRNG. The same seed always produces the same delivery order:
+
+```typescript
+const server = await startFauxqs({
+  port: 0,
+  ordering: { seed: 42 },
+});
+```
+
+The seed can also be set via the `FAUXQS_ORDERING_SEED` environment variable. Without a seed, ordering is non-deterministic across runs.
 
 #### Programmatic state setup
 
@@ -400,6 +464,9 @@ server.sendMessage("my-queue", JSON.stringify({ orderId: "123" }), {
 
 // With delay
 server.sendMessage("my-queue", "delayed message", { delaySeconds: 10 });
+
+// Standard queue with a tenant identifier (AWS fair queues)
+server.sendMessage("my-queue", "tenant message", { messageGroupId: "tenant-1" });
 
 // FIFO queue — returns sequenceNumber
 const { sequenceNumber } = server.sendMessage("my-queue.fifo", "fifo message", {
@@ -578,7 +645,7 @@ Supported subscription attributes:
 | `RawMessageDelivery` | `"true"` / `"false"` | Deliver the raw message body instead of the SNS envelope JSON. |
 | `FilterPolicy` | JSON string | SNS filter policy for message filtering (e.g., `"{\"color\": [\"blue\"]}"`) |
 | `FilterPolicyScope` | `"MessageAttributes"` / `"MessageBody"` | Whether the filter policy applies to message attributes or body. Defaults to `MessageAttributes`. |
-| `RedrivePolicy` | JSON string | Subscription-level dead-letter queue config. |
+| `RedrivePolicy` | JSON string | Subscription-level dead-letter queue config. See [Subscription dead-letter queues](#subscription-dead-letter-queues) below. |
 | `DeliveryPolicy` | JSON string | Delivery retry policy (stored, not enforced). |
 | `SubscriptionRoleArn` | ARN string | IAM role ARN for delivery (stored, not enforced). |
 
@@ -801,6 +868,7 @@ interface SqsSpyMessage {
   messageAttributes: Record<string, MessageAttributeValue>;
   status: "published" | "consumed" | "dlq";
   timestamp: number;
+  messageGroupId?: string; // present when sent with a MessageGroupId (FIFO or fair queues)
 }
 
 interface SnsSpyMessage {
@@ -812,6 +880,7 @@ interface SnsSpyMessage {
   messageAttributes: Record<string, MessageAttributeValue>;
   status: "published";
   timestamp: number;
+  messageGroupId?: string; // present when published with a MessageGroupId (FIFO or fair queues)
 }
 
 interface S3SpyEvent {
@@ -863,6 +932,134 @@ curl http://localhost:4566/_fauxqs/queues/my-queue
 ```
 
 Returns 404 for non-existent queues. Inspection never modifies queue state — messages remain exactly where they are.
+
+#### Multi-tenant management
+
+When running fauxqs as centralized infra shared by multiple ephemeral environments, you can enable tenant management to automatically create and clean up isolated resource sets.
+
+All tenant features are opt-in. When disabled (the default), there is zero runtime overhead — the base stores have no tenant-related code.
+
+##### Programmatic API
+
+```typescript
+const server = await startFauxqs({
+  port: 4566,
+  logger: false,
+  init: {
+    queues: [{ name: "orders" }, { name: "notifications" }],
+    topics: [{ name: "events" }],
+    subscriptions: [{ topic: "events", queue: "notifications" }],
+    buckets: ["assets"],
+  },
+  tenant: {
+    ttlMs: 300_000,                    // 5 minutes — resources unused for longer are deleted
+    sweepIntervalMs: 30_000,           // check every 30s (default: ttlMs / 10)
+    sweepBudget: 50,                   // inspect up to 50 resources per sweep tick (default: 50)
+    permanentPrefixes: ["", "prod-"],  // "" = resources without a prefix are permanent
+    // template defaults to the init config above; pass explicitly to use a different one
+    // adminQueue: true,               // create an SQS queue for template requests (default: disabled)
+  },
+});
+
+// Create a full set of prefixed resources from the template
+const result = server.instantiateTemplate("feature-123-");
+// Creates: feature-123-orders, feature-123-notifications, feature-123-events,
+//          feature-123-assets, plus the subscription between topic and queue.
+
+// Idempotent — calling again just bumps the "last used" timestamp
+server.instantiateTemplate("feature-123-");
+
+// List active tenants
+server.listTenants();
+// [{ prefix: "feature-123-", lastUsedMs: 1711550000000 }]
+
+// Force-delete a tenant's resources immediately
+server.deleteTenant("feature-123-");
+```
+
+##### Auto-cleanup
+
+When a tenant is enabled with `ttlMs`, fauxqs tracks the last time each resource was accessed (via SQS receive/send, SNS publish, S3 get/put, etc.). Resources belonging to a prefix that haven't been used within the TTL are automatically deleted.
+
+The sweep uses a fixed-budget cursor: each tick inspects at most `sweepBudget` resources, so the cost per tick is bounded regardless of how many tenants exist. A prefix is only deleted when **all** its resources are expired.
+
+Resources matching a `permanentPrefixes` entry are never cleaned up. Include `""` (empty string) to make non-tenant-managed resources (those created directly, not via a template) permanent.
+
+##### REST endpoints
+
+When tenant management is enabled, fauxqs registers additional HTTP endpoints:
+
+```bash
+# List all tenant prefixes with last-used timestamps
+curl http://localhost:4566/_fauxqs/tenants
+
+# Instantiate a resource set with a prefix (idempotent)
+curl -X POST http://localhost:4566/_fauxqs/tenants/feature-123-
+
+# Force-delete a tenant's resources
+curl -X DELETE http://localhost:4566/_fauxqs/tenants/feature-123-
+```
+
+These endpoints are not registered when tenant management is disabled.
+
+##### Admin SQS queue
+
+Optionally, you can enable an admin SQS queue that accepts template instantiation requests as messages. This is useful when environments need to self-provision via the same SQS protocol they already use:
+
+```typescript
+tenant: {
+  ttlMs: 300_000,
+  adminQueue: true,              // creates "_fauxqs-admin" queue
+  // adminQueue: "my-admin",     // or use a custom name
+}
+```
+
+Send a message to the admin queue to instantiate a template:
+
+```json
+{ "action": "instantiate", "prefix": "feature-456-" }
+```
+
+The admin queue is always exempt from auto-cleanup. When `adminQueue` is not set, no queue is created and no polling runs.
+
+##### Docker environment variables
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `FAUXQS_TENANT_TTL` | TTL in seconds. Setting this enables tenant management. | `300` |
+| `FAUXQS_TENANT_SWEEP_INTERVAL` | Sweep interval in seconds | `30` |
+| `FAUXQS_TENANT_SWEEP_BUDGET` | Max resources inspected per sweep tick | `50` |
+| `FAUXQS_TENANT_PERMANENT_PREFIXES` | Comma-separated prefixes exempt from cleanup | `"",prod-` |
+| `FAUXQS_TENANT_TEMPLATE` | `"init"` to reuse `FAUXQS_INIT`, or path to a separate template JSON | `init` |
+| `FAUXQS_TENANT_ADMIN_QUEUE` | `"true"` for default name, or a custom queue name | `true` |
+
+```yaml
+# docker-compose.yml
+services:
+  fauxqs:
+    image: kibertoad/fauxqs:latest
+    ports:
+      - "4566:4566"
+    environment:
+      - FAUXQS_INIT=/app/init.json
+      - FAUXQS_TENANT_TTL=300
+      - FAUXQS_TENANT_PERMANENT_PREFIXES=,staging-
+      - FAUXQS_TENANT_TEMPLATE=init
+      - FAUXQS_TENANT_ADMIN_QUEUE=true
+    volumes:
+      - ./init.json:/app/init.json
+```
+
+##### `startFauxqs` tenant option reference
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `ttlMs` | `number` | (required) | Resources unused for longer than this are deleted |
+| `sweepIntervalMs` | `number` | `ttlMs / 10` | How often the cleanup sweep runs |
+| `sweepBudget` | `number` | `50` | Max resources inspected per sweep tick |
+| `permanentPrefixes` | `string[]` | `[]` | Prefixes exempt from cleanup. `""` = unprefixed resources |
+| `template` | `FauxqsInitConfig` | init config | Template for prefixed instantiation |
+| `adminQueue` | `boolean \| string` | (disabled) | `true` = enable with name `_fauxqs-admin`, string = custom name |
 
 ### Persistence
 
@@ -1034,10 +1231,10 @@ Resources created via init config or programmatic API use the `defaultRegion` un
 | ListQueueTags | Yes |
 | AddPermission | No |
 | RemovePermission | No |
-| ListDeadLetterSourceQueues | No |
-| StartMessageMoveTask | No |
-| CancelMessageMoveTask | No |
-| ListMessageMoveTasks | No |
+| ListDeadLetterSourceQueues | Yes |
+| StartMessageMoveTask | Yes |
+| CancelMessageMoveTask | Yes |
+| ListMessageMoveTasks | Yes |
 
 ### SNS
 
@@ -1066,6 +1263,42 @@ Resources created via init config or programmatic API use the `defaultRegion` un
 | PutDataProtectionPolicy | No |
 
 Platform application, SMS, and phone number actions are not supported.
+
+#### Subscription dead-letter queues
+
+When an SQS subscription has a `RedrivePolicy` attribute set and its endpoint
+queue no longer exists at publish time, fauxqs reroutes the delivery to the
+DLQ rather than dropping the message — matching AWS and LocalStack behaviour.
+
+Scope: only the missing-endpoint case is modelled. Throttling, HTTP 5xx, and
+other delivery failures don't apply because fauxqs only delivers to SQS
+endpoints. Messages dropped by a `FilterPolicy` are not redriven.
+
+```ts
+await sns.send(
+  new SubscribeCommand({
+    TopicArn: topicArn,
+    Protocol: "sqs",
+    Endpoint: endpointQueueArn,
+    Attributes: {
+      RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn }),
+    },
+  }),
+);
+
+// Later: endpoint queue is deleted, publish still succeeds, and the message
+// lands in the DLQ with these extra SQS message attributes:
+//   ErrorCode        = "AWS.SimpleQueueService.NonExistentQueue"
+//   ErrorMessage     = "The specified queue does not exist or you do not have access to it."
+//   RequestID        = <shared across all fan-out deliveries from this publish>
+//   AWS.SNS.MessageId = <original SNS MessageId>
+//   AWS.SNS.TopicARN  = <topic ARN>
+```
+
+The body is the normal SNS notification envelope, or the raw message body
+when `RawMessageDelivery=true`. `RedrivePolicy` is validated at write time:
+malformed JSON, non-object values, or a non-string `deadLetterTargetArn` are
+rejected at Subscribe / SetSubscriptionAttributes with `InvalidParameter`.
 
 ### S3
 
@@ -1100,8 +1333,10 @@ Platform application, SMS, and phone number actions are not supported.
 | PutBucketLifecycleConfiguration | Yes |
 | GetBucketLifecycleConfiguration | Yes |
 | DeleteBucketLifecycle | Yes |
+| PutBucketNotificationConfiguration | Yes |
+| GetBucketNotificationConfiguration | Yes |
 
-Bucket configuration (CORS, encryption, replication, logging, website, notifications, policy), ACLs, versioning, tagging, object lock, and public access block actions are not supported.
+Bucket configuration (CORS, encryption, replication, logging, website, policy), ACLs, versioning, tagging, object lock, and public access block actions are not supported.
 
 ### STS
 
@@ -1120,19 +1355,20 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Visibility timeout** — messages become invisible after receive and reappear after timeout
 - **Delay queues** — per-queue default delay and per-message delay overrides
 - **Long polling** — `WaitTimeSeconds` on ReceiveMessage blocks until messages arrive or timeout
-- **Dead letter queues** — messages exceeding `maxReceiveCount` are moved to the configured DLQ
+- **Dead letter queues** — messages exceeding `maxReceiveCount` are moved to the configured DLQ. `ListDeadLetterSourceQueues` enumerates the queues feeding a DLQ, and message move tasks (`StartMessageMoveTask`, `ListMessageMoveTasks`, `CancelMessageMoveTask`) redrive dead-lettered messages back to their origin queue or an explicit destination. Move tasks run synchronously and complete immediately: `ListMessageMoveTasks` reports them as `COMPLETED`, `CancelMessageMoveTask` rejects them because a finished task cannot be cancelled, and `MaxNumberOfMessagesPerSecond` is accepted but not enforced
 - **Batch operations** — SendMessageBatch, DeleteMessageBatch, ChangeMessageVisibilityBatch with entry ID validation (`InvalidBatchEntryId`) and total batch size validation (`BatchRequestTooLong`)
 - **Queue attribute range validation** — validates `VisibilityTimeout`, `DelaySeconds`, `ReceiveMessageWaitTimeSeconds`, `MaximumMessageSize`, and `MessageRetentionPeriod` on both CreateQueue and SetQueueAttributes
 - **Message size validation** — rejects messages exceeding 1 MiB (1,048,576 bytes)
 - **Unicode character validation** — rejects messages with characters outside the AWS-allowed set
 - **KMS attributes** — `KmsMasterKeyId` and `KmsDataKeyReusePeriodSeconds` are accepted and stored (no actual encryption)
 - **FIFO queues** — `.fifo` suffix enforcement, `MessageGroupId` ordering, per-group locking (one inflight message per group), `MessageDeduplicationId`, content-based deduplication, sequence numbers, and FIFO-aware DLQ support
+- **Fair queues** — `MessageGroupId` is accepted on standard queues (SendMessage and SendMessageBatch), validated against the AWS format rules (1–128 alphanumeric or punctuation characters), returned via ReceiveMessage system attributes, and exposed in spy events and queue inspection. Delivery emulates fair dispatch: when ready messages carry group ids, a random *tenant* is picked before a random message within it, so a backlogged group cannot starve quiet groups. As on AWS, each message without a group id is its own tenant, so a noisy group cannot delay ungrouped messages either. Note two behavior changes that came with fair queues: the format validation now also applies to FIFO queues and topics (which previously accepted any non-empty `MessageGroupId`), and with seeded `ordering` a queue containing grouped messages consumes two PRNG draws per pick instead of one, so seeded orderings involving grouped messages differ from earlier releases (purely ungrouped queues are unchanged)
 - **Queue tags**
 
 ## SNS Features
 
 - **SNS-to-SQS fan-out** — publish to a topic and messages are delivered to all confirmed SQS subscriptions
-- **Filter policies** — both `MessageAttributes` and `MessageBody` scope, supporting exact match, prefix, suffix, anything-but (including anything-but with suffix), numeric ranges, exists, null conditions, and `$or` top-level grouping. MessageBody scope supports nested key matching
+- **Filter policies** — both `MessageAttributes` and `MessageBody` scope, supporting exact match, prefix, suffix, equals-ignore-case, wildcard, CIDR, anything-but (including anything-but with prefix, suffix, or wildcard), numeric ranges, exists, null conditions, and `$or` top-level grouping. MessageBody scope supports nested key matching
 - **Raw message delivery** — configurable per subscription
 - **Message size validation** — rejects messages exceeding 256 KB (262,144 bytes)
 - **Topic idempotency with conflict detection** — `CreateTopic` returns the existing topic when called with the same name, attributes, and tags, but throws when attributes or tags differ
@@ -1140,6 +1376,7 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Subscription attribute validation** — `SetSubscriptionAttributes` validates attribute names and rejects unknown or read-only attributes
 - **Topic and subscription tags**
 - **FIFO topics** — `.fifo` suffix enforcement, `MessageGroupId` and `MessageDeduplicationId` passthrough to SQS subscriptions, content-based deduplication
+- **Fair queues on standard topics** — optional `MessageGroupId` on Publish and PublishBatch, validated and forwarded to subscribed SQS queues. For a FIFO-queue subscriber of a standard topic (a pairing fauxqs allows, unlike real AWS), grouped publishes shard the queue into per-group ordered streams instead of the single implicit group ungrouped publishes use
 - **Batch publish**
 
 ## S3 Features
@@ -1151,15 +1388,32 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **CopyObject** — same-bucket and cross-bucket copy via `x-amz-copy-source` header, with metadata preservation
 - **PostObject** — presigned POST form uploads (`multipart/form-data`). Supports `key` field with `${filename}` substitution, `Content-Type`, `success_action_status` (200/201/204), `success_action_redirect`, and user metadata via `x-amz-meta-*` fields. Policy signature validation is skipped (mock server).
 - **User metadata** — `x-amz-meta-*` headers are stored and returned on GetObject and HeadObject
-- **Bulk delete** — DeleteObjects for batch key deletion with proper XML entity handling
+- **Bulk delete** — DeleteObjects for batch key deletion with proper XML entity handling and optional per-object conditional preconditions
 - **Keys with slashes** — full support for slash-delimited keys (e.g., `path/to/file.txt`)
 - **Stream uploads** — handles AWS chunked transfer encoding (`Content-Encoding: aws-chunked`) for stream bodies, including trailing header parsing for checksums
-- **Checksums** — CRC32, SHA1, and SHA256 checksums are stored on upload (PutObject, UploadPart) and returned on download (GetObject, HeadObject with `x-amz-checksum-mode: ENABLED`). Multipart uploads compute composite checksums. GetObjectAttributes supports the `Checksum` attribute. CRC32C and CRC64NVME are silently ignored. Checksums are stored and returned as-is — no body validation is performed.
+- **Checksums** — all ten algorithms S3 supports: CRC32, CRC32C, CRC64NVME, SHA1, SHA256, and the five [added in April 2026](https://aws.amazon.com/about-aws/whats-new/2026/04/s3-five-additional-checksum-algorithms/) — SHA512, MD5, XXHASH64, XXHASH3 and XXHASH128. Checksums are stored on upload (PutObject, UploadPart, CopyObject) and returned on download (GetObject, HeadObject with `x-amz-checksum-mode: ENABLED`). A client may either send the value itself in an `x-amz-checksum-*` header or just name an algorithm with `x-amz-checksum-algorithm` and let fauxqs compute it. Multipart uploads compute composite checksums, except CRC64NVME which is always a full-object checksum; part checksums are computed for you when the client doesn't send one (as with UploadPartCopy). GetObjectAttributes supports the `Checksum` attribute, including per-part checksums. Note that flexible-checksum MD5 is requested with `x-amz-checksum-md5`; the legacy `Content-MD5` header is a separate integrity header and does not store or return a flexible checksum, though a mismatch on it is rejected with `BadDigest` too. Uploaded bodies **are** validated against the checksum the client sent — set [`disableChecksumValidation`](#relaxed-rules) to store it unchecked instead.
 - **GetObjectAttributes** — selective metadata retrieval via `x-amz-object-attributes` header: ETag, StorageClass, ObjectSize, ObjectParts (with pagination), and Checksum (including per-part checksums for multipart objects)
 - **RenameObject** — atomic rename within directory buckets (`PUT /:bucket/:key?renameObject`). Preserves all metadata, ETag, timestamps, and checksums. Rejects general-purpose buckets. Default no-overwrite (412 if destination exists unless `If-Match` is provided). Supports source and destination conditional headers.
 - **Directory buckets** — `CreateBucket` accepts `<Type>Directory</Type>` in the body. Programmatic API: `server.createBucket("name", { type: "directory" })`. Init config supports `{ name, type, lifecycleConfiguration }` objects in the `buckets` array.
 - **Lifecycle configuration** — PutBucketLifecycleConfiguration, GetBucketLifecycleConfiguration, and DeleteBucketLifecycle. Lifecycle configs are stored and returned as-is (rules are not enforced — fauxqs is a mock). Persisted across restarts. Can also be set declaratively via init config.
 - **Path-style and virtual-hosted-style** — both S3 URL styles are supported (see below)
+- **CORS** — permissive CORS headers are enabled by default, allowing browser-based presigned URL uploads (see below)
+- **Conditional operations** — the full precondition matrix. A single-object operation whose precondition does not hold fails with `412 Precondition Failed`; `DeleteObjects` answers `200 OK` and reports the failure as an `<Error>` entry against the object that carried it:
+
+  | Operation | Preconditions | Notes |
+  | --- | --- | --- |
+  | PutObject | `If-None-Match`, `If-Match` | Overwrite prevention and compare-and-swap |
+  | CompleteMultipartUpload | `If-None-Match`, `If-Match` | Evaluated against the destination key |
+  | CopyObject | `If-None-Match`, `If-Match` | Destination-side, per the [Oct 2025 launch](https://aws.amazon.com/about-aws/whats-new/2025/10/amazon-s3-conditional-write-functionality-copy-operations) |
+  | DeleteObject | `If-Match` | [Conditional deletes](https://aws.amazon.com/about-aws/whats-new/2025/09/amazon-s3-conditional-deletes-s3-general-purpose-buckets); `*` asserts existence, a concrete ETag against a missing key answers `404 NoSuchKey` |
+  | DeleteObject (directory buckets) | `x-amz-if-match-last-modified-time`, `x-amz-if-match-size` | Combinable with `If-Match`; an already-deleted key still answers `204`. Sending either on a general-purpose bucket is rejected with `501 NotImplemented`, as AWS scopes them to directory buckets |
+  | DeleteObjects | per-object `<ETag>`, plus `<LastModifiedTime>` / `<Size>` on directory buckets | Failures land in the response's `<Error>` entries (reported in quiet mode too) while the rest of the batch proceeds — including the `NotImplemented` a directory-only element earns on a general-purpose bucket. A malformed value is a `400 InvalidArgument` for the whole request instead, raised before any key is deleted, and a truncated body is a `400 MalformedXML` that deletes nothing |
+  | GetObject | `If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since` | Conditional reads |
+  | RenameObject | source and destination conditionals | See RenameObject above |
+
+  ETag comparison is shared across all of these, so an unquoted tag and a weak validator (`W/"..."`) mean the same thing everywhere. `x-amz-if-match-last-modified-time` takes an HTTP-date, and the `<LastModifiedTime>` element an RFC-3339 date-time whose UTC offset is required — an offset-less timestamp is rejected rather than silently read in the server's own timezone, as is a day that never existed (`2026-02-29`) rather than rolling it over into March.
+
+- **Event notifications** — `PutBucketNotificationConfiguration` / `GetBucketNotificationConfiguration` wire object events (`ObjectCreated:*`, `ObjectRemoved:*`) to SQS queues and SNS topics, with optional prefix/suffix key filters. Events are delivered as the standard S3 `{"Records":[...]}` JSON envelope, with the object key URL-encoded as real S3 does. Destination ARNs and event names are validated when the configuration is set, and the configuration is persisted across restarts. Lambda and EventBridge destinations are not supported.
 
 ### S3 URL styles
 
@@ -1244,6 +1498,39 @@ const s3 = new S3Client({
 });
 ```
 
+### CORS
+
+fauxqs includes permissive CORS headers on all responses, so browser-based presigned URL uploads work out of the box. This matches the behavior of a real S3 bucket configured with a wildcard CORS rule.
+
+Specifically:
+
+- **Preflight (OPTIONS)** requests return `204` with the appropriate `Access-Control-Allow-*` headers.
+- **All responses** include `Access-Control-Allow-Origin` reflecting the request origin, `Access-Control-Allow-Credentials: true`, and `Access-Control-Expose-Headers` listing common S3 response headers (ETag, x-amz-request-id, Content-Range, etc.).
+- **Allowed methods:** GET, PUT, POST, DELETE, HEAD.
+- **Allowed headers:** all headers requested in the preflight are reflected back as allowed. This includes standard S3 headers (`Authorization`, `Content-Type`, `x-amz-content-sha256`, `x-amz-date`, `Range`, etc.) as well as arbitrary `x-amz-meta-*` user metadata headers.
+
+This means you can generate presigned URLs server-side and have the browser upload directly to fauxqs without a proxy:
+
+```typescript
+import { PutObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+
+// Server-side: generate the presigned URL
+const url = await getSignedUrl(s3, new PutObjectCommand({
+  Bucket: "uploads",
+  Key: "photo.jpg",
+  ContentType: "image/jpeg",
+}), { expiresIn: 900 });
+
+// Browser-side: upload directly — CORS preflight succeeds automatically
+await fetch(url, {
+  method: "PUT",
+  headers: { "Content-Type": "image/jpeg" },
+  body: file,
+});
+```
+
+> **Note:** Unlike real S3 where CORS is configured per-bucket via `PutBucketCors`, fauxqs enables CORS globally for all buckets. There is no `PutBucketCors` API — the permissive policy is always active.
 
 ### Using with AWS CLI
 

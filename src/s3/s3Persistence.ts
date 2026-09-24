@@ -7,6 +7,8 @@ export interface S3PersistenceProvider {
   deleteBucket(name: string): void | Promise<void>;
   saveBucketLifecycleConfiguration(bucket: string, config: string): void | Promise<void>;
   deleteBucketLifecycleConfiguration(bucket: string): void | Promise<void>;
+  /** Persist a bucket's notification configuration as a JSON string. */
+  saveBucketNotificationConfiguration(bucket: string, config: string): void | Promise<void>;
 
   // Object ops (write-through)
   upsertObject(bucket: string, obj: S3Object): void | Promise<void>;

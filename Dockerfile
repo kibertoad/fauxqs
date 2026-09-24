@@ -2,25 +2,53 @@ FROM node:24-alpine AS build
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci
+RUN corepack enable && corepack prepare pnpm@11.2.1 --activate
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
 
 COPY tsconfig.json ./
 COPY src/ src/
-RUN npm run build
+RUN pnpm run build
 
 FROM node:24-alpine
 
-RUN apk add --no-cache tini dnsmasq
+# su-exec: drop privileges in the entrypoint after the root-only setup
+# libcap:  give dnsmasq the capability to bind port 53 without being root,
+#          so the image also works when started with --user / runAsUser.
+#
+# The effective bit in +ep is what actually delivers the capability, but it also
+# makes execve of dnsmasq fail with EPERM whenever NET_BIND_SERVICE is missing
+# from the bounding set — as it is under --cap-drop=ALL and Kubernetes'
+# restricted policy. dnsmasq-nocap is the same binary without the file
+# capability, which the entrypoint falls back to: it cannot ask for the
+# capability, but it does not need it wherever port 53 is unprivileged, which is
+# the default in Docker. Copy it before setcap so the copy stays uncapped.
+RUN apk add --no-cache tini dnsmasq su-exec \
+  && cp /usr/sbin/dnsmasq /usr/sbin/dnsmasq-nocap \
+  && apk add --no-cache --virtual .caps libcap \
+  && setcap cap_net_bind_service+ep /usr/sbin/dnsmasq \
+  && apk del .caps
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN corepack enable && corepack prepare pnpm@11.2.1 --activate
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --prod --frozen-lockfile
 
 COPY --from=build /app/dist/ dist/
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+# Pre-create the data directory owned by the unprivileged user so that empty
+# named volumes mounted here inherit that ownership from the image.
+RUN mkdir -p /data && chown node:node /data
+
+# No USER directive on purpose: the entrypoint needs root to bind dnsmasq to
+# port 53 and to take ownership of bind-mounted volumes, and drops to the
+# unprivileged `node` user before exec'ing the server. Start the container
+# with --user/runAsUser if you want no root phase at all.
 
 ENV FAUXQS_HOST=localhost
 ENV FAUXQS_DATA_DIR=/data

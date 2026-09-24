@@ -110,7 +110,7 @@ describe("programmatic API", () => {
 
   it("createBucket makes bucket visible via SDK and returns metadata", async () => {
     server = await startFauxqs({ port: 0, logger: false });
-    const { bucketName } = server.createBucket("prog-bucket");
+    const { bucketName } = await server.createBucket("prog-bucket");
 
     expect(bucketName).toBe("prog-bucket");
 
@@ -150,9 +150,9 @@ describe("programmatic API", () => {
     server = await startFauxqs({ port: 0, logger: false });
     await server.createQueue("purge-q");
     await server.createTopic("purge-t");
-    server.createBucket("purge-b");
+    await server.createBucket("purge-b");
 
-    server.purgeAll();
+    await server.purgeAll();
 
     const sqs = createSqsClient(server.port);
     const sns = createSnsClient(server.port);
@@ -171,7 +171,7 @@ describe("programmatic API", () => {
   it("purgeAll then recreate works", async () => {
     server = await startFauxqs({ port: 0, logger: false });
     await server.createQueue("first-q");
-    server.purgeAll();
+    await server.purgeAll();
     await server.createQueue("second-q");
 
     const sqs = createSqsClient(server.port);
@@ -276,13 +276,13 @@ describe("programmatic API", () => {
   describe("emptyBucket", () => {
     it("removes all objects but keeps the bucket", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createBucket("empty-b");
+      await server.createBucket("empty-b");
 
       const s3 = createS3Client(server.port);
       await s3.send(new PutObjectCommand({ Bucket: "empty-b", Key: "a.txt", Body: "a" }));
       await s3.send(new PutObjectCommand({ Bucket: "empty-b", Key: "b.txt", Body: "b" }));
 
-      server.emptyBucket("empty-b");
+      await server.emptyBucket("empty-b");
 
       // Bucket still exists
       const buckets = await s3.send(new ListBucketsCommand({}));
@@ -296,7 +296,7 @@ describe("programmatic API", () => {
 
     it("is a no-op for non-existent bucket", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      expect(() => server.emptyBucket("no-such-bucket")).not.toThrow();
+      await expect(server.emptyBucket("no-such-bucket")).resolves.toBeUndefined();
     });
   });
 
@@ -359,6 +359,33 @@ describe("programmatic API", () => {
       );
       expect(delayed.Messages).toHaveLength(1);
       expect(delayed.Messages![0].Body).toBe("delayed");
+    });
+
+    it("sends with messageGroupId to a standard queue (fair queues)", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const { queueUrl } = await server.createQueue("send-fair-q");
+
+      await server.sendMessage("send-fair-q", "grouped", { messageGroupId: "tenant-1" });
+
+      const sqs = createSqsClient(server.port);
+      const msgs = await sqs.send(
+        new ReceiveMessageCommand({
+          QueueUrl: queueUrl,
+          WaitTimeSeconds: 1,
+          MessageSystemAttributeNames: ["MessageGroupId"],
+        }),
+      );
+      expect(msgs.Messages).toHaveLength(1);
+      expect(msgs.Messages![0].Attributes?.MessageGroupId).toBe("tenant-1");
+    });
+
+    it("rejects a malformed messageGroupId on a standard queue", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      await server.createQueue("send-fair-invalid-q");
+
+      await expect(
+        server.sendMessage("send-fair-invalid-q", "grouped", { messageGroupId: "not valid" }),
+      ).rejects.toThrow("MessageGroupId can only include alphanumeric and punctuation characters");
     });
 
     it("sends to FIFO queue and returns sequenceNumber", async () => {
@@ -582,6 +609,39 @@ describe("programmatic API", () => {
       await expect(server.publish("no-such-topic", "hello")).rejects.toThrow("not found");
     });
 
+    it("forwards messageGroupId from a standard topic to subscribed queues (fair queues)", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      const { queueUrl } = await server.createQueue("fair-pub-q");
+      await server.createTopic("fair-pub-t");
+      await server.subscribe({
+        topic: "fair-pub-t",
+        queue: "fair-pub-q",
+        attributes: { RawMessageDelivery: "true" },
+      });
+
+      await server.publish("fair-pub-t", "fair body", { messageGroupId: "tenant-1" });
+
+      const sqs = createSqsClient(server.port);
+      const msgs = await sqs.send(
+        new ReceiveMessageCommand({
+          QueueUrl: queueUrl,
+          WaitTimeSeconds: 1,
+          MessageSystemAttributeNames: ["MessageGroupId"],
+        }),
+      );
+      expect(msgs.Messages).toHaveLength(1);
+      expect(msgs.Messages![0].Attributes?.MessageGroupId).toBe("tenant-1");
+    });
+
+    it("rejects a malformed messageGroupId on a standard topic", async () => {
+      server = await startFauxqs({ port: 0, logger: false });
+      await server.createTopic("fair-pub-invalid-t");
+
+      await expect(
+        server.publish("fair-pub-invalid-t", "body", { messageGroupId: "g".repeat(129) }),
+      ).rejects.toThrow("MessageGroupId can only include alphanumeric and punctuation characters");
+    });
+
     it("emits spy events", async () => {
       server = await startFauxqs({ port: 0, logger: false, messageSpies: true });
       await server.createQueue("spy-pub-q");
@@ -695,7 +755,7 @@ describe("programmatic API", () => {
 
     it("marks idempotent buckets as not created", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createBucket("existing-b");
+      await server.createBucket("existing-b");
 
       const result = await server.setup({
         buckets: ["existing-b", "new-b"],
@@ -752,7 +812,7 @@ describe("programmatic API", () => {
 
     it("clears S3 objects but keeps buckets", async () => {
       server = await startFauxqs({ port: 0, logger: false });
-      server.createBucket("reset-bucket");
+      await server.createBucket("reset-bucket");
 
       const s3 = createS3Client(server.port);
       await s3.send(new PutObjectCommand({

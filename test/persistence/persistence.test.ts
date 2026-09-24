@@ -15,6 +15,7 @@ import {
   DeleteMessageCommand,
   TagQueueCommand,
   ListQueueTagsCommand,
+  StartMessageMoveTaskCommand,
 } from "@aws-sdk/client-sqs";
 import {
   SNSClient,
@@ -45,6 +46,8 @@ import {
   CompleteMultipartUploadCommand,
   PutBucketLifecycleConfigurationCommand,
   GetBucketLifecycleConfigurationCommand,
+  PutBucketNotificationConfigurationCommand,
+  GetBucketNotificationConfigurationCommand,
 } from "@aws-sdk/client-s3";
 
 function createTempDir(): string {
@@ -139,6 +142,135 @@ describe("Persistence", () => {
     );
     expect(recv.Messages).toHaveLength(1);
     expect(recv.Messages![0].Body).toBe("hello from before restart");
+
+    await server.stop();
+  });
+
+  it("SQS: dead-letter origin survives restart so redrive returns messages home", async () => {
+    let server = await startFauxqs({ port: 0, logger: false, dataDir });
+    let sqs = makeSqsClient(server.port);
+
+    const url = (name: string) =>
+      `http://sqs.us-east-1.localhost:${server.port}/000000000000/${name}`;
+    const arnOf = async (name: string): Promise<string> => {
+      const a = await sqs.send(
+        new GetQueueAttributesCommand({ QueueUrl: url(name), AttributeNames: ["QueueArn"] }),
+      );
+      return a.Attributes!.QueueArn!;
+    };
+
+    await sqs.send(new CreateQueueCommand({ QueueName: "redrive-dlq" }));
+    await sqs.send(new CreateQueueCommand({ QueueName: "redrive-src-a" }));
+    await sqs.send(new CreateQueueCommand({ QueueName: "redrive-src-b" }));
+    const dlqArn = await arnOf("redrive-dlq");
+
+    // Two source queues feed the same DLQ — the single-source fallback cannot
+    // resolve the origin, so redrive must rely on the persisted origin ARN.
+    for (const name of ["redrive-src-a", "redrive-src-b"]) {
+      await sqs.send(
+        new SetQueueAttributesCommand({
+          QueueUrl: url(name),
+          Attributes: {
+            RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn, maxReceiveCount: 1 }),
+          },
+        }),
+      );
+    }
+
+    // Dead-letter a message from src-a (receive twice with VisibilityTimeout 0).
+    await sqs.send(new SendMessageCommand({ QueueUrl: url("redrive-src-a"), MessageBody: "home" }));
+    await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: url("redrive-src-a"), VisibilityTimeout: 0 }),
+    );
+    await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: url("redrive-src-a"), VisibilityTimeout: 0 }),
+    );
+
+    await server.stop();
+
+    // Restart — the DLQ message (and its origin ARN) is reloaded from SQLite.
+    server = await startFauxqs({ port: 0, logger: false, dataDir });
+    sqs = makeSqsClient(server.port);
+
+    await sqs.send(new StartMessageMoveTaskCommand({ SourceArn: dlqArn }));
+
+    // The message must return to src-a (its origin), not src-b.
+    const backHome = await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: url("redrive-src-a"), WaitTimeSeconds: 1 }),
+    );
+    expect(backHome.Messages).toHaveLength(1);
+    expect(backHome.Messages![0].Body).toBe("home");
+
+    const other = await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: url("redrive-src-b"), WaitTimeSeconds: 1 }),
+    );
+    expect(other.Messages ?? []).toHaveLength(0);
+
+    await server.stop();
+  });
+
+  it("S3: bucket notification configuration survives restart", async () => {
+    let server = await startFauxqs({ port: 0, logger: false, dataDir });
+    let sqs = makeSqsClient(server.port);
+    let s3 = makeS3Client(server.port);
+
+    const queueUrl = `http://sqs.us-east-1.localhost:${server.port}/000000000000/notif-persist-queue`;
+    await sqs.send(new CreateQueueCommand({ QueueName: "notif-persist-queue" }));
+    const queueArn = (
+      await sqs.send(
+        new GetQueueAttributesCommand({ QueueUrl: queueUrl, AttributeNames: ["QueueArn"] }),
+      )
+    ).Attributes!.QueueArn!;
+
+    await s3.send(new CreateBucketCommand({ Bucket: "notif-persist-bucket" }));
+    await s3.send(
+      new PutBucketNotificationConfigurationCommand({
+        Bucket: "notif-persist-bucket",
+        NotificationConfiguration: {
+          QueueConfigurations: [
+            {
+              Id: "persisted-cfg",
+              QueueArn: queueArn,
+              Events: ["s3:ObjectCreated:*"],
+              Filter: { Key: { FilterRules: [{ Name: "prefix", Value: "uploads/" }] } },
+            },
+          ],
+        },
+      }),
+    );
+
+    await server.stop();
+
+    // Restart — the notification configuration must be reloaded from disk.
+    server = await startFauxqs({ port: 0, logger: false, dataDir });
+    sqs = makeSqsClient(server.port);
+    s3 = makeS3Client(server.port);
+
+    const config = await s3.send(
+      new GetBucketNotificationConfigurationCommand({ Bucket: "notif-persist-bucket" }),
+    );
+    expect(config.QueueConfigurations).toHaveLength(1);
+    expect(config.QueueConfigurations![0].Id).toBe("persisted-cfg");
+    expect(config.QueueConfigurations![0].QueueArn).toBe(queueArn);
+
+    // It must still actually fire events after the restart.
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: "notif-persist-bucket",
+        Key: "uploads/after-restart.txt",
+        Body: "hello",
+      }),
+    );
+    const recv = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: `http://sqs.us-east-1.localhost:${server.port}/000000000000/notif-persist-queue`,
+        WaitTimeSeconds: 1,
+      }),
+    );
+    expect(recv.Messages).toHaveLength(1);
+    const record = JSON.parse(recv.Messages![0].Body!).Records[0];
+    expect(record.eventName).toBe("ObjectCreated:Put");
+    expect(record.s3.object.key).toBe("uploads/after-restart.txt");
 
     await server.stop();
   });
@@ -380,11 +512,11 @@ describe("Persistence", () => {
   it("purgeAll() clears everything from DB", async () => {
     let server = await startFauxqs({ port: 0, logger: false, dataDir });
 
-    server.createQueue("purge-q");
-    server.createTopic("purge-topic");
-    server.createBucket("purge-bucket");
+    await server.createQueue("purge-q");
+    await server.createTopic("purge-topic");
+    await server.createBucket("purge-bucket");
 
-    server.purgeAll();
+    await server.purgeAll();
     await server.stop();
 
     // Restart — nothing should exist
@@ -404,8 +536,8 @@ describe("Persistence", () => {
   it("no persistence when dataDir is not set", async () => {
     // Should work normally without persistence
     const server = await startFauxqs({ port: 0, logger: false });
-    server.createQueue("ephemeral-q");
-    server.sendMessage("ephemeral-q", "test");
+    await server.createQueue("ephemeral-q");
+    await server.sendMessage("ephemeral-q", "test");
     await server.stop();
     // No assertions needed — just verifying it doesn't crash
   });
@@ -747,6 +879,61 @@ describe("Persistence", () => {
     await server.stop();
   });
 
+  it("SNS: subscription DLQ routing works after restart", async () => {
+    let server = await startFauxqs({ port: 0, logger: false, dataDir });
+    let sns = makeSnsClient(server.port);
+    let sqs = makeSqsClient(server.port);
+
+    await sqs.send(new CreateQueueCommand({ QueueName: "dlq-restart-endpoint" }));
+    await sqs.send(new CreateQueueCommand({ QueueName: "dlq-restart-target" }));
+    const dlqArn = "arn:aws:sqs:us-east-1:000000000000:dlq-restart-target";
+
+    const { TopicArn } = await sns.send(
+      new CreateTopicCommand({ Name: "dlq-restart-topic" }),
+    );
+    await sns.send(
+      new SubscribeCommand({
+        TopicArn,
+        Protocol: "sqs",
+        Endpoint: "arn:aws:sqs:us-east-1:000000000000:dlq-restart-endpoint",
+        Attributes: {
+          RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn }),
+        },
+      }),
+    );
+
+    await server.stop();
+
+    // Restart, delete the endpoint queue, publish — DLQ should still resolve
+    // even though the in-memory parsedRedrivePolicy cache starts fresh.
+    server = await startFauxqs({ port: 0, logger: false, dataDir });
+    sns = makeSnsClient(server.port);
+    sqs = makeSqsClient(server.port);
+
+    await sqs.send(
+      new DeleteQueueCommand({
+        QueueUrl: `http://sqs.us-east-1.localhost:${server.port}/000000000000/dlq-restart-endpoint`,
+      }),
+    );
+
+    await sns.send(
+      new PublishCommand({ TopicArn: TopicArn!, Message: "after-restart" }),
+    );
+
+    const recv = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: `http://sqs.us-east-1.localhost:${server.port}/000000000000/dlq-restart-target`,
+        MaxNumberOfMessages: 1,
+        WaitTimeSeconds: 2,
+      }),
+    );
+    expect(recv.Messages).toHaveLength(1);
+    const envelope = JSON.parse(recv.Messages![0].Body!);
+    expect(envelope.Message).toBe("after-restart");
+
+    await server.stop();
+  });
+
   it("SNS: topic deletion persists", async () => {
     let server = await startFauxqs({ port: 0, logger: false, dataDir });
     let sns = makeSnsClient(server.port);
@@ -833,7 +1020,7 @@ describe("Persistence", () => {
   it("S3: directory bucket type survives restart", async () => {
     let server = await startFauxqs({ port: 0, logger: false, dataDir });
 
-    server.createBucket("dir-bucket", { type: "directory" });
+    await server.createBucket("dir-bucket", { type: "directory" });
 
     await server.stop();
 
@@ -940,7 +1127,7 @@ describe("Persistence", () => {
     let server = await startFauxqs({ port: 0, logger: false, dataDir });
     let s3 = makeS3Client(server.port);
 
-    server.createBucket("rename-bucket", { type: "directory" });
+    await server.createBucket("rename-bucket", { type: "directory" });
 
     await s3.send(
       new PutObjectCommand({

@@ -35,7 +35,7 @@ describe("applyInitConfig idempotency", () => {
     );
 
     // Re-apply the same init config
-    server.setup({ queues: [{ name: "init-idem-queue" }] });
+    await server.setup({ queues: [{ name: "init-idem-queue" }] });
 
     // Queue was not recreated — message is still there
     const state = server.inspectQueue("init-idem-queue");

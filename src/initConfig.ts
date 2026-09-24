@@ -203,11 +203,11 @@ export async function applyInitConfig(
       const name = typeof entry === "string" ? entry : entry.name;
       const existed = s3Store.hasBucket(name);
       if (typeof entry === "string") {
-        s3Store.createBucket(entry);
+        await s3Store.createBucket(entry);
       } else {
-        s3Store.createBucket(entry.name, entry.type);
+        await s3Store.createBucket(entry.name, entry.type);
         if (entry.lifecycleConfiguration) {
-          s3Store.putBucketLifecycleConfiguration(
+          await s3Store.putBucketLifecycleConfiguration(
             entry.name,
             lifecycleConfigToXml(entry.lifecycleConfiguration),
           );

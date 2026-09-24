@@ -73,6 +73,8 @@ export async function postObject(
     objectContentType,
     metadata,
     systemMetadata,
+    undefined,
+    "Post",
   );
 
   if (store.spy) {

@@ -23,6 +23,16 @@ describe("S3 Error Differentiation", () => {
     await server.stop();
   });
 
+  it("error XML contains 16-char uppercase alphanumeric RequestId", async () => {
+    const res = await fetch(
+      `http://127.0.0.1:${server.port}/no-such-bucket-rid/key`,
+    );
+    const xml = await res.text();
+    const match = xml.match(/<RequestId>([^<]+)<\/RequestId>/);
+    expect(match).not.toBeNull();
+    expect(match![1]).toMatch(/^[A-Z0-9]{16}$/);
+  });
+
   it("GetObject returns NoSuchBucket for non-existent bucket", async () => {
     try {
       await s3.send(new GetObjectCommand({ Bucket: "no-such-bucket-xyz", Key: "key" }));

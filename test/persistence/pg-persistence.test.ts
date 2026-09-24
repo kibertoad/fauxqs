@@ -7,6 +7,9 @@ import {
   SendMessageCommand,
   ReceiveMessageCommand,
   GetQueueUrlCommand,
+  GetQueueAttributesCommand,
+  SetQueueAttributesCommand,
+  StartMessageMoveTaskCommand,
 } from "@aws-sdk/client-sqs";
 import {
   SNSClient,
@@ -21,6 +24,8 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   ListBucketsCommand,
+  PutBucketNotificationConfigurationCommand,
+  GetBucketNotificationConfigurationCommand,
 } from "@aws-sdk/client-s3";
 
 function makeSqsClient(port: number): SQSClient {
@@ -182,5 +187,107 @@ describe("PostgreSQL Persistence", () => {
     const body = await obj.Body!.transformToString();
     expect(body).toBe("pg-test-content");
     await server2.stop();
+  });
+
+  it("dead-letter origin survives restart so redrive returns messages home", async () => {
+    const start = () =>
+      startFauxqs({ port: 0, logger: false, persistenceBackend: "postgresql", postgresqlUrl: pgUrl });
+    let server = await start();
+    let sqs = makeSqsClient(server.port);
+    const url = (name: string) =>
+      `http://sqs.us-east-1.localhost:${server.port}/000000000000/${name}`;
+
+    await sqs.send(new CreateQueueCommand({ QueueName: "pg-redrive-dlq" }));
+    await sqs.send(new CreateQueueCommand({ QueueName: "pg-redrive-src-a" }));
+    await sqs.send(new CreateQueueCommand({ QueueName: "pg-redrive-src-b" }));
+    const dlqArn = (
+      await sqs.send(
+        new GetQueueAttributesCommand({
+          QueueUrl: url("pg-redrive-dlq"),
+          AttributeNames: ["QueueArn"],
+        }),
+      )
+    ).Attributes!.QueueArn!;
+
+    // Two sources share the DLQ, so only the persisted origin ARN can route the message home.
+    for (const name of ["pg-redrive-src-a", "pg-redrive-src-b"]) {
+      await sqs.send(
+        new SetQueueAttributesCommand({
+          QueueUrl: url(name),
+          Attributes: {
+            RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn, maxReceiveCount: 1 }),
+          },
+        }),
+      );
+    }
+    await sqs.send(
+      new SendMessageCommand({ QueueUrl: url("pg-redrive-src-a"), MessageBody: "home" }),
+    );
+    for (let i = 0; i < 2; i++) {
+      await sqs.send(
+        new ReceiveMessageCommand({ QueueUrl: url("pg-redrive-src-a"), VisibilityTimeout: 0 }),
+      );
+    }
+    await server.stop();
+
+    server = await start();
+    sqs = makeSqsClient(server.port);
+    await sqs.send(new StartMessageMoveTaskCommand({ SourceArn: dlqArn }));
+
+    const backHome = await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: url("pg-redrive-src-a"), WaitTimeSeconds: 1 }),
+    );
+    expect(backHome.Messages).toHaveLength(1);
+    expect(backHome.Messages![0].Body).toBe("home");
+    await server.stop();
+  });
+
+  it("bucket notification configuration survives restart", async () => {
+    const start = () =>
+      startFauxqs({ port: 0, logger: false, persistenceBackend: "postgresql", postgresqlUrl: pgUrl });
+    let server = await start();
+    let sqs = makeSqsClient(server.port);
+    let s3 = makeS3Client(server.port);
+    const queueUrl = () =>
+      `http://sqs.us-east-1.localhost:${server.port}/000000000000/pg-notif-queue`;
+
+    await sqs.send(new CreateQueueCommand({ QueueName: "pg-notif-queue" }));
+    const queueArn = (
+      await sqs.send(
+        new GetQueueAttributesCommand({ QueueUrl: queueUrl(), AttributeNames: ["QueueArn"] }),
+      )
+    ).Attributes!.QueueArn!;
+    await s3.send(new CreateBucketCommand({ Bucket: "pg-notif-bucket" }));
+    await s3.send(
+      new PutBucketNotificationConfigurationCommand({
+        Bucket: "pg-notif-bucket",
+        NotificationConfiguration: {
+          QueueConfigurations: [
+            { Id: "pg-cfg", QueueArn: queueArn, Events: ["s3:ObjectCreated:*"] },
+          ],
+        },
+      }),
+    );
+    await server.stop();
+
+    server = await start();
+    sqs = makeSqsClient(server.port);
+    s3 = makeS3Client(server.port);
+
+    const config = await s3.send(
+      new GetBucketNotificationConfigurationCommand({ Bucket: "pg-notif-bucket" }),
+    );
+    expect(config.QueueConfigurations).toHaveLength(1);
+    expect(config.QueueConfigurations![0].Id).toBe("pg-cfg");
+
+    await s3.send(
+      new PutObjectCommand({ Bucket: "pg-notif-bucket", Key: "after.txt", Body: "hello" }),
+    );
+    const recv = await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: queueUrl(), WaitTimeSeconds: 1 }),
+    );
+    expect(recv.Messages).toHaveLength(1);
+    expect(JSON.parse(recv.Messages![0].Body!).Records[0].s3.object.key).toBe("after.txt");
+    await server.stop();
   });
 });

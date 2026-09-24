@@ -1,6 +1,6 @@
 {
   "name": "fauxqs",
-  "version": "2.4.0",
+  "version": "2.12.0",
   "description": "SNS/SQS/S3 emulator",
   "type": "module",
   "scripts": {
@@ -13,13 +13,14 @@
     "test:docker:compose": "node docker-acceptance/docker-compose-acceptance.ts",
     "test:docker:persistence": "node docker-acceptance/docker-persistence-acceptance.ts",
     "test:docker:s3-storage": "node docker-acceptance/docker-s3-storage-acceptance.ts",
+    "test:docker:nonroot": "node docker-acceptance/docker-nonroot-acceptance.ts",
     "bench": "node bench/getQueueByArn.bench.ts && node bench/createMessage.bench.ts && node bench/snsPublish.bench.ts",
     "lint": "oxlint && oxfmt src && tsc --noEmit",
     "lint:fix": "oxlint --fix && oxfmt --write src",
     "docker:build": "docker build -t kibertoad/fauxqs:latest -t kibertoad/fauxqs:$npm_package_version .",
     "docker:push": "docker push kibertoad/fauxqs:latest && docker push kibertoad/fauxqs:$npm_package_version",
-    "docker:publish": "npm run docker:build && npm run docker:push",
-    "prepublishOnly": "npm run build"
+    "docker:publish": "pnpm docker:build && pnpm docker:push",
+    "prepublishOnly": "pnpm build"
   },
   "main": "dist/app.js",
   "types": "dist/app.d.ts",
@@ -35,29 +36,30 @@
     "fauxqs": "dist/cli.js"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1017.0",
-    "@aws-sdk/client-sns": "^3.1017.0",
-    "@aws-sdk/client-sqs": "^3.1017.0",
-    "@smithy/node-http-handler": "^4.5.0",
-    "fastify": "^5.8.4",
+    "@aws-sdk/client-s3": "^3.1053.0",
+    "@aws-sdk/client-sns": "^3.1053.0",
+    "@aws-sdk/client-sqs": "^3.1053.0",
+    "@fastify/cors": "^11.2.0",
+    "@smithy/node-http-handler": "^4.7.4",
+    "fastify": "^5.8.5",
     "pg": "^8.20.0",
-    "toad-cache": "^3.7.0",
-    "valibot": "^1.3.1"
+    "toad-cache": "^3.7.1",
+    "valibot": "^1.4.0"
   },
   "devDependencies": {
     "@aws-sdk/s3-presigned-post": "^3.997.0",
     "@aws-sdk/s3-request-presigner": "^3.993.0",
-    "@message-queue-toolkit/s3-payload-store": "^3.0.0",
+    "@message-queue-toolkit/s3-payload-store": "^4.0.0",
     "@testcontainers/postgresql": "^11.13.0",
     "@types/node": "^25.2.3",
     "@types/pg": "^8.20.0",
-    "@vitest/coverage-v8": "^4.0.18",
-    "oxfmt": "^0.40.0",
+    "@vitest/coverage-v8": "~5.0.0",
+    "oxfmt": "^0.68.0",
     "oxlint": "^1.48.0",
     "testcontainers": "^11.13.0",
     "tinybench": "^6.0.0",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.18"
+    "typescript": "^7.0.2",
+    "vitest": "~5.0.0"
   },
   "keywords": [
     "aws",
@@ -92,6 +94,8 @@
   "license": "MIT",
   "author": "Igor Savin",
   "engines": {
-    "node": ">=22.5.0"
-  }
+    "node": ">=22.5.0",
+    "pnpm": ">=11"
+  },
+  "packageManager": "pnpm@11.9.0"
 }

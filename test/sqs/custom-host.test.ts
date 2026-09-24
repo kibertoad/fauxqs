@@ -100,7 +100,7 @@ describe("SQS custom host (message-queue-toolkit scenario)", () => {
   });
 
   it("CreateQueue idempotent with queue from programmatic API", async () => {
-    server.createQueue("progQueue", { region: "eu-west-1" });
+    await server.createQueue("progQueue", { region: "eu-west-1" });
 
     const result = await sqs.send(
       new CreateQueueCommand({ QueueName: "progQueue" }),
@@ -111,7 +111,7 @@ describe("SQS custom host (message-queue-toolkit scenario)", () => {
   });
 
   it("init config queue accessible via SDK with localstack URL", async () => {
-    server.setup({
+    await server.setup({
       queues: [{ name: "initQueue", region: "eu-west-1" }],
     });
 
@@ -124,7 +124,7 @@ describe("SQS custom host (message-queue-toolkit scenario)", () => {
   });
 
   it("queue region in URL matches region in ARN", async () => {
-    server.createQueue("regionQueue", { region: "eu-west-1" });
+    await server.createQueue("regionQueue", { region: "eu-west-1" });
 
     const urlResult = await sqs.send(
       new GetQueueUrlCommand({ QueueName: "regionQueue" }),
