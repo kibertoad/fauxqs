@@ -162,23 +162,6 @@ export async function sendMessageBatch(
         }
       }
 
-      // Check deduplication
-      const dedupResult = queue.checkDeduplication(dedupId);
-      if (dedupResult.isDuplicate) {
-        const result: (typeof successful)[number] = {
-          Id: entry.Id,
-          MessageId: dedupResult.originalMessageId!,
-          MD5OfMessageBody: md5(entry.MessageBody),
-          SequenceNumber: dedupResult.originalSequenceNumber,
-        };
-        const attrsDigest = md5OfMessageAttributes(entry.MessageAttributes ?? {});
-        if (attrsDigest) {
-          result.MD5OfMessageAttributes = attrsDigest;
-        }
-        successful.push(result);
-        continue;
-      }
-
       const queueDelay = parseInt(queue.attributes.DelaySeconds);
       const msg = SqsStoreClass.createMessage(
         entry.MessageBody,
@@ -188,9 +171,21 @@ export async function sendMessageBatch(
         dedupId,
       );
 
-      msg.sequenceNumber = await queue.nextSequenceNumber();
-      queue.recordDeduplication(dedupId, msg.messageId, msg.sequenceNumber);
-      await queue.enqueue(msg);
+      const sent = await queue.sendFifo(msg, dedupId);
+      if (sent.duplicate) {
+        const result: (typeof successful)[number] = {
+          Id: entry.Id,
+          MessageId: sent.messageId,
+          MD5OfMessageBody: md5(entry.MessageBody),
+          SequenceNumber: sent.sequenceNumber,
+        };
+        const attrsDigest = md5OfMessageAttributes(entry.MessageAttributes ?? {});
+        if (attrsDigest) {
+          result.MD5OfMessageAttributes = attrsDigest;
+        }
+        successful.push(result);
+        continue;
+      }
 
       const result: (typeof successful)[number] = {
         Id: entry.Id,

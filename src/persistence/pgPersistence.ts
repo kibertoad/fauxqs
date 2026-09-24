@@ -733,9 +733,14 @@ export class PgPersistence implements PersistenceProvider {
 
   private async loadSqsMessages(queue: SqsQueue): Promise<void> {
     const now = Date.now();
-    const result = await this.pool.query("SELECT * FROM sqs_messages WHERE queue_name = $1", [
-      queue.name,
-    ]);
+    // FIFO groups are rebuilt by appending rows, so they must come back in send
+    // order. Sequence numbers are zero-padded, which makes text order numeric.
+    const result = await this.pool.query(
+      queue.isFifo()
+        ? "SELECT * FROM sqs_messages WHERE queue_name = $1 ORDER BY sequence_number"
+        : "SELECT * FROM sqs_messages WHERE queue_name = $1",
+      [queue.name],
+    );
 
     for (const row of result.rows) {
       const msg: SqsMessage = {

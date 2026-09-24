@@ -44,11 +44,19 @@ export async function setSubscriptionAttributes(
     if (attributeName === "RedrivePolicy") {
       validateSubscriptionRedrivePolicy(attributeValue);
     }
+    // Applied in memory first (the helper also resets parsed caches), and
+    // rolled back if the write fails.
+    const before = { ...subscription, attributes: { ...subscription.attributes } };
     setSubscriptionAttribute(subscription, attributeName, attributeValue);
-    await snsStore.persistence?.updateSubscriptionAttributes(
-      subscriptionArn,
-      subscription.attributes,
-    );
+    try {
+      await snsStore.persistence?.updateSubscriptionAttributes(
+        subscriptionArn,
+        subscription.attributes,
+      );
+    } catch (err) {
+      Object.assign(subscription, before);
+      throw err;
+    }
   }
 
   return snsSuccessResponse("SetSubscriptionAttributes", "");

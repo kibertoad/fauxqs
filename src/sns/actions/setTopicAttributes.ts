@@ -33,8 +33,9 @@ export async function setTopicAttributes(
     if (!VALID_TOPIC_ATTRIBUTES.has(attributeName)) {
       throw new SnsError("InvalidParameter", `Invalid parameter: AttributeName`);
     }
-    topic.attributes[attributeName] = attributeValue;
-    await snsStore.persistence?.updateTopicAttributes(topicArn, topic.attributes);
+    const nextAttributes = { ...topic.attributes, [attributeName]: attributeValue };
+    await snsStore.persistence?.updateTopicAttributes(topicArn, nextAttributes);
+    topic.attributes = nextAttributes;
   }
 
   return snsSuccessResponse("SetTopicAttributes", "");

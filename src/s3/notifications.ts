@@ -239,7 +239,13 @@ export class S3NotificationDispatcher implements S3EventDispatcher {
       const message = queue.isFifo()
         ? SqsStore.createMessage(body, {}, undefined, event.bucket, randomUUID())
         : SqsStore.createMessage(body);
-      await queue.enqueue(message);
+      if (queue.isFifo()) {
+        // The dedup id is fresh per event, so there is nothing to deduplicate
+        // against; sendFifo is still what assigns the sequence number.
+        await queue.sendFifo(message, undefined);
+      } else {
+        await queue.enqueue(message);
+      }
     }
 
     for (const target of config.topicConfigurations) {

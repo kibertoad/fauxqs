@@ -31,6 +31,7 @@ export class SnsStore {
       // and allows different callers (e.g. consumer vs publisher in @message-queue-toolkit)
       // to assertTopic with different attribute subsets without conflict.
       if (attributes) {
+        let adds = false;
         for (const [key, value] of Object.entries(attributes)) {
           if (key in existing.attributes && existing.attributes[key] !== value) {
             throw new SnsError(
@@ -38,8 +39,13 @@ export class SnsStore {
               "Invalid parameter: Attributes Reason: Topic already exists with different attributes",
             );
           }
+          if (!(key in existing.attributes)) adds = true;
         }
-        Object.assign(existing.attributes, attributes);
+        if (adds) {
+          const merged = { ...existing.attributes, ...attributes };
+          await this.persistence?.updateTopicAttributes(arn, merged);
+          existing.attributes = merged;
+        }
       }
       // Full tag set comparison: AWS rejects CreateTopic when the provided tags
       // don't exactly match the existing topic's tags (same keys, same values, same count).
@@ -67,8 +73,10 @@ export class SnsStore {
       tags: new Map(tags ? Object.entries(tags) : []),
       subscriptionArns: [],
     };
-    this.topics.set(arn, topic);
+    // Persisted before it becomes visible, so a failed write leaves no topic
+    // that exists only in memory.
     await this.persistence?.insertTopic(topic);
+    this.topics.set(arn, topic);
     return topic;
   }
 
@@ -76,14 +84,17 @@ export class SnsStore {
     const topic = this.topics.get(arn);
     if (!topic) return false;
 
-    // Remove associated subscriptions
-    for (const subArn of topic.subscriptionArns) {
-      this.subscriptions.delete(subArn);
+    // Persist the removals first; memory changes only once they have succeeded.
+    const subscriptionArns = [...topic.subscriptionArns];
+    for (const subArn of subscriptionArns) {
       await this.persistence?.deleteSubscription(subArn);
     }
-
-    this.topics.delete(arn);
     await this.persistence?.deleteTopic(arn);
+
+    for (const subArn of subscriptionArns) {
+      this.subscriptions.delete(subArn);
+    }
+    this.topics.delete(arn);
     return true;
   }
 
@@ -154,10 +165,22 @@ export class SnsStore {
       attributes: attributes ?? {},
     };
 
+    await this.persistence?.insertSubscription(subscription);
     this.subscriptions.set(arn, subscription);
     topic.subscriptionArns.push(arn);
-    await this.persistence?.insertSubscription(subscription);
-    await this.persistence?.updateTopicSubscriptionArns(topicArn, topic.subscriptionArns);
+    try {
+      // The current list, so concurrent subscribes to one topic each write every arn added so far.
+      await this.persistence?.updateTopicSubscriptionArns(topicArn, topic.subscriptionArns);
+    } catch (err) {
+      this.subscriptions.delete(arn);
+      topic.subscriptionArns = topic.subscriptionArns.filter((s) => s !== arn);
+      try {
+        await this.persistence?.deleteSubscription(arn);
+      } catch {
+        // Best effort: the error being rethrown below is the one to report.
+      }
+      throw err;
+    }
     return subscription;
   }
 
@@ -167,12 +190,13 @@ export class SnsStore {
 
     const topic = this.topics.get(sub.topicArn);
     if (topic) {
+      const remaining = topic.subscriptionArns.filter((s) => s !== arn);
+      await this.persistence?.updateTopicSubscriptionArns(sub.topicArn, remaining);
       topic.subscriptionArns = topic.subscriptionArns.filter((s) => s !== arn);
-      await this.persistence?.updateTopicSubscriptionArns(sub.topicArn, topic.subscriptionArns);
     }
 
-    this.subscriptions.delete(arn);
     await this.persistence?.deleteSubscription(arn);
+    this.subscriptions.delete(arn);
     return true;
   }
 

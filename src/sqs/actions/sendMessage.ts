@@ -113,19 +113,6 @@ async function sendFifoMessage(
     }
   }
 
-  // Check deduplication
-  const dedupResult = queue.checkDeduplication(messageDeduplicationId);
-  if (dedupResult.isDuplicate) {
-    // Return the original message ID and sequence number without re-enqueue
-    const attrsDigest = md5OfMessageAttributes(messageAttributes);
-    return {
-      MessageId: dedupResult.originalMessageId,
-      MD5OfMessageBody: md5(messageBody),
-      ...(attrsDigest ? { MD5OfMessageAttributes: attrsDigest } : {}),
-      SequenceNumber: dedupResult.originalSequenceNumber,
-    } satisfies SendMessageResult;
-  }
-
   // Queue-level delay applies to FIFO queues
   const queueDelay = parseInt(queue.attributes.DelaySeconds);
   const msg = SqsStoreClass.createMessage(
@@ -136,9 +123,17 @@ async function sendFifoMessage(
     messageDeduplicationId,
   );
 
-  msg.sequenceNumber = await queue.nextSequenceNumber();
-  queue.recordDeduplication(messageDeduplicationId, msg.messageId, msg.sequenceNumber);
-  await queue.enqueue(msg);
+  const sent = await queue.sendFifo(msg, messageDeduplicationId);
+  if (sent.duplicate) {
+    // Return the original message ID and sequence number without re-enqueue
+    const attrsDigest = md5OfMessageAttributes(messageAttributes);
+    return {
+      MessageId: sent.messageId,
+      MD5OfMessageBody: md5(messageBody),
+      ...(attrsDigest ? { MD5OfMessageAttributes: attrsDigest } : {}),
+      SequenceNumber: sent.sequenceNumber,
+    } satisfies SendMessageResult;
+  }
 
   return {
     MessageId: msg.messageId,

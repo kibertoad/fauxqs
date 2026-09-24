@@ -764,17 +764,6 @@ export async function startFauxqs(options?: {
           }
         }
 
-        const dedupResult = queue.checkDeduplication(dedupId);
-        if (dedupResult.isDuplicate) {
-          const attrsDigest = md5OfMessageAttributes(messageAttributes);
-          return {
-            messageId: dedupResult.originalMessageId!,
-            md5OfBody: md5(body),
-            ...(attrsDigest ? { md5OfMessageAttributes: attrsDigest } : {}),
-            sequenceNumber: dedupResult.originalSequenceNumber,
-          };
-        }
-
         // Queue-level delay applies to FIFO queues
         const queueDelay = parseInt(queue.attributes.DelaySeconds);
         const msg = SqsStore.createMessage(
@@ -784,9 +773,16 @@ export async function startFauxqs(options?: {
           messageGroupId,
           dedupId,
         );
-        msg.sequenceNumber = await queue.nextSequenceNumber();
-        queue.recordDeduplication(dedupId, msg.messageId, msg.sequenceNumber);
-        await queue.enqueue(msg);
+        const sent = await queue.sendFifo(msg, dedupId);
+        if (sent.duplicate) {
+          const attrsDigest = md5OfMessageAttributes(messageAttributes);
+          return {
+            messageId: sent.messageId,
+            md5OfBody: md5(body),
+            ...(attrsDigest ? { md5OfMessageAttributes: attrsDigest } : {}),
+            sequenceNumber: sent.sequenceNumber,
+          };
+        }
         return {
           messageId: msg.messageId,
           md5OfBody: msg.md5OfBody,
