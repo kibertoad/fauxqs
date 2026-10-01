@@ -643,7 +643,7 @@ Supported subscription attributes:
 | Attribute | Values | Description |
 |-----------|--------|-------------|
 | `RawMessageDelivery` | `"true"` / `"false"` | Deliver the raw message body instead of the SNS envelope JSON. |
-| `FilterPolicy` | JSON string | SNS filter policy for message filtering (e.g., `"{\"color\": [\"blue\"]}"`) |
+| `FilterPolicy` | JSON string | SNS filter policy for message filtering (e.g., `"{\"color\": [\"blue\"]}"`). An empty string means no filter policy. |
 | `FilterPolicyScope` | `"MessageAttributes"` / `"MessageBody"` | Whether the filter policy applies to message attributes or body. Defaults to `MessageAttributes`. |
 | `RedrivePolicy` | JSON string | Subscription-level dead-letter queue config. See [Subscription dead-letter queues](#subscription-dead-letter-queues) below. |
 | `DeliveryPolicy` | JSON string | Delivery retry policy (stored, not enforced). |
@@ -1298,8 +1298,9 @@ await sns.send(
 The body is the normal SNS notification envelope, or the raw message body
 when `RawMessageDelivery=true`. `RedrivePolicy` is validated at write time:
 an empty string, malformed JSON, non-object values, or a non-string
-`deadLetterTargetArn` are rejected at Subscribe / SetSubscriptionAttributes
-with `InvalidParameter`. To remove the policy, call SetSubscriptionAttributes
+`deadLetterTargetArn` are rejected with `InvalidParameter` by Subscribe and
+SetSubscriptionAttributes, and the same check applies to `server.subscribe()`
+and init config subscriptions. To remove the policy, call SetSubscriptionAttributes
 with `AttributeName: "RedrivePolicy"` and no `AttributeValue`, as on AWS.
 
 ### S3

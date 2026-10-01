@@ -4,6 +4,8 @@ import { SnsError } from "../common/errors.ts";
 import type { MessageSpy } from "../spy.ts";
 import type { PersistenceManager } from "../persistence.ts";
 import type { SnsTopic, SnsSubscription } from "./snsTypes.ts";
+import { validateFilterPolicyLimits } from "./filter.ts";
+import { validateSubscriptionRedrivePolicy } from "./subscriptionRedrivePolicy.ts";
 
 // NOTE: When adding new public methods that look up a topic by ARN,
 // also override them in src/tenant/trackedStores.ts → TrackedSnsStore so that
@@ -115,6 +117,8 @@ export class SnsStore {
   ): SnsSubscription | undefined {
     const topic = this.topics.get(topicArn);
     if (!topic) return undefined;
+
+    attributes = normalizeSubscribeAttributes(attributes);
 
     // Check for existing subscription with same (topicArn, protocol, endpoint)
     for (const subArn of topic.subscriptionArns) {
@@ -240,4 +244,38 @@ export function setSubscriptionAttribute(
   if (name === "RedrivePolicy") {
     subscription.parsedRedrivePolicy = undefined;
   }
+}
+
+/**
+ * Validates Subscribe attributes and drops an empty FilterPolicy, which
+ * SetSubscriptionAttributes also treats as no policy. Lives in the store so the
+ * API, programmatic and init-config subscribe paths all apply it.
+ */
+function normalizeSubscribeAttributes(
+  attributes: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!attributes) return undefined;
+
+  const normalized = { ...attributes };
+  if (normalized.FilterPolicy === "") delete normalized.FilterPolicy;
+  if (normalized.FilterPolicy !== undefined) validateFilterPolicyLimits(normalized.FilterPolicy);
+  if (normalized.RedrivePolicy !== undefined) {
+    validateSubscriptionRedrivePolicy(normalized.RedrivePolicy);
+  }
+  return normalized;
+}
+
+/**
+ * Removes empty FilterPolicy and RedrivePolicy values, which older versions
+ * stored when a policy was cleared. Returns whether anything was removed.
+ */
+export function dropEmptySubscriptionPolicies(attributes: Record<string, string>): boolean {
+  let changed = false;
+  for (const name of ["FilterPolicy", "RedrivePolicy"]) {
+    if (attributes[name] === "") {
+      delete attributes[name];
+      changed = true;
+    }
+  }
+  return changed;
 }

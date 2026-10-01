@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, onTestFinished } from "vit
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { startFauxqs } from "../../src/app.js";
 import {
   SQSClient,
@@ -800,6 +801,39 @@ describe("Persistence", () => {
       new GetSubscriptionAttributesCommand({ SubscriptionArn: SubscriptionArn! }),
     );
     expect(subAttrs.Attributes!.RawMessageDelivery).toBe("true");
+
+    await server.stop();
+  });
+
+  it("SNS: empty subscription policies saved by older versions are removed on load", async () => {
+    let server = await startFauxqs({ port: 0, logger: false, dataDir });
+    let sns = makeSnsClient(server.port);
+
+    const { TopicArn } = await sns.send(new CreateTopicCommand({ Name: "legacy-policy-topic" }));
+    const Endpoint = "arn:aws:sqs:us-east-1:000000000000:legacy-policy-target";
+    const { SubscriptionArn } = await sns.send(
+      new SubscribeCommand({ TopicArn, Protocol: "sqs", Endpoint }),
+    );
+    await server.stop();
+
+    const db = new DatabaseSync(join(dataDir, "fauxqs.db"));
+    db.prepare("UPDATE sns_subscriptions SET attributes = ? WHERE arn = ?").run(
+      JSON.stringify({ RedrivePolicy: "", FilterPolicy: "" }),
+      SubscriptionArn!,
+    );
+    db.close();
+
+    server = await startFauxqs({ port: 0, logger: false, dataDir });
+    sns = makeSnsClient(server.port);
+
+    const subAttrs = await sns.send(
+      new GetSubscriptionAttributesCommand({ SubscriptionArn: SubscriptionArn! }),
+    );
+    expect(subAttrs.Attributes!.RedrivePolicy).toBeUndefined();
+    expect(subAttrs.Attributes!.FilterPolicy).toBeUndefined();
+
+    const again = await sns.send(new SubscribeCommand({ TopicArn, Protocol: "sqs", Endpoint }));
+    expect(again.SubscriptionArn).toBe(SubscriptionArn);
 
     await server.stop();
   });

@@ -186,6 +186,51 @@ describe("SNS Subscription Attribute Validation", () => {
     expect(attrs.Attributes!.FilterPolicy).toBeUndefined();
   });
 
+  it("stores no FilterPolicy when Subscribe passes an empty one", async () => {
+    const topic = await sns.send(new CreateTopicCommand({ Name: "sub-attr-topic" }));
+    const endpoint = "arn:aws:sqs:us-east-1:000000000000:sub-attr-empty-filter";
+
+    const sub = await sns.send(
+      new SubscribeCommand({
+        TopicArn: topic.TopicArn,
+        Protocol: "sqs",
+        Endpoint: endpoint,
+        Attributes: { FilterPolicy: "" },
+      }),
+    );
+    const attrs = await sns.send(
+      new GetSubscriptionAttributesCommand({ SubscriptionArn: sub.SubscriptionArn }),
+    );
+    expect(attrs.Attributes!.FilterPolicy).toBeUndefined();
+
+    const again = await sns.send(
+      new SubscribeCommand({ TopicArn: topic.TopicArn, Protocol: "sqs", Endpoint: endpoint }),
+    );
+    expect(again.SubscriptionArn).toBe(sub.SubscriptionArn);
+  });
+
+  it("rejects an empty RedrivePolicy on the programmatic subscribe", () => {
+    expect(() =>
+      server.subscribe({
+        topic: "sub-attr-topic",
+        queue: "sub-attr-programmatic",
+        attributes: { RedrivePolicy: "" },
+      }),
+    ).toThrow(/unable to parse RedrivePolicy as JSON/);
+  });
+
+  it("rejects SetSubscriptionAttributes without an AttributeName", async () => {
+    await expect(
+      sns.send(
+        new SetSubscriptionAttributesCommand({
+          SubscriptionArn: subscriptionArn,
+          AttributeName: undefined,
+          AttributeValue: "true",
+        } as never),
+      ),
+    ).rejects.toThrow("AttributeName is required");
+  });
+
   it("accepts DeliveryPolicy", async () => {
     await sns.send(
       new SetSubscriptionAttributesCommand({
