@@ -121,7 +121,22 @@ describe("SNS Subscription Attribute Validation", () => {
           AttributeValue: "",
         }),
       ),
-    ).rejects.toThrow(/RedrivePolicy/);
+    ).rejects.toThrow(/unable to parse RedrivePolicy as JSON/);
+  });
+
+  it("rejects an empty RedrivePolicy on Subscribe", async () => {
+    const topic = await sns.send(new CreateTopicCommand({ Name: "sub-attr-topic" }));
+
+    await expect(
+      sns.send(
+        new SubscribeCommand({
+          TopicArn: topic.TopicArn,
+          Protocol: "sqs",
+          Endpoint: "arn:aws:sqs:us-east-1:000000000000:sub-attr-empty-redrive",
+          Attributes: { RedrivePolicy: "" },
+        }),
+      ),
+    ).rejects.toThrow(/unable to parse RedrivePolicy as JSON/);
   });
 
   it("removes RedrivePolicy when AttributeValue is omitted", async () => {

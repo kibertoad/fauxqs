@@ -1297,8 +1297,10 @@ await sns.send(
 
 The body is the normal SNS notification envelope, or the raw message body
 when `RawMessageDelivery=true`. `RedrivePolicy` is validated at write time:
-malformed JSON, non-object values, or a non-string `deadLetterTargetArn` are
-rejected at Subscribe / SetSubscriptionAttributes with `InvalidParameter`.
+an empty string, malformed JSON, non-object values, or a non-string
+`deadLetterTargetArn` are rejected at Subscribe / SetSubscriptionAttributes
+with `InvalidParameter`. To remove the policy, call SetSubscriptionAttributes
+with `AttributeName: "RedrivePolicy"` and no `AttributeValue`, as on AWS.
 
 ### S3
 
