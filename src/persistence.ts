@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import type { SqsStore, SqsQueue } from "./sqs/sqsStore.ts";
 import type { SqsMessage } from "./sqs/sqsTypes.ts";
-import type { SnsStore } from "./sns/snsStore.ts";
+import { dropEmptySubscriptionPolicies, type SnsStore } from "./sns/snsStore.ts";
 import type { SnsTopic, SnsSubscription } from "./sns/snsTypes.ts";
 import type { S3Store, BucketType } from "./s3/s3Store.ts";
 import type { S3Object, MultipartUpload, MultipartPart } from "./s3/s3Types.ts";
@@ -781,6 +781,9 @@ export class PersistenceManager implements S3PersistenceProvider {
         confirmed: row.confirmed === 1,
         attributes: JSON.parse(row.attributes),
       };
+      if (dropEmptySubscriptionPolicies(sub.attributes)) {
+        this.updateSubscriptionAttributes(sub.arn, sub.attributes);
+      }
       snsStore.subscriptions.set(row.arn, sub);
     }
   }

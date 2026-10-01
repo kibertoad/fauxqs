@@ -112,6 +112,125 @@ describe("SNS Subscription Attribute Validation", () => {
     );
   });
 
+  it("rejects an empty RedrivePolicy", async () => {
+    await expect(
+      sns.send(
+        new SetSubscriptionAttributesCommand({
+          SubscriptionArn: subscriptionArn,
+          AttributeName: "RedrivePolicy",
+          AttributeValue: "",
+        }),
+      ),
+    ).rejects.toThrow(/unable to parse RedrivePolicy as JSON/);
+  });
+
+  it("rejects an empty RedrivePolicy on Subscribe", async () => {
+    const topic = await sns.send(new CreateTopicCommand({ Name: "sub-attr-topic" }));
+
+    await expect(
+      sns.send(
+        new SubscribeCommand({
+          TopicArn: topic.TopicArn,
+          Protocol: "sqs",
+          Endpoint: "arn:aws:sqs:us-east-1:000000000000:sub-attr-empty-redrive",
+          Attributes: { RedrivePolicy: "" },
+        }),
+      ),
+    ).rejects.toThrow(/unable to parse RedrivePolicy as JSON/);
+  });
+
+  it("removes RedrivePolicy when AttributeValue is omitted", async () => {
+    await sns.send(
+      new SetSubscriptionAttributesCommand({
+        SubscriptionArn: subscriptionArn,
+        AttributeName: "RedrivePolicy",
+        AttributeValue: JSON.stringify({
+          deadLetterTargetArn: "arn:aws:sqs:us-east-1:000000000000:sub-attr-dlq",
+        }),
+      }),
+    );
+
+    await sns.send(
+      new SetSubscriptionAttributesCommand({
+        SubscriptionArn: subscriptionArn,
+        AttributeName: "RedrivePolicy",
+      }),
+    );
+
+    const attrs = await sns.send(
+      new GetSubscriptionAttributesCommand({ SubscriptionArn: subscriptionArn }),
+    );
+    expect(attrs.Attributes!.RedrivePolicy).toBeUndefined();
+  });
+
+  it("removes FilterPolicy when it is set to an empty string", async () => {
+    await sns.send(
+      new SetSubscriptionAttributesCommand({
+        SubscriptionArn: subscriptionArn,
+        AttributeName: "FilterPolicy",
+        AttributeValue: JSON.stringify({ type: ["order"] }),
+      }),
+    );
+
+    await sns.send(
+      new SetSubscriptionAttributesCommand({
+        SubscriptionArn: subscriptionArn,
+        AttributeName: "FilterPolicy",
+        AttributeValue: "",
+      }),
+    );
+
+    const attrs = await sns.send(
+      new GetSubscriptionAttributesCommand({ SubscriptionArn: subscriptionArn }),
+    );
+    expect(attrs.Attributes!.FilterPolicy).toBeUndefined();
+  });
+
+  it("stores no FilterPolicy when Subscribe passes an empty one", async () => {
+    const topic = await sns.send(new CreateTopicCommand({ Name: "sub-attr-topic" }));
+    const endpoint = "arn:aws:sqs:us-east-1:000000000000:sub-attr-empty-filter";
+
+    const sub = await sns.send(
+      new SubscribeCommand({
+        TopicArn: topic.TopicArn,
+        Protocol: "sqs",
+        Endpoint: endpoint,
+        Attributes: { FilterPolicy: "" },
+      }),
+    );
+    const attrs = await sns.send(
+      new GetSubscriptionAttributesCommand({ SubscriptionArn: sub.SubscriptionArn }),
+    );
+    expect(attrs.Attributes!.FilterPolicy).toBeUndefined();
+
+    const again = await sns.send(
+      new SubscribeCommand({ TopicArn: topic.TopicArn, Protocol: "sqs", Endpoint: endpoint }),
+    );
+    expect(again.SubscriptionArn).toBe(sub.SubscriptionArn);
+  });
+
+  it("rejects an empty RedrivePolicy on the programmatic subscribe", () => {
+    expect(() =>
+      server.subscribe({
+        topic: "sub-attr-topic",
+        queue: "sub-attr-programmatic",
+        attributes: { RedrivePolicy: "" },
+      }),
+    ).toThrow(/unable to parse RedrivePolicy as JSON/);
+  });
+
+  it("rejects SetSubscriptionAttributes without an AttributeName", async () => {
+    await expect(
+      sns.send(
+        new SetSubscriptionAttributesCommand({
+          SubscriptionArn: subscriptionArn,
+          AttributeName: undefined,
+          AttributeValue: "true",
+        } as never),
+      ),
+    ).rejects.toThrow("AttributeName is required");
+  });
+
   it("accepts DeliveryPolicy", async () => {
     await sns.send(
       new SetSubscriptionAttributesCommand({
