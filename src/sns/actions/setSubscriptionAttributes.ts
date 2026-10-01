@@ -29,9 +29,7 @@ export function setSubscriptionAttributes(
   }
 
   const attributeName = params.AttributeName;
-  // An omitted value removes RedrivePolicy; AWS has no other way to clear it
-  const attributeValue =
-    attributeName === "RedrivePolicy" ? params.AttributeValue : (params.AttributeValue ?? "");
+  const attributeValue = resolveAttributeValue(attributeName, params.AttributeValue);
 
   if (attributeName) {
     if (!VALID_SUBSCRIPTION_ATTRIBUTES.has(attributeName)) {
@@ -51,4 +49,19 @@ export function setSubscriptionAttributes(
   }
 
   return snsSuccessResponse("SetSubscriptionAttributes", "");
+}
+
+/**
+ * Returns `undefined` when the call removes the attribute. AWS removes
+ * RedrivePolicy only when AttributeValue is omitted (an empty string is
+ * rejected), and removes FilterPolicy when it is set to an empty string.
+ */
+function resolveAttributeValue(
+  attributeName: string | undefined,
+  attributeValue: string | undefined,
+): string | undefined {
+  if (attributeName === "RedrivePolicy") return attributeValue;
+  if (attributeName === "FilterPolicy" && !attributeValue) return undefined;
+
+  return attributeValue ?? "";
 }

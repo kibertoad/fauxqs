@@ -148,6 +148,29 @@ describe("SNS Subscription Attribute Validation", () => {
     expect(attrs.Attributes!.RedrivePolicy).toBeUndefined();
   });
 
+  it("removes FilterPolicy when it is set to an empty string", async () => {
+    await sns.send(
+      new SetSubscriptionAttributesCommand({
+        SubscriptionArn: subscriptionArn,
+        AttributeName: "FilterPolicy",
+        AttributeValue: JSON.stringify({ type: ["order"] }),
+      }),
+    );
+
+    await sns.send(
+      new SetSubscriptionAttributesCommand({
+        SubscriptionArn: subscriptionArn,
+        AttributeName: "FilterPolicy",
+        AttributeValue: "",
+      }),
+    );
+
+    const attrs = await sns.send(
+      new GetSubscriptionAttributesCommand({ SubscriptionArn: subscriptionArn }),
+    );
+    expect(attrs.Attributes!.FilterPolicy).toBeUndefined();
+  });
+
   it("accepts DeliveryPolicy", async () => {
     await sns.send(
       new SetSubscriptionAttributesCommand({
