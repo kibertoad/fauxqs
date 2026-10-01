@@ -112,6 +112,42 @@ describe("SNS Subscription Attribute Validation", () => {
     );
   });
 
+  it("rejects an empty RedrivePolicy", async () => {
+    await expect(
+      sns.send(
+        new SetSubscriptionAttributesCommand({
+          SubscriptionArn: subscriptionArn,
+          AttributeName: "RedrivePolicy",
+          AttributeValue: "",
+        }),
+      ),
+    ).rejects.toThrow(/RedrivePolicy/);
+  });
+
+  it("removes RedrivePolicy when AttributeValue is omitted", async () => {
+    await sns.send(
+      new SetSubscriptionAttributesCommand({
+        SubscriptionArn: subscriptionArn,
+        AttributeName: "RedrivePolicy",
+        AttributeValue: JSON.stringify({
+          deadLetterTargetArn: "arn:aws:sqs:us-east-1:000000000000:sub-attr-dlq",
+        }),
+      }),
+    );
+
+    await sns.send(
+      new SetSubscriptionAttributesCommand({
+        SubscriptionArn: subscriptionArn,
+        AttributeName: "RedrivePolicy",
+      }),
+    );
+
+    const attrs = await sns.send(
+      new GetSubscriptionAttributesCommand({ SubscriptionArn: subscriptionArn }),
+    );
+    expect(attrs.Attributes!.RedrivePolicy).toBeUndefined();
+  });
+
   it("accepts DeliveryPolicy", async () => {
     await sns.send(
       new SetSubscriptionAttributesCommand({

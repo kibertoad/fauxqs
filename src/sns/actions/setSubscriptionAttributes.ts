@@ -29,7 +29,9 @@ export function setSubscriptionAttributes(
   }
 
   const attributeName = params.AttributeName;
-  const attributeValue = params.AttributeValue ?? "";
+  // An omitted value removes RedrivePolicy; AWS has no other way to clear it
+  const attributeValue =
+    attributeName === "RedrivePolicy" ? params.AttributeValue : (params.AttributeValue ?? "");
 
   if (attributeName) {
     if (!VALID_SUBSCRIPTION_ATTRIBUTES.has(attributeName)) {
@@ -41,7 +43,7 @@ export function setSubscriptionAttributes(
     if (attributeName === "FilterPolicy" && attributeValue) {
       validateFilterPolicyLimits(attributeValue);
     }
-    if (attributeName === "RedrivePolicy") {
+    if (attributeName === "RedrivePolicy" && attributeValue !== undefined) {
       validateSubscriptionRedrivePolicy(attributeValue);
     }
     setSubscriptionAttribute(subscription, attributeName, attributeValue);

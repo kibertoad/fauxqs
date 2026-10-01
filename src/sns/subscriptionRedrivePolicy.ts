@@ -10,13 +10,11 @@ export interface ParsedSubscriptionRedrivePolicy {
  * SetSubscriptionAttributes). Mirrors how AWS rejects malformed input
  * synchronously rather than silently dropping messages at publish time.
  *
- * An empty string is allowed: SetSubscriptionAttributes uses it to clear the
- * policy. Any non-empty value must parse to a JSON object; if
- * `deadLetterTargetArn` is present it must be a string.
+ * The value must parse to a JSON object; if `deadLetterTargetArn` is present
+ * it must be a string. AWS rejects an empty string too: the policy is removed
+ * by calling SetSubscriptionAttributes without an AttributeValue.
  */
 export function validateSubscriptionRedrivePolicy(raw: string): void {
-  if (raw === "") return;
-
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);

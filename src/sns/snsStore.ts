@@ -227,9 +227,13 @@ export class SnsStore {
 export function setSubscriptionAttribute(
   subscription: SnsSubscription,
   name: string,
-  value: string,
+  value: string | undefined,
 ): void {
-  subscription.attributes[name] = value;
+  if (value === undefined) {
+    delete subscription.attributes[name];
+  } else {
+    subscription.attributes[name] = value;
+  }
   if (name === "FilterPolicy" || name === "FilterPolicyScope") {
     subscription.parsedFilterPolicy = undefined;
   }
