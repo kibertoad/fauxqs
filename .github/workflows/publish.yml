@@ -131,7 +131,7 @@ jobs:
 
   docker:
     needs: publish
-    uses: ./.github/workflows/docker-publish.yml
+    uses: $/.github/workflows/docker-publish.yml
     with:
       ref: ${{ needs.publish.outputs.tag }}
     secrets:
