@@ -46,13 +46,7 @@ export class SnsStore {
       // Full tag set comparison: AWS rejects CreateTopic when the provided tags
       // don't exactly match the existing topic's tags (same keys, same values, same count).
       if (tags) {
-        const newTags = new Map(Object.entries(tags));
-        const tagsMatch =
-          newTags.size === existing.tags.size &&
-          [...newTags].every(
-            ([key, value]) => existing.tags.has(key) && existing.tags.get(key) === value,
-          );
-        if (!tagsMatch) {
+        if (!attributesEqual(tags, Object.fromEntries(existing.tags))) {
           throw new SnsError(
             "InvalidParameter",
             "Invalid parameter: Tags Reason: Topic already exists with different tags",
@@ -166,26 +160,27 @@ export class SnsStore {
   }
 
   /**
-   * Sets a subscription's attributes to exactly `attributes`. Subscribe rejects a
-   * difference, as AWS does, but a declarative caller such as init config states the
-   * desired attributes, which may have changed since the subscription was persisted.
+   * Applies the attributes a declarative caller such as init config states for an
+   * existing subscription. Subscribe rejects a changed value, as AWS does. Attributes
+   * missing from `attributes` are kept, so values set at runtime survive a restart.
    * Returns whether anything changed.
    */
-  replaceSubscriptionAttributes(
+  mergeSubscriptionAttributes(
     subscription: SnsSubscription,
     attributes: Record<string, string> | undefined,
   ): boolean {
     const desired = normalizeSubscribeAttributes(attributes) ?? {};
-    if (attributesEqual(desired, subscription.attributes)) return false;
-
-    for (const name of Object.keys(subscription.attributes)) {
-      if (!(name in desired)) setSubscriptionAttribute(subscription, name, undefined);
-    }
+    let changed = false;
     for (const [name, value] of Object.entries(desired)) {
-      setSubscriptionAttribute(subscription, name, value);
+      if (subscription.attributes[name] !== value) {
+        setSubscriptionAttribute(subscription, name, value);
+        changed = true;
+      }
     }
-    this.persistence?.updateSubscriptionAttributes(subscription.arn, subscription.attributes);
-    return true;
+    if (changed) {
+      this.persistence?.updateSubscriptionAttributes(subscription.arn, subscription.attributes);
+    }
+    return changed;
   }
 
   /**
@@ -199,24 +194,25 @@ export class SnsStore {
     attributes: Record<string, string> | undefined,
     tags: Record<string, string> | undefined,
   ): boolean {
-    let changed = false;
-
+    let attributesChanged = false;
     if (attributes) {
       const merged = { ...topic.attributes, ...attributes };
       if (!attributesEqual(merged, topic.attributes)) {
         topic.attributes = merged;
-        this.persistence?.updateTopicAttributes(topic.arn, topic.attributes);
-        changed = true;
+        attributesChanged = true;
       }
     }
 
-    if (tags && !attributesEqual(tags, Object.fromEntries(topic.tags))) {
+    const tagsChanged = !!tags && !attributesEqual(tags, Object.fromEntries(topic.tags));
+    if (tagsChanged) {
       topic.tags = new Map(Object.entries(tags));
+      // insertTopic rewrites the whole row, attributes included.
       this.persistence?.insertTopic(topic);
-      changed = true;
+    } else if (attributesChanged) {
+      this.persistence?.updateTopicAttributes(topic.arn, topic.attributes);
     }
 
-    return changed;
+    return attributesChanged || tagsChanged;
   }
 
   unsubscribe(arn: string): boolean {
@@ -300,7 +296,7 @@ export function setSubscriptionAttribute(
   }
 }
 
-function attributesEqual(a: Record<string, string>, b: Record<string, string>): boolean {
+export function attributesEqual(a: Record<string, string>, b: Record<string, string>): boolean {
   const aKeys = Object.keys(a);
   return aKeys.length === Object.keys(b).length && aKeys.every((key) => b[key] === a[key]);
 }

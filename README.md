@@ -428,8 +428,8 @@ const result = server.setup({
   buckets: ["uploads", "exports"],
 });
 // result.queues[0] → { name: "orders", url: "...", arn: "...", created: true }
-// result.topics[0] → { name: "events", arn: "...", created: true }
-// result.subscriptions[0] → { topicName: "events", queueName: "orders", subscriptionArn: "...", created: true }
+// result.topics[0] → { name: "events", arn: "...", created: true, updated: false }
+// result.subscriptions[0] → { topicName: "events", queueName: "orders", subscriptionArn: "...", created: true, updated: false }
 // result.buckets[0] → { name: "uploads", created: true }
 // `created` is false when the resource already existed (idempotent skip)
 // `updated` (topics, subscriptions) is true when an existing one was changed to match the config
@@ -632,7 +632,9 @@ Example:
 
 Array of subscription objects. Referenced topics and queues must be defined in the same config (or already exist on the server).
 
-When the subscription already exists, for example restored from persistence, its attributes are set to exactly the ones listed here, and attributes left out are removed. `Subscribe` itself rejects such a change, as AWS does. Existing topics are handled the same way, except that topic attributes left out of the config are kept, matching `CreateTopic`.
+When the subscription already exists, for example restored from persistence, the attributes listed here are applied to it. `Subscribe` itself rejects such a change, as AWS does. Attributes left out of the config are kept, so values set at runtime with `SetSubscriptionAttributes` survive a restart. Existing topics are handled the same way, and their tags are set to exactly the ones listed. Removing an attribute from the config does not remove it from an existing subscription or topic: clear it with `SetSubscriptionAttributes` or `SetTopicAttributes`, or start from an empty data directory.
+
+Listing the same topic and queue twice with different attributes is rejected.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|

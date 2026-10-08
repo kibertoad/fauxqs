@@ -4,7 +4,7 @@ import { sqsQueueArn } from "./common/arnHelper.ts";
 import { snsTopicArn } from "./common/arnHelper.ts";
 
 import type { SqsStore } from "./sqs/sqsStore.ts";
-import type { SnsStore } from "./sns/snsStore.ts";
+import { attributesEqual, type SnsStore } from "./sns/snsStore.ts";
 import type { S3Store } from "./s3/s3Store.ts";
 
 const StringRecordSchema = v.record(v.string(), v.string());
@@ -122,6 +122,28 @@ export function loadInitConfig(path: string): FauxqsInitConfig {
   return validateInitConfig(JSON.parse(content));
 }
 
+/**
+ * Subscriptions are reconciled by merging attributes, so two entries for the same
+ * topic and queue with different attributes would silently let the last one win.
+ */
+function rejectConflictingSubscriptions(
+  subscriptions: NonNullable<FauxqsInitConfig["subscriptions"]>,
+  defaultRegion: string,
+): void {
+  const seen = new Map<string, Record<string, string>>();
+  for (const s of subscriptions) {
+    const key = JSON.stringify([s.region ?? defaultRegion, s.topic, s.queue]);
+    const attributes = s.attributes ?? {};
+    const previous = seen.get(key);
+    if (previous && !attributesEqual(previous, attributes)) {
+      throw new Error(
+        `Init config: subscription of queue "${s.queue}" to topic "${s.topic}" is listed twice with different attributes`,
+      );
+    }
+    seen.set(key, attributes);
+  }
+}
+
 export function applyInitConfig(
   config: FauxqsInitConfig,
   sqsStore: SqsStore,
@@ -138,6 +160,8 @@ export function applyInitConfig(
   // Authorization header does not contain a region (e.g. unsigned requests).
   sqsStore.region = defaultRegion;
   snsStore.region = defaultRegion;
+
+  rejectConflictingSubscriptions(config.subscriptions ?? [], defaultRegion);
 
   const queueResults: SetupQueueResult[] = [];
   const topicResults: SetupTopicResult[] = [];
@@ -193,7 +217,7 @@ export function applyInitConfig(
       // attributes in the config, so an existing one is updated rather than re-subscribed.
       const existing = snsStore.findSubscription(topicArn, "sqs", queueArn);
       if (existing) {
-        const updated = snsStore.replaceSubscriptionAttributes(existing, s.attributes);
+        const updated = snsStore.mergeSubscriptionAttributes(existing, s.attributes);
         subscriptionResults.push({
           topicName: s.topic,
           queueName: s.queue,
@@ -203,12 +227,8 @@ export function applyInitConfig(
         });
         continue;
       }
-      const sub = snsStore.subscribe(topicArn, "sqs", queueArn, s.attributes);
-      if (!sub) {
-        throw new Error(
-          `Init config: cannot create subscription — topic "${s.topic}" does not exist`,
-        );
-      }
+      // The topic was checked above, so subscribe cannot return undefined.
+      const sub = snsStore.subscribe(topicArn, "sqs", queueArn, s.attributes)!;
       subscriptionResults.push({
         topicName: s.topic,
         queueName: s.queue,

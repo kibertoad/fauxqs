@@ -8,6 +8,7 @@ import {
   ListSubscriptionsByTopicCommand,
   ListTagsForResourceCommand,
   PublishCommand,
+  SetSubscriptionAttributesCommand,
 } from "@aws-sdk/client-sns";
 import { startFauxqs, type FauxqsInitConfig, type FauxqsServer } from "../../src/app.js";
 import { createSnsClient } from "../helpers/clients.js";
@@ -93,7 +94,46 @@ describe("init config applied over persisted state", () => {
 
     const attributes = await subscriptionAttributes(port);
     expect(attributes.FilterPolicy).toBe(filterOn("new"));
-    expect(attributes.RawMessageDelivery).not.toBe("true");
+    expect(attributes.RawMessageDelivery).toBe("true");
+  });
+
+  it("keeps subscription attributes set at runtime that the config does not list", async () => {
+    const first = await restartWith(
+      initWith({ subscriptionAttributes: { FilterPolicy: filterOn("old") } }),
+    );
+    const sns = createSnsClient(first.port);
+    try {
+      const { Subscriptions } = await sns.send(
+        new ListSubscriptionsByTopicCommand({ TopicArn: TOPIC_ARN }),
+      );
+      await sns.send(
+        new SetSubscriptionAttributesCommand({
+          SubscriptionArn: Subscriptions![0].SubscriptionArn,
+          AttributeName: "RawMessageDelivery",
+          AttributeValue: "true",
+        }),
+      );
+    } finally {
+      sns.destroy();
+    }
+
+    const { port } = await restartWith(
+      initWith({ subscriptionAttributes: { FilterPolicy: filterOn("old") } }),
+    );
+
+    const attributes = await subscriptionAttributes(port);
+    expect(attributes.RawMessageDelivery).toBe("true");
+  });
+
+  it("rejects the same subscription listed twice with different attributes", async () => {
+    const config = initWith({ subscriptionAttributes: { FilterPolicy: filterOn("old") } });
+    config.subscriptions!.push({
+      topic: "drift-topic",
+      queue: "drift-queue",
+      attributes: { FilterPolicy: filterOn("new") },
+    });
+
+    await expect(restartWith(config)).rejects.toThrow(/listed twice with different attributes/);
   });
 
   it("routes by the new filter policy, not the cached old one", async () => {

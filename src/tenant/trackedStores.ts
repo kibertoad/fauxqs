@@ -13,7 +13,7 @@
 import { SqsStore } from "../sqs/sqsStore.ts";
 import type { SqsQueue } from "../sqs/sqsStore.ts";
 import { SnsStore } from "../sns/snsStore.ts";
-import type { SnsTopic } from "../sns/snsTypes.ts";
+import type { SnsTopic, SnsSubscription } from "../sns/snsTypes.ts";
 import { S3Store } from "../s3/s3Store.ts";
 import type { S3Object, ChecksumAlgorithm } from "../s3/s3Types.ts";
 import type { UsageTracker } from "./usageTracker.ts";
@@ -76,6 +76,16 @@ export class TrackedSnsStore extends SnsStore {
     const topic = super.getTopic(arn);
     if (topic) this.tracker.touch(topic.name);
     return topic;
+  }
+
+  override findSubscription(
+    topicArn: string,
+    protocol: string,
+    endpoint: string,
+  ): SnsSubscription | undefined {
+    const topic = super.getTopic(topicArn);
+    if (topic) this.tracker.touch(topic.name);
+    return super.findSubscription(topicArn, protocol, endpoint);
   }
 
   override listTopics(nextToken?: string): { topics: SnsTopic[]; nextToken?: string } {
