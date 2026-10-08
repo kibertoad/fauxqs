@@ -246,7 +246,7 @@ volumes:
   fauxqs-data:
 ```
 
-The image has a built-in `HEALTHCHECK`, so `service_healthy` works without extra configuration in your compose file. Other containers reference fauxqs using the Docker service name (`http://fauxqs:4566`). The init config file creates all queues, topics, subscriptions, and buckets before the healthcheck passes, so dependent services start only after resources are ready. The `fauxqs-data` volume persists state across `docker compose down` / `up` cycles — queues, messages, objects, and all other state are restored on startup. Init config is idempotent, so re-applying it after a restart skips resources that already exist.
+The image has a built-in `HEALTHCHECK`, so `service_healthy` works without extra configuration in your compose file. Other containers reference fauxqs using the Docker service name (`http://fauxqs:4566`). The init config file creates all queues, topics, subscriptions, and buckets before the healthcheck passes, so dependent services start only after resources are ready. The `fauxqs-data` volume persists state across `docker compose down` / `up` cycles: queues, messages, objects, and all other state are restored on startup. Init config is idempotent, so re-applying it after a restart keeps resources that already exist. Existing topics and subscriptions take the attributes and tags the config now declares, so a changed filter policy in a new image applies to an old volume instead of failing startup.
 
 #### Container-to-container S3 virtual-hosted-style
 
@@ -432,6 +432,7 @@ const result = server.setup({
 // result.subscriptions[0] → { topicName: "events", queueName: "orders", subscriptionArn: "...", created: true }
 // result.buckets[0] → { name: "uploads", created: true }
 // `created` is false when the resource already existed (idempotent skip)
+// `updated` (topics, subscriptions) is true when an existing one was changed to match the config
 
 // Delete individual resources (uses defaultRegion; pass { region } to override)
 server.deleteQueue("my-queue");                          // no-op if queue doesn't exist
@@ -630,6 +631,8 @@ Example:
 ##### `subscriptions`
 
 Array of subscription objects. Referenced topics and queues must be defined in the same config (or already exist on the server).
+
+When the subscription already exists, for example restored from persistence, its attributes are set to exactly the ones listed here, and attributes left out are removed. `Subscribe` itself rejects such a change, as AWS does. Existing topics are handled the same way, except that topic attributes left out of the config are kept, matching `CreateTopic`.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|

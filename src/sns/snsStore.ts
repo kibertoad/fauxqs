@@ -120,29 +120,15 @@ export class SnsStore {
 
     attributes = normalizeSubscribeAttributes(attributes);
 
-    // Check for existing subscription with same (topicArn, protocol, endpoint)
-    for (const subArn of topic.subscriptionArns) {
-      const existing = this.subscriptions.get(subArn);
-      if (existing && existing.protocol === protocol && existing.endpoint === endpoint) {
-        // Check if attributes differ
-        const newAttrs = attributes ?? {};
-        const existingAttrs = existing.attributes;
-        const allKeys = new Set([...Object.keys(newAttrs), ...Object.keys(existingAttrs)]);
-        let differs = false;
-        for (const key of allKeys) {
-          if (newAttrs[key] !== existingAttrs[key]) {
-            differs = true;
-            break;
-          }
-        }
-        if (differs) {
-          throw new SnsError(
-            "InvalidParameter",
-            "Invalid parameter: Attributes Reason: Subscription already exists with different attributes",
-          );
-        }
-        return existing;
+    const existing = this.findSubscription(topicArn, protocol, endpoint);
+    if (existing) {
+      if (!attributesEqual(attributes ?? {}, existing.attributes)) {
+        throw new SnsError(
+          "InvalidParameter",
+          "Invalid parameter: Attributes Reason: Subscription already exists with different attributes",
+        );
       }
+      return existing;
     }
 
     const id = randomUUID();
@@ -163,6 +149,74 @@ export class SnsStore {
     this.persistence?.insertSubscription(subscription);
     this.persistence?.updateTopicSubscriptionArns(topicArn, topic.subscriptionArns);
     return subscription;
+  }
+
+  findSubscription(
+    topicArn: string,
+    protocol: string,
+    endpoint: string,
+  ): SnsSubscription | undefined {
+    const topic = this.topics.get(topicArn);
+    if (!topic) return undefined;
+    for (const subArn of topic.subscriptionArns) {
+      const sub = this.subscriptions.get(subArn);
+      if (sub && sub.protocol === protocol && sub.endpoint === endpoint) return sub;
+    }
+    return undefined;
+  }
+
+  /**
+   * Sets a subscription's attributes to exactly `attributes`. Subscribe rejects a
+   * difference, as AWS does, but a declarative caller such as init config states the
+   * desired attributes, which may have changed since the subscription was persisted.
+   * Returns whether anything changed.
+   */
+  replaceSubscriptionAttributes(
+    subscription: SnsSubscription,
+    attributes: Record<string, string> | undefined,
+  ): boolean {
+    const desired = normalizeSubscribeAttributes(attributes) ?? {};
+    if (attributesEqual(desired, subscription.attributes)) return false;
+
+    for (const name of Object.keys(subscription.attributes)) {
+      if (!(name in desired)) setSubscriptionAttribute(subscription, name, undefined);
+    }
+    for (const [name, value] of Object.entries(desired)) {
+      setSubscriptionAttribute(subscription, name, value);
+    }
+    this.persistence?.updateSubscriptionAttributes(subscription.arn, subscription.attributes);
+    return true;
+  }
+
+  /**
+   * Applies the attributes and tags a declarative caller states for an existing topic.
+   * CreateTopic rejects a changed attribute value or tag set, as AWS does. Attributes
+   * missing from `attributes` are kept, matching CreateTopic's merge. Returns whether
+   * anything changed.
+   */
+  reconcileTopic(
+    topic: SnsTopic,
+    attributes: Record<string, string> | undefined,
+    tags: Record<string, string> | undefined,
+  ): boolean {
+    let changed = false;
+
+    if (attributes) {
+      const merged = { ...topic.attributes, ...attributes };
+      if (!attributesEqual(merged, topic.attributes)) {
+        topic.attributes = merged;
+        this.persistence?.updateTopicAttributes(topic.arn, topic.attributes);
+        changed = true;
+      }
+    }
+
+    if (tags && !attributesEqual(tags, Object.fromEntries(topic.tags))) {
+      topic.tags = new Map(Object.entries(tags));
+      this.persistence?.insertTopic(topic);
+      changed = true;
+    }
+
+    return changed;
   }
 
   unsubscribe(arn: string): boolean {
@@ -244,6 +298,11 @@ export function setSubscriptionAttribute(
   if (name === "RedrivePolicy") {
     subscription.parsedRedrivePolicy = undefined;
   }
+}
+
+function attributesEqual(a: Record<string, string>, b: Record<string, string>): boolean {
+  const aKeys = Object.keys(a);
+  return aKeys.length === Object.keys(b).length && aKeys.every((key) => b[key] === a[key]);
 }
 
 /**

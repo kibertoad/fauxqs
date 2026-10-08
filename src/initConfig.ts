@@ -91,12 +91,16 @@ export interface SetupTopicResult {
   name: string;
   arn: string;
   created: boolean;
+  /** True when the topic already existed and its attributes or tags were changed to match the config. */
+  updated: boolean;
 }
 export interface SetupSubscriptionResult {
   topicName: string;
   queueName: string;
   subscriptionArn: string;
   created: boolean;
+  /** True when the subscription already existed and its attributes were changed to match the config. */
+  updated: boolean;
 }
 export interface SetupBucketResult {
   name: string;
@@ -162,9 +166,14 @@ export function applyInitConfig(
     for (const t of config.topics) {
       const region = t.region ?? defaultRegion;
       const arn = snsTopicArn(t.name, region);
-      const existed = !!snsStore.getTopic(arn);
+      const existing = snsStore.getTopic(arn);
+      if (existing) {
+        const updated = snsStore.reconcileTopic(existing, t.attributes, t.tags);
+        topicResults.push({ name: t.name, arn, created: false, updated });
+        continue;
+      }
       snsStore.createTopic(t.name, t.attributes, t.tags, region);
-      topicResults.push({ name: t.name, arn, created: !existed });
+      topicResults.push({ name: t.name, arn, created: true, updated: false });
     }
   }
 
@@ -180,19 +189,32 @@ export function applyInitConfig(
           `Init config: cannot create subscription — topic "${s.topic}" does not exist`,
         );
       }
-      const countBefore = topic.subscriptionArns.length;
+      // State restored from persistence may predate a change to this subscription's
+      // attributes in the config, so an existing one is updated rather than re-subscribed.
+      const existing = snsStore.findSubscription(topicArn, "sqs", queueArn);
+      if (existing) {
+        const updated = snsStore.replaceSubscriptionAttributes(existing, s.attributes);
+        subscriptionResults.push({
+          topicName: s.topic,
+          queueName: s.queue,
+          subscriptionArn: existing.arn,
+          created: false,
+          updated,
+        });
+        continue;
+      }
       const sub = snsStore.subscribe(topicArn, "sqs", queueArn, s.attributes);
       if (!sub) {
         throw new Error(
           `Init config: cannot create subscription — topic "${s.topic}" does not exist`,
         );
       }
-      const created = topic.subscriptionArns.length > countBefore;
       subscriptionResults.push({
         topicName: s.topic,
         queueName: s.queue,
         subscriptionArn: sub.arn,
-        created,
+        created: true,
+        updated: false,
       });
     }
   }
