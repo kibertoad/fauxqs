@@ -230,6 +230,7 @@ services:
       - "4566:4566"
     environment:
       - FAUXQS_INIT=/app/init.json
+      - FAUXQS_PERSISTENCE=true             # keep state in the fauxqs-data volume
       # - FAUXQS_S3_STORAGE_DIR=/s3data      # store S3 objects as files
     volumes:
       - ./scripts/fauxqs/init.json:/app/init.json
