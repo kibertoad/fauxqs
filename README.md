@@ -230,6 +230,7 @@ services:
       - "4566:4566"
     environment:
       - FAUXQS_INIT=/app/init.json
+      - FAUXQS_PERSISTENCE=true             # keep state in the fauxqs-data volume
       # - FAUXQS_S3_STORAGE_DIR=/s3data      # store S3 objects as files
     volumes:
       - ./scripts/fauxqs/init.json:/app/init.json
@@ -246,7 +247,7 @@ volumes:
   fauxqs-data:
 ```
 
-The image has a built-in `HEALTHCHECK`, so `service_healthy` works without extra configuration in your compose file. Other containers reference fauxqs using the Docker service name (`http://fauxqs:4566`). The init config file creates all queues, topics, subscriptions, and buckets before the healthcheck passes, so dependent services start only after resources are ready. The `fauxqs-data` volume persists state across `docker compose down` / `up` cycles — queues, messages, objects, and all other state are restored on startup. Init config is idempotent, so re-applying it after a restart skips resources that already exist.
+The image has a built-in `HEALTHCHECK`, so `service_healthy` works without extra configuration in your compose file. Other containers reference fauxqs using the Docker service name (`http://fauxqs:4566`). The init config file creates all queues, topics, subscriptions, and buckets before the healthcheck passes, so dependent services start only after resources are ready. The `fauxqs-data` volume persists state across `docker compose down` / `up` cycles: queues, messages, objects, and all other state are restored on startup. Init config is idempotent, so re-applying it after a restart keeps resources that already exist. Existing topics and subscriptions take the attributes and tags the config now declares, so a changed filter policy in a new image applies to an old volume instead of failing startup.
 
 #### Container-to-container S3 virtual-hosted-style
 
@@ -428,10 +429,11 @@ const result = server.setup({
   buckets: ["uploads", "exports"],
 });
 // result.queues[0] → { name: "orders", url: "...", arn: "...", created: true }
-// result.topics[0] → { name: "events", arn: "...", created: true }
-// result.subscriptions[0] → { topicName: "events", queueName: "orders", subscriptionArn: "...", created: true }
+// result.topics[0] → { name: "events", arn: "...", created: true, updated: false }
+// result.subscriptions[0] → { topicName: "events", queueName: "orders", subscriptionArn: "...", created: true, updated: false }
 // result.buckets[0] → { name: "uploads", created: true }
 // `created` is false when the resource already existed (idempotent skip)
+// `updated` (topics, subscriptions) is true when an existing one was changed to match the config
 
 // Delete individual resources (uses defaultRegion; pass { region } to override)
 server.deleteQueue("my-queue");                          // no-op if queue doesn't exist
@@ -630,6 +632,10 @@ Example:
 ##### `subscriptions`
 
 Array of subscription objects. Referenced topics and queues must be defined in the same config (or already exist on the server).
+
+When the subscription already exists, for example restored from persistence, the attributes listed here are applied to it. `Subscribe` itself rejects such a change, as AWS does. Attributes left out of the config are kept, so values set at runtime with `SetSubscriptionAttributes` survive a restart. Existing topics are handled the same way, and their tags are set to exactly the ones listed. Removing an attribute from the config does not remove it from an existing subscription or topic: clear it with `SetSubscriptionAttributes` or `SetTopicAttributes`, or start from an empty data directory.
+
+Listing the same topic and queue twice with different attributes is rejected.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|

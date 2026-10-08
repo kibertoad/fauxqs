@@ -46,13 +46,7 @@ export class SnsStore {
       // Full tag set comparison: AWS rejects CreateTopic when the provided tags
       // don't exactly match the existing topic's tags (same keys, same values, same count).
       if (tags) {
-        const newTags = new Map(Object.entries(tags));
-        const tagsMatch =
-          newTags.size === existing.tags.size &&
-          [...newTags].every(
-            ([key, value]) => existing.tags.has(key) && existing.tags.get(key) === value,
-          );
-        if (!tagsMatch) {
+        if (!attributesEqual(tags, Object.fromEntries(existing.tags))) {
           throw new SnsError(
             "InvalidParameter",
             "Invalid parameter: Tags Reason: Topic already exists with different tags",
@@ -120,29 +114,15 @@ export class SnsStore {
 
     attributes = normalizeSubscribeAttributes(attributes);
 
-    // Check for existing subscription with same (topicArn, protocol, endpoint)
-    for (const subArn of topic.subscriptionArns) {
-      const existing = this.subscriptions.get(subArn);
-      if (existing && existing.protocol === protocol && existing.endpoint === endpoint) {
-        // Check if attributes differ
-        const newAttrs = attributes ?? {};
-        const existingAttrs = existing.attributes;
-        const allKeys = new Set([...Object.keys(newAttrs), ...Object.keys(existingAttrs)]);
-        let differs = false;
-        for (const key of allKeys) {
-          if (newAttrs[key] !== existingAttrs[key]) {
-            differs = true;
-            break;
-          }
-        }
-        if (differs) {
-          throw new SnsError(
-            "InvalidParameter",
-            "Invalid parameter: Attributes Reason: Subscription already exists with different attributes",
-          );
-        }
-        return existing;
+    const existing = this.findSubscription(topicArn, protocol, endpoint);
+    if (existing) {
+      if (!attributesEqual(attributes ?? {}, existing.attributes)) {
+        throw new SnsError(
+          "InvalidParameter",
+          "Invalid parameter: Attributes Reason: Subscription already exists with different attributes",
+        );
       }
+      return existing;
     }
 
     const id = randomUUID();
@@ -163,6 +143,76 @@ export class SnsStore {
     this.persistence?.insertSubscription(subscription);
     this.persistence?.updateTopicSubscriptionArns(topicArn, topic.subscriptionArns);
     return subscription;
+  }
+
+  findSubscription(
+    topicArn: string,
+    protocol: string,
+    endpoint: string,
+  ): SnsSubscription | undefined {
+    const topic = this.topics.get(topicArn);
+    if (!topic) return undefined;
+    for (const subArn of topic.subscriptionArns) {
+      const sub = this.subscriptions.get(subArn);
+      if (sub && sub.protocol === protocol && sub.endpoint === endpoint) return sub;
+    }
+    return undefined;
+  }
+
+  /**
+   * Applies the attributes a declarative caller such as init config states for an
+   * existing subscription. Subscribe rejects a changed value, as AWS does. Attributes
+   * missing from `attributes` are kept, so values set at runtime survive a restart.
+   * Returns whether anything changed.
+   */
+  mergeSubscriptionAttributes(
+    subscription: SnsSubscription,
+    attributes: Record<string, string> | undefined,
+  ): boolean {
+    const desired = normalizeSubscribeAttributes(attributes) ?? {};
+    let changed = false;
+    for (const [name, value] of Object.entries(desired)) {
+      if (subscription.attributes[name] !== value) {
+        setSubscriptionAttribute(subscription, name, value);
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.persistence?.updateSubscriptionAttributes(subscription.arn, subscription.attributes);
+    }
+    return changed;
+  }
+
+  /**
+   * Applies the attributes and tags a declarative caller states for an existing topic.
+   * CreateTopic rejects a changed attribute value or tag set, as AWS does. Attributes
+   * missing from `attributes` are kept, matching CreateTopic's merge. Returns whether
+   * anything changed.
+   */
+  reconcileTopic(
+    topic: SnsTopic,
+    attributes: Record<string, string> | undefined,
+    tags: Record<string, string> | undefined,
+  ): boolean {
+    let attributesChanged = false;
+    if (attributes) {
+      const merged = { ...topic.attributes, ...attributes };
+      if (!attributesEqual(merged, topic.attributes)) {
+        topic.attributes = merged;
+        attributesChanged = true;
+      }
+    }
+
+    const tagsChanged = !!tags && !attributesEqual(tags, Object.fromEntries(topic.tags));
+    if (tagsChanged) {
+      topic.tags = new Map(Object.entries(tags));
+      // insertTopic rewrites the whole row, attributes included.
+      this.persistence?.insertTopic(topic);
+    } else if (attributesChanged) {
+      this.persistence?.updateTopicAttributes(topic.arn, topic.attributes);
+    }
+
+    return attributesChanged || tagsChanged;
   }
 
   unsubscribe(arn: string): boolean {
@@ -244,6 +294,11 @@ export function setSubscriptionAttribute(
   if (name === "RedrivePolicy") {
     subscription.parsedRedrivePolicy = undefined;
   }
+}
+
+export function attributesEqual(a: Record<string, string>, b: Record<string, string>): boolean {
+  const aKeys = Object.keys(a);
+  return aKeys.length === Object.keys(b).length && aKeys.every((key) => b[key] === a[key]);
 }
 
 /**
