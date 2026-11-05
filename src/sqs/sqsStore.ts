@@ -70,6 +70,7 @@ export class SqsQueue {
   persistence?: PersistenceManager;
   /** PRNG for standard-queue reordering; injected from the store so all queues share one (optionally seeded) stream. */
   random: () => number = Math.random;
+  maxMessageRetentionMs?: number;
 
   // FIFO-specific fields
   fifoMessages: Map<string, SqsMessage[]> = new Map();
@@ -186,7 +187,8 @@ export class SqsQueue {
   }
 
   messageRetentionMs(): number {
-    return parseInt(this.attributes.MessageRetentionPeriod) * 1000;
+    const retentionMs = parseInt(this.attributes.MessageRetentionPeriod) * 1000;
+    return Math.min(retentionMs, this.maxMessageRetentionMs ?? Infinity);
   }
 
   expireMessages(): void {
@@ -802,6 +804,7 @@ export class SqsStore {
   region?: string;
   spy?: MessageSpy;
   persistence?: PersistenceManager;
+  maxMessageRetentionMs?: number;
   private _random: () => number = Math.random;
 
   /** PRNG shared with every queue for standard-queue reordering. Seeded via the `ordering` option. */
@@ -826,6 +829,7 @@ export class SqsStore {
   ): SqsQueue {
     const queue = new SqsQueue(name, url, arn, attributes, tags);
     queue.random = this._random;
+    queue.maxMessageRetentionMs = this.maxMessageRetentionMs;
     if (this.spy) {
       queue.spy = this.spy;
     }

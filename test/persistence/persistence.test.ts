@@ -1355,6 +1355,21 @@ describe("Persistence: SQS message retention", () => {
     await server.stop();
   });
 
+  it("applies the retention cap to persisted messages at startup", async () => {
+    await storeMessage("retention-restart", {});
+
+    vi.setSystemTime(t0 + 60_001);
+    const server = await startFauxqs({
+      port: 0,
+      logger: false,
+      dataDir,
+      messageRetention: { maxSeconds: 60 },
+    });
+
+    expect(server.inspectQueue("retention-restart")!.messages.ready).toEqual([]);
+    await server.stop();
+  });
+
   it("loads an expired message that is still delayed", async () => {
     await storeMessage("retention-restart", { MessageRetentionPeriod: "60", DelaySeconds: "120" });
 

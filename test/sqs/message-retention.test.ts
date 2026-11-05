@@ -9,6 +9,7 @@ import {
 } from "@aws-sdk/client-sqs";
 import { createSqsClient } from "../helpers/clients.js";
 import { startFauxqsTestServer, type FauxqsServer } from "../helpers/setup.js";
+import { startFauxqs } from "../../src/app.js";
 
 const t0 = Date.UTC(2026, 0, 1);
 
@@ -224,6 +225,57 @@ describe("SQS message retention sweep", () => {
     const { messages } = server.inspectQueue("retention-unconsumed-delayed")!;
     expect(messages.delayed).toEqual([]);
     expect(messages.ready).toEqual([]);
+  });
+});
+
+describe("SQS message retention cap", () => {
+  let server: FauxqsServer;
+  let sqs: ReturnType<typeof createSqsClient>;
+
+  beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: t0 });
+    server = await startFauxqs({ port: 0, logger: false, messageRetention: { maxSeconds: 120 } });
+    sqs = createSqsClient(server.port);
+  });
+
+  afterEach(async () => {
+    sqs.destroy();
+    await server.stop();
+    vi.useRealTimers();
+  });
+
+  async function sendThenReceiveAt(
+    name: string,
+    attributes: Record<string, string>,
+    receiveAt: number,
+  ): Promise<{ queueUrl: string; received: number }> {
+    const { QueueUrl } = await sqs.send(
+      new CreateQueueCommand({ QueueName: name, Attributes: attributes }),
+    );
+    await sqs.send(new SendMessageCommand({ QueueUrl, MessageBody: "body" }));
+    vi.setSystemTime(receiveAt);
+    const { Messages } = await sqs.send(new ReceiveMessageCommand({ QueueUrl }));
+    return { queueUrl: QueueUrl!, received: Messages?.length ?? 0 };
+  }
+
+  it("expires a message older than the cap when MessageRetentionPeriod is longer", async () => {
+    const { queueUrl, received } = await sendThenReceiveAt("retention-capped", {}, t0 + 120_001);
+
+    expect(received).toBe(0);
+    const { Attributes } = await sqs.send(
+      new GetQueueAttributesCommand({ QueueUrl: queueUrl, AttributeNames: ["MessageRetentionPeriod"] }),
+    );
+    expect(Attributes!.MessageRetentionPeriod).toBe("345600");
+  });
+
+  it("expires a message by MessageRetentionPeriod when it is shorter than the cap", async () => {
+    const { received } = await sendThenReceiveAt(
+      "retention-below-cap",
+      { MessageRetentionPeriod: "60" },
+      t0 + 60_001,
+    );
+
+    expect(received).toBe(0);
   });
 });
 
