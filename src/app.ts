@@ -475,6 +475,8 @@ export interface FauxqsServer {
   deleteTenant(prefix: string): void;
 }
 
+const MESSAGE_EXPIRY_INTERVAL_MS = 60_000;
+
 export async function startFauxqs(options?: {
   port?: number;
   logger?: boolean;
@@ -604,6 +606,10 @@ export async function startFauxqs(options?: {
     tenantManager,
   });
 
+  let messageExpiryTimer: ReturnType<typeof setInterval> | undefined;
+  app.addHook("preClose", () => {
+    clearInterval(messageExpiryTimer);
+  });
   if (persistenceManager) {
     app.addHook("preClose", () => {
       persistenceManager.close();
@@ -946,6 +952,8 @@ export async function startFauxqs(options?: {
     tenantManager.setPort(actualPort);
     tenantManager.start();
   }
+
+  messageExpiryTimer = setInterval(() => sqsStore.expireMessages(), MESSAGE_EXPIRY_INTERVAL_MS);
 
   return server;
 }

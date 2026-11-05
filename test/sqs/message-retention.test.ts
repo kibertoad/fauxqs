@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from "vitest";
 import {
   CreateQueueCommand,
   GetQueueAttributesCommand,
@@ -189,4 +189,52 @@ describe("SQS message retention", () => {
 
     expect(server.inspectQueue("retention-redrive-source")!.messages.ready).toEqual([]);
   });
+});
+
+describe("SQS message retention sweep", () => {
+  let server: FauxqsServer;
+
+  beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: t0 });
+    server = await startFauxqsTestServer();
+  });
+
+  afterEach(async () => {
+    await server.stop();
+    vi.useRealTimers();
+  });
+
+  it("removes expired messages from a queue that nobody receives from", () => {
+    server.createQueue("retention-unconsumed", { attributes: { MessageRetentionPeriod: "60" } });
+    server.sendMessage("retention-unconsumed", "unconsumed");
+
+    vi.advanceTimersByTime(120_000);
+
+    expect(server.inspectQueue("retention-unconsumed")!.messages.ready).toEqual([]);
+  });
+
+  it("removes an expired delayed message from a queue that nobody receives from", () => {
+    server.createQueue("retention-unconsumed-delayed", {
+      attributes: { MessageRetentionPeriod: "60", DelaySeconds: "30" },
+    });
+    server.sendMessage("retention-unconsumed-delayed", "delayed");
+
+    vi.advanceTimersByTime(120_000);
+
+    const { messages } = server.inspectQueue("retention-unconsumed-delayed")!;
+    expect(messages.delayed).toEqual([]);
+    expect(messages.ready).toEqual([]);
+  });
+});
+
+it("clears the retention sweep timer when the server stops", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  const server = await startFauxqsTestServer();
+
+  await server.stop();
+
+  expect(vi.getTimerCount()).toBe(0);
 });

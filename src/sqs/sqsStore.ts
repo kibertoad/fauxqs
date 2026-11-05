@@ -1096,6 +1096,13 @@ export class SqsStore {
     }
   }
 
+  expireMessages(): void {
+    for (const queue of this.queues.values()) {
+      queue.processTimers();
+      queue.expireMessages();
+    }
+  }
+
   shutdown(): void {
     for (const queue of this.queues.values()) {
       queue.cancelWaiters();
