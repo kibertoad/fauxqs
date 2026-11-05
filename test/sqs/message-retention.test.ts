@@ -226,6 +226,31 @@ describe("SQS message retention", () => {
     expect(server.inspectQueue("retention-gap-dlq.fifo")!.messages.ready).toHaveLength(1);
   });
 
+  it("does not redrive an expired FIFO message queued behind a fresh one", async () => {
+    const dlqUrl = await createQueue("retention-redrive-order-dlq.fifo", {
+      FifoQueue: "true",
+      MessageRetentionPeriod: "60",
+      DelaySeconds: "60",
+    });
+    const dlqArn = await queueArn(dlqUrl);
+    await createQueue("retention-redrive-order.fifo", {
+      FifoQueue: "true",
+      RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn, maxReceiveCount: 1 }),
+    });
+    await send(dlqUrl, "expired", "group-1");
+    await sqs.send(
+      new SetQueueAttributesCommand({ QueueUrl: dlqUrl, Attributes: { DelaySeconds: "0" } }),
+    );
+    vi.setSystemTime(t0 + 10_000);
+    await send(dlqUrl, "fresh", "group-1");
+    vi.setSystemTime(t0 + 60_001);
+
+    await sqs.send(new StartMessageMoveTaskCommand({ SourceArn: dlqArn }));
+
+    const { messages } = server.inspectQueue("retention-redrive-order.fifo")!;
+    expect(messages.ready.map((message) => message.body)).toEqual(["fresh"]);
+  });
+
   it("does not redrive an expired dead-lettered message", async () => {
     const dlqUrl = await createQueue("retention-redrive-dlq", { MessageRetentionPeriod: "60" });
     const dlqArn = await queueArn(dlqUrl);
@@ -347,6 +372,12 @@ describe("SQS message retention cap", () => {
       new GetQueueAttributesCommand({ QueueUrl: queueUrl, AttributeNames: ["MessageRetentionPeriod"] }),
     );
     expect(Attributes!.MessageRetentionPeriod).toBe("345600");
+  });
+
+  it("keeps a message younger than the cap when MessageRetentionPeriod is longer", async () => {
+    const { received } = await sendThenReceiveAt("retention-cap-survives", {}, t0 + 90_000);
+
+    expect(received).toBe(1);
   });
 
   it("expires a message by MessageRetentionPeriod when it is shorter than the cap", async () => {
