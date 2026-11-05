@@ -1302,27 +1302,44 @@ describe("Persistence: SQS message retention", () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
-  it("deletes the stored row of a message that expired on receive", async () => {
-    let server = await startFauxqs({ port: 0, logger: false, dataDir });
-    const sqs = makeSqsClient(server.port);
-    const { QueueUrl } = await sqs.send(
-      new CreateQueueCommand({
-        QueueName: "retention-persisted",
-        Attributes: { MessageRetentionPeriod: "60" },
-      }),
-    );
-    await sqs.send(new SendMessageCommand({ QueueUrl, MessageBody: "expired" }));
-    vi.setSystemTime(t0 + 60_001);
-    const received = await sqs.send(new ReceiveMessageCommand({ QueueUrl }));
-    expect(received.Messages).toBeUndefined();
-    await server.stop();
+  it.each([
+    { kind: "standard", queueName: "retention-persisted", attributes: {}, groupId: undefined },
+    {
+      kind: "FIFO",
+      queueName: "retention-persisted.fifo",
+      attributes: { FifoQueue: "true" },
+      groupId: "group-1",
+    },
+  ])(
+    "deletes the stored row of a $kind message that expired on receive",
+    async ({ queueName, attributes, groupId }) => {
+      let server = await startFauxqs({ port: 0, logger: false, dataDir });
+      server.createQueue(queueName, {
+        attributes: { ...attributes, MessageRetentionPeriod: "60" },
+      });
+      server.sendMessage(queueName, "expired", {
+        messageGroupId: groupId,
+        messageDeduplicationId: groupId ? "expired" : undefined,
+      });
+      await server.stop();
+      vi.setSystemTime(t0 + 30_000);
+      server = await startFauxqs({ port: 0, logger: false, dataDir });
+      const sqs = makeSqsClient(server.port);
+      const { QueueUrl } = await sqs.send(new GetQueueUrlCommand({ QueueName: queueName }));
 
-    vi.setSystemTime(t0);
-    server = await startFauxqs({ port: 0, logger: false, dataDir });
+      vi.setSystemTime(t0 + 60_001);
+      const received = await sqs.send(new ReceiveMessageCommand({ QueueUrl }));
+      await server.stop();
 
-    expect(server.inspectQueue("retention-persisted")!.messages.ready).toEqual([]);
-    await server.stop();
-  });
+      expect(received.Messages).toBeUndefined();
+      const db = new DatabaseSync(join(dataDir, "fauxqs.db"));
+      const stored = db
+        .prepare("SELECT COUNT(*) AS count FROM sqs_messages WHERE queue_name = ?")
+        .get(queueName);
+      db.close();
+      expect(stored).toEqual({ count: 0 });
+    },
+  );
 
   async function storeMessage(queueName: string, attributes: Record<string, string>): Promise<void> {
     const server = await startFauxqs({ port: 0, logger: false, dataDir });
@@ -1352,6 +1369,22 @@ describe("Persistence: SQS message retention", () => {
     const server = await startFauxqs({ port: 0, logger: false, dataDir });
 
     expect(server.inspectQueue("retention-restart")!.messages.ready).toHaveLength(1);
+    await server.stop();
+  });
+
+  it("keeps serving requests when the expiry sweep cannot write to SQLite", async () => {
+    const server = await startFauxqs({ port: 0, logger: false, dataDir });
+    server.createQueue("retention-sweep-locked", { attributes: { MessageRetentionPeriod: "60" } });
+    server.sendMessage("retention-sweep-locked", "stored");
+    const lock = new DatabaseSync(join(dataDir, "fauxqs.db"));
+    lock.exec("BEGIN IMMEDIATE");
+    vi.setSystemTime(t0 + 120_000);
+
+    const response = await fetch(`http://127.0.0.1:${server.port}/health`);
+
+    lock.exec("ROLLBACK");
+    lock.close();
+    expect(response.status).toBe(200);
     await server.stop();
   });
 

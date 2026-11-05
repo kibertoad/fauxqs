@@ -54,6 +54,11 @@ describe("SQS message retention", () => {
     );
   }
 
+  async function sweepAt(time: number): Promise<void> {
+    vi.setSystemTime(time);
+    await fetch(`http://127.0.0.1:${server.port}/health`);
+  }
+
   async function receiveBodies(queueUrl: string): Promise<string[]> {
     const { Messages } = await sqs.send(
       new ReceiveMessageCommand({ QueueUrl: queueUrl, MaxNumberOfMessages: 10 }),
@@ -174,6 +179,52 @@ describe("SQS message retention", () => {
     },
   );
 
+  it("restarts the retention period of a redriven message", async () => {
+    const dlqUrl = await createQueue("retention-redrive-fresh-dlq", {
+      MessageRetentionPeriod: "1209600",
+    });
+    const dlqArn = await queueArn(dlqUrl);
+    const sourceUrl = await createQueue("retention-redrive-fresh-source", {
+      MessageRetentionPeriod: "60",
+      VisibilityTimeout: "0",
+      RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn, maxReceiveCount: 1 }),
+    });
+    await send(sourceUrl, "redriven");
+    expect(await receiveBodies(sourceUrl)).toEqual(["redriven"]);
+    expect(await receiveBodies(sourceUrl)).toEqual([]);
+    vi.setSystemTime(t0 + 120_000);
+
+    await sqs.send(new StartMessageMoveTaskCommand({ SourceArn: dlqArn }));
+
+    expect(await receiveBodies(sourceUrl)).toEqual(["redriven"]);
+  });
+
+  it("does not deliver an expired FIFO message queued behind a dead-lettered one", async () => {
+    const dlqUrl = await createQueue("retention-gap-dlq.fifo", { FifoQueue: "true" });
+    const queueUrl = await createQueue("retention-gap.fifo", {
+      FifoQueue: "true",
+      MessageRetentionPeriod: "60",
+      VisibilityTimeout: "0",
+      DelaySeconds: "60",
+      RedrivePolicy: JSON.stringify({
+        deadLetterTargetArn: await queueArn(dlqUrl),
+        maxReceiveCount: 1,
+      }),
+    });
+    await send(queueUrl, "expired", "group-1");
+    await sqs.send(
+      new SetQueueAttributesCommand({ QueueUrl: queueUrl, Attributes: { DelaySeconds: "0" } }),
+    );
+    vi.setSystemTime(t0 + 10_000);
+    await send(queueUrl, "dead-lettered", "group-1");
+    expect(await receiveBodies(queueUrl)).toEqual(["dead-lettered"]);
+
+    vi.setSystemTime(t0 + 60_001);
+
+    expect(await receiveBodies(queueUrl)).toEqual([]);
+    expect(server.inspectQueue("retention-gap-dlq.fifo")!.messages.ready).toHaveLength(1);
+  });
+
   it("does not redrive an expired dead-lettered message", async () => {
     const dlqUrl = await createQueue("retention-redrive-dlq", { MessageRetentionPeriod: "60" });
     const dlqArn = await queueArn(dlqUrl);
@@ -184,6 +235,7 @@ describe("SQS message retention", () => {
     await send(sourceUrl, "dead-lettered");
     expect(await receiveBodies(sourceUrl)).toEqual(["dead-lettered"]);
     expect(await receiveBodies(sourceUrl)).toEqual([]);
+    await sweepAt(t0 + 60_000);
     vi.setSystemTime(t0 + 60_001);
 
     await sqs.send(new StartMessageMoveTaskCommand({ SourceArn: dlqArn }));
@@ -196,7 +248,7 @@ describe("SQS message retention sweep", () => {
   let server: FauxqsServer;
 
   beforeEach(async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: t0 });
+    vi.useFakeTimers({ toFake: ["Date"], now: t0 });
     server = await startFauxqsTestServer();
   });
 
@@ -205,26 +257,60 @@ describe("SQS message retention sweep", () => {
     vi.useRealTimers();
   });
 
-  it("removes expired messages from a queue that nobody receives from", () => {
-    server.createQueue("retention-unconsumed", { attributes: { MessageRetentionPeriod: "60" } });
-    server.sendMessage("retention-unconsumed", "unconsumed");
+  async function requestHealthAt(time: number): Promise<void> {
+    vi.setSystemTime(time);
+    const response = await fetch(`http://127.0.0.1:${server.port}/health`);
+    expect(response.status).toBe(200);
+  }
 
-    vi.advanceTimersByTime(120_000);
+  it.each([
+    { kind: "standard", name: "retention-unconsumed", attributes: {}, groupId: undefined },
+    {
+      kind: "FIFO",
+      name: "retention-unconsumed.fifo",
+      attributes: { FifoQueue: "true" },
+      groupId: "group-1",
+    },
+  ])(
+    "removes expired messages from a $kind queue that nobody receives from",
+    async ({ name, attributes, groupId }) => {
+      server.createQueue(name, { attributes: { ...attributes, MessageRetentionPeriod: "60" } });
+      for (const body of ["first", "second"]) {
+        server.sendMessage(name, body, {
+          messageGroupId: groupId,
+          messageDeduplicationId: groupId ? body : undefined,
+        });
+      }
 
-    expect(server.inspectQueue("retention-unconsumed")!.messages.ready).toEqual([]);
-  });
+      await requestHealthAt(t0 + 120_000);
 
-  it("removes an expired delayed message from a queue that nobody receives from", () => {
+      expect(server.inspectQueue(name)!.messages.ready).toEqual([]);
+    },
+  );
+
+  it("removes an expired delayed message from a queue that nobody receives from", async () => {
     server.createQueue("retention-unconsumed-delayed", {
       attributes: { MessageRetentionPeriod: "60", DelaySeconds: "30" },
     });
     server.sendMessage("retention-unconsumed-delayed", "delayed");
 
-    vi.advanceTimersByTime(120_000);
+    await requestHealthAt(t0 + 120_000);
 
     const { messages } = server.inspectQueue("retention-unconsumed-delayed")!;
     expect(messages.delayed).toEqual([]);
     expect(messages.ready).toEqual([]);
+  });
+
+  it("sweeps at most once a minute", async () => {
+    server.createQueue("retention-sweep-interval", { attributes: { MessageRetentionPeriod: "60" } });
+    server.sendMessage("retention-sweep-interval", "swept-later");
+
+    await requestHealthAt(t0 + 60_000);
+    await requestHealthAt(t0 + 90_000);
+    expect(server.inspectQueue("retention-sweep-interval")!.messages.ready).toHaveLength(1);
+
+    await requestHealthAt(t0 + 120_000);
+    expect(server.inspectQueue("retention-sweep-interval")!.messages.ready).toEqual([]);
   });
 });
 
@@ -279,14 +365,14 @@ describe("SQS message retention cap", () => {
   });
 });
 
-it("clears the retention sweep timer when the server stops", async () => {
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+it("starts without a repeating timer", async () => {
+  vi.useFakeTimers();
   onTestFinished(() => {
     vi.useRealTimers();
   });
   const server = await startFauxqsTestServer();
+  onTestFinished(() => server.stop());
 
-  await server.stop();
-
-  expect(vi.getTimerCount()).toBe(0);
+  expect(() => vi.runAllTimers()).not.toThrow();
+  vi.useRealTimers();
 });

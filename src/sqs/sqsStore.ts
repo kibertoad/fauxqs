@@ -196,7 +196,11 @@ export class SqsQueue {
     const expired: SqsMessage[] = [];
     if (this.isFifo()) {
       for (const [groupId, groupMsgs] of this.fifoMessages) {
-        moveMessagesSentBefore(cutoff, groupMsgs, expired);
+        let expiredCount = 0;
+        while (expiredCount < groupMsgs.length && groupMsgs[expiredCount].sentTimestamp < cutoff) {
+          expired.push(groupMsgs[expiredCount++]);
+        }
+        groupMsgs.splice(0, expiredCount);
         if (groupMsgs.length === 0) {
           this.fifoMessages.delete(groupId);
         }
@@ -400,7 +404,7 @@ export class SqsQueue {
     dlqResolver?: (arn: string) => SqsQueue | undefined,
   ): ReceivedMessage[] {
     this.processTimers();
-    this.expireMessages();
+    const expiryCutoff = Date.now() - this.messageRetentionMs();
 
     const visibilityTimeout =
       visibilityTimeoutOverride ?? parseInt(this.attributes.VisibilityTimeout);
@@ -421,6 +425,10 @@ export class SqsQueue {
       // Take messages from this group in order (up to remaining count)
       while (result.length < count && groupMsgs.length > 0) {
         const msg = groupMsgs.shift()!;
+        if (msg.sentTimestamp < expiryCutoff) {
+          this.persistence?.deleteMessage(msg.messageId);
+          continue;
+        }
 
         msg.approximateReceiveCount++;
         if (!msg.approximateFirstReceiveTimestamp) {
@@ -990,6 +998,7 @@ export class SqsStore {
         msg.approximateFirstReceiveTimestamp = undefined;
         msg.delayUntil = undefined;
         msg.deadLetterSourceArn = undefined;
+        msg.sentTimestamp = Date.now();
         target.enqueue(msg);
         moved++;
       } else {

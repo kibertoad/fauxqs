@@ -117,6 +117,8 @@ export interface BuildAppOptions {
   ordering?: { seed?: number };
 }
 
+const MESSAGE_EXPIRY_INTERVAL_MS = 60_000;
+
 export function buildApp(options?: BuildAppOptions) {
   const app = Fastify({
     logger: options?.logger ?? true,
@@ -298,6 +300,20 @@ export function buildApp(options?: BuildAppOptions) {
     sqsStore.shutdown();
   });
 
+  let lastMessageExpiry = Date.now();
+  app.addHook("onRequest", (request, _reply, done) => {
+    const now = Date.now();
+    if (now - lastMessageExpiry >= MESSAGE_EXPIRY_INTERVAL_MS) {
+      lastMessageExpiry = now;
+      try {
+        sqsStore.expireMessages();
+      } catch (err) {
+        request.log.error({ err }, "SQS message expiry failed");
+      }
+    }
+    done();
+  });
+
   app.get("/health", async () => {
     return { status: "ok" };
   });
@@ -475,8 +491,6 @@ export interface FauxqsServer {
   deleteTenant(prefix: string): void;
 }
 
-const MESSAGE_EXPIRY_INTERVAL_MS = 60_000;
-
 function resolveMaxMessageRetentionMs(maxSeconds: number | undefined): number | undefined {
   const value = maxSeconds ?? (process.env.FAUXQS_MAX_MESSAGE_RETENTION || undefined);
   if (value === undefined) return undefined;
@@ -623,10 +637,6 @@ export async function startFauxqs(options?: {
     tenantManager,
   });
 
-  let messageExpiryTimer: ReturnType<typeof setInterval> | undefined;
-  app.addHook("preClose", () => {
-    clearInterval(messageExpiryTimer);
-  });
   if (persistenceManager) {
     app.addHook("preClose", () => {
       persistenceManager.close();
@@ -969,8 +979,6 @@ export async function startFauxqs(options?: {
     tenantManager.setPort(actualPort);
     tenantManager.start();
   }
-
-  messageExpiryTimer = setInterval(() => sqsStore.expireMessages(), MESSAGE_EXPIRY_INTERVAL_MS);
 
   return server;
 }
