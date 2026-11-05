@@ -367,6 +367,14 @@ export class PersistenceManager implements S3PersistenceProvider {
     this.stmts.deleteMessage.run(messageId);
   }
 
+  deleteMessages(messageIds: string[]): void {
+    this.transaction(() => {
+      for (const messageId of messageIds) {
+        this.stmts.deleteMessage.run(messageId);
+      }
+    });
+  }
+
   updateMessageInflight(
     messageId: string,
     receiptHandle: string,

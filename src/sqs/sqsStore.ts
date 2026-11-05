@@ -35,6 +35,18 @@ interface StandardGroupPicker {
 /** Cap on retained message move task history, so repeated redrives don't grow unbounded. */
 const MESSAGE_MOVE_TASK_HISTORY_LIMIT = 100;
 
+function moveMessagesSentBefore(cutoff: number, from: SqsMessage[], to: SqsMessage[]): void {
+  let kept = 0;
+  for (const msg of from) {
+    if (msg.sentTimestamp < cutoff) {
+      to.push(msg);
+    } else {
+      from[kept++] = msg;
+    }
+  }
+  from.length = kept;
+}
+
 export class SqsQueue {
   readonly name: string;
   readonly url: string;
@@ -173,6 +185,28 @@ export class SqsQueue {
     return this.parsedRedrivePolicy ?? undefined;
   }
 
+  messageRetentionMs(): number {
+    return parseInt(this.attributes.MessageRetentionPeriod) * 1000;
+  }
+
+  expireMessages(): void {
+    const cutoff = Date.now() - this.messageRetentionMs();
+    const expired: SqsMessage[] = [];
+    if (this.isFifo()) {
+      for (const [groupId, groupMsgs] of this.fifoMessages) {
+        moveMessagesSentBefore(cutoff, groupMsgs, expired);
+        if (groupMsgs.length === 0) {
+          this.fifoMessages.delete(groupId);
+        }
+      }
+    } else {
+      moveMessagesSentBefore(cutoff, this.messages, expired);
+    }
+    if (expired.length > 0) {
+      this.persistence?.deleteMessages(expired.map((msg) => msg.messageId));
+    }
+  }
+
   enqueue(msg: SqsMessage): void {
     if (this.spy) {
       this.spy.addMessage(buildSqsSpyMessage(this.name, msg, "published"));
@@ -213,6 +247,7 @@ export class SqsQueue {
     }
 
     this.processTimers();
+    this.expireMessages();
 
     const visibilityTimeout =
       visibilityTimeoutOverride ?? parseInt(this.attributes.VisibilityTimeout);
@@ -363,6 +398,7 @@ export class SqsQueue {
     dlqResolver?: (arn: string) => SqsQueue | undefined,
   ): ReceivedMessage[] {
     this.processTimers();
+    this.expireMessages();
 
     const visibilityTimeout =
       visibilityTimeoutOverride ?? parseInt(this.attributes.VisibilityTimeout);
@@ -644,6 +680,7 @@ export class SqsQueue {
    */
   removeAllReadyMessages(): SqsMessage[] {
     this.processTimers();
+    this.expireMessages();
     const result: SqsMessage[] = [];
     if (this.isFifo()) {
       // A locked group has an in-flight message; the rest of that group is not

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, onTestFinished } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -1284,6 +1284,43 @@ describe("Persistence", () => {
     expect(result.Rules![0].Status).toBe("Enabled");
     expect(result.Rules![0].Expiration?.Days).toBe(1);
 
+    await server.stop();
+  });
+});
+
+describe("Persistence: SQS message retention", () => {
+  const t0 = Date.UTC(2026, 0, 1);
+  let dataDir: string;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"], now: t0 });
+    dataDir = createTempDir();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("deletes the stored row of a message that expired on receive", async () => {
+    let server = await startFauxqs({ port: 0, logger: false, dataDir });
+    const sqs = makeSqsClient(server.port);
+    const { QueueUrl } = await sqs.send(
+      new CreateQueueCommand({
+        QueueName: "retention-persisted",
+        Attributes: { MessageRetentionPeriod: "60" },
+      }),
+    );
+    await sqs.send(new SendMessageCommand({ QueueUrl, MessageBody: "expired" }));
+    vi.setSystemTime(t0 + 60_001);
+    const received = await sqs.send(new ReceiveMessageCommand({ QueueUrl }));
+    expect(received.Messages).toBeUndefined();
+    await server.stop();
+
+    vi.setSystemTime(t0);
+    server = await startFauxqs({ port: 0, logger: false, dataDir });
+
+    expect(server.inspectQueue("retention-persisted")!.messages.ready).toEqual([]);
     await server.stop();
   });
 });
