@@ -13,6 +13,12 @@ import { startFauxqs } from "../../src/app.js";
 
 const t0 = Date.UTC(2026, 0, 1);
 
+async function requestHealthAt(server: FauxqsServer, time: number): Promise<void> {
+  vi.setSystemTime(time);
+  const response = await fetch(`http://127.0.0.1:${server.port}/health`);
+  expect(response.status).toBe(200);
+}
+
 describe("SQS message retention", () => {
   let server: FauxqsServer;
   let sqs: ReturnType<typeof createSqsClient>;
@@ -52,11 +58,6 @@ describe("SQS message retention", () => {
         MessageDeduplicationId: groupId ? body : undefined,
       }),
     );
-  }
-
-  async function sweepAt(time: number): Promise<void> {
-    vi.setSystemTime(time);
-    await fetch(`http://127.0.0.1:${server.port}/health`);
   }
 
   async function receiveBodies(queueUrl: string): Promise<string[]> {
@@ -235,7 +236,7 @@ describe("SQS message retention", () => {
     await send(sourceUrl, "dead-lettered");
     expect(await receiveBodies(sourceUrl)).toEqual(["dead-lettered"]);
     expect(await receiveBodies(sourceUrl)).toEqual([]);
-    await sweepAt(t0 + 60_000);
+    await requestHealthAt(server, t0 + 60_000);
     vi.setSystemTime(t0 + 60_001);
 
     await sqs.send(new StartMessageMoveTaskCommand({ SourceArn: dlqArn }));
@@ -257,12 +258,6 @@ describe("SQS message retention sweep", () => {
     vi.useRealTimers();
   });
 
-  async function requestHealthAt(time: number): Promise<void> {
-    vi.setSystemTime(time);
-    const response = await fetch(`http://127.0.0.1:${server.port}/health`);
-    expect(response.status).toBe(200);
-  }
-
   it.each([
     { kind: "standard", name: "retention-unconsumed", attributes: {}, groupId: undefined },
     {
@@ -282,7 +277,7 @@ describe("SQS message retention sweep", () => {
         });
       }
 
-      await requestHealthAt(t0 + 120_000);
+      await requestHealthAt(server, t0 + 120_000);
 
       expect(server.inspectQueue(name)!.messages.ready).toEqual([]);
     },
@@ -294,7 +289,7 @@ describe("SQS message retention sweep", () => {
     });
     server.sendMessage("retention-unconsumed-delayed", "delayed");
 
-    await requestHealthAt(t0 + 120_000);
+    await requestHealthAt(server, t0 + 120_000);
 
     const { messages } = server.inspectQueue("retention-unconsumed-delayed")!;
     expect(messages.delayed).toEqual([]);
@@ -305,11 +300,11 @@ describe("SQS message retention sweep", () => {
     server.createQueue("retention-sweep-interval", { attributes: { MessageRetentionPeriod: "60" } });
     server.sendMessage("retention-sweep-interval", "swept-later");
 
-    await requestHealthAt(t0 + 60_000);
-    await requestHealthAt(t0 + 90_000);
+    await requestHealthAt(server, t0 + 60_000);
+    await requestHealthAt(server, t0 + 90_000);
     expect(server.inspectQueue("retention-sweep-interval")!.messages.ready).toHaveLength(1);
 
-    await requestHealthAt(t0 + 120_000);
+    await requestHealthAt(server, t0 + 120_000);
     expect(server.inspectQueue("retention-sweep-interval")!.messages.ready).toEqual([]);
   });
 });
