@@ -131,6 +131,7 @@ interface PreparedStatements {
   updateMessageInflight: StatementSync;
   deleteQueueMessages: StatementSync;
   loadMessages: StatementSync;
+  deleteExpiredMessages: StatementSync;
   deleteAllMessages: StatementSync;
   insertTopic: StatementSync;
   deleteTopic: StatementSync;
@@ -223,6 +224,12 @@ export class PersistenceManager implements S3PersistenceProvider {
       `),
       deleteQueueMessages: this.db.prepare("DELETE FROM sqs_messages WHERE queue_name = ?"),
       loadMessages: this.db.prepare("SELECT * FROM sqs_messages WHERE queue_name = ?"),
+      deleteExpiredMessages: this.db.prepare(`
+        DELETE FROM sqs_messages
+        WHERE queue_name = ? AND sent_timestamp < ?
+          AND (visibility_deadline IS NULL OR visibility_deadline <= ?)
+          AND (delay_until IS NULL OR delay_until <= ?)
+      `),
       deleteAllMessages: this.db.prepare("DELETE FROM sqs_messages"),
       insertTopic: this.db.prepare(`
         INSERT OR REPLACE INTO sns_topics (arn, name, attributes, tags, subscription_arns)
@@ -665,6 +672,7 @@ export class PersistenceManager implements S3PersistenceProvider {
 
   private loadSqsMessages(queue: SqsQueue): void {
     const now = Date.now();
+    this.stmts.deleteExpiredMessages.run(queue.name, now - queue.messageRetentionMs(), now, now);
     const rows = this.stmts.loadMessages.all(queue.name) as Array<{
       message_id: string;
       queue_name: string;

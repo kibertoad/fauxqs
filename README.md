@@ -1095,7 +1095,7 @@ const server = await startFauxqs({ port: 4566, dataDir: "./data" });
 
 All mutations are written through to SQLite immediately (no batching or delayed flush). On restart with the same `dataDir`, the server restores all state including:
 
-- SQS queues with attributes, tags, and messages (ready, delayed, and inflight with their visibility deadlines)
+- SQS queues with attributes, tags, and messages (ready, delayed, and inflight with their visibility deadlines). Ready messages older than their queue's [retention](#sqs-features) are deleted instead of loaded
 - FIFO sequence counters (no duplicate sequence numbers after restart)
 - SNS topics with attributes and tags, subscriptions with attributes (fan-out works immediately after restart)
 - S3 buckets (including directory bucket type and lifecycle configurations), objects with metadata, and in-progress multipart uploads

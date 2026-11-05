@@ -1323,4 +1323,67 @@ describe("Persistence: SQS message retention", () => {
     expect(server.inspectQueue("retention-persisted")!.messages.ready).toEqual([]);
     await server.stop();
   });
+
+  async function storeMessage(queueName: string, attributes: Record<string, string>): Promise<void> {
+    const server = await startFauxqs({ port: 0, logger: false, dataDir });
+    server.createQueue(queueName, { attributes });
+    server.sendMessage(queueName, "stored");
+    await server.stop();
+  }
+
+  it("does not load a message that expired while the server was stopped", async () => {
+    await storeMessage("retention-restart", { MessageRetentionPeriod: "60" });
+
+    vi.setSystemTime(t0 + 60_001);
+    let server = await startFauxqs({ port: 0, logger: false, dataDir });
+    expect(server.inspectQueue("retention-restart")!.messages.ready).toEqual([]);
+    await server.stop();
+
+    vi.setSystemTime(t0);
+    server = await startFauxqs({ port: 0, logger: false, dataDir });
+    expect(server.inspectQueue("retention-restart")!.messages.ready).toEqual([]);
+    await server.stop();
+  });
+
+  it("loads a message whose age equals MessageRetentionPeriod", async () => {
+    await storeMessage("retention-restart", { MessageRetentionPeriod: "60" });
+
+    vi.setSystemTime(t0 + 60_000);
+    const server = await startFauxqs({ port: 0, logger: false, dataDir });
+
+    expect(server.inspectQueue("retention-restart")!.messages.ready).toHaveLength(1);
+    await server.stop();
+  });
+
+  it("loads an expired message that is still delayed", async () => {
+    await storeMessage("retention-restart", { MessageRetentionPeriod: "60", DelaySeconds: "120" });
+
+    vi.setSystemTime(t0 + 90_000);
+    const server = await startFauxqs({ port: 0, logger: false, dataDir });
+
+    expect(server.inspectQueue("retention-restart")!.messages.delayed).toHaveLength(1);
+    await server.stop();
+  });
+
+  it("loads an expired message that is still in flight", async () => {
+    let server = await startFauxqs({ port: 0, logger: false, dataDir });
+    const sqs = makeSqsClient(server.port);
+    const { QueueUrl } = await sqs.send(
+      new CreateQueueCommand({
+        QueueName: "retention-restart-inflight",
+        Attributes: { MessageRetentionPeriod: "60", VisibilityTimeout: "30" },
+      }),
+    );
+    await sqs.send(new SendMessageCommand({ QueueUrl, MessageBody: "in-flight" }));
+    vi.setSystemTime(t0 + 50_000);
+    const received = await sqs.send(new ReceiveMessageCommand({ QueueUrl }));
+    expect(received.Messages).toHaveLength(1);
+    await server.stop();
+
+    vi.setSystemTime(t0 + 70_000);
+    server = await startFauxqs({ port: 0, logger: false, dataDir });
+
+    expect(server.inspectQueue("retention-restart-inflight")!.messages.inflight).toHaveLength(1);
+    await server.stop();
+  });
 });
