@@ -117,6 +117,8 @@ export interface BuildAppOptions {
   ordering?: { seed?: number };
 }
 
+const MESSAGE_EXPIRY_INTERVAL_MS = 60_000;
+
 export function buildApp(options?: BuildAppOptions) {
   const app = Fastify({
     logger: options?.logger ?? true,
@@ -298,6 +300,20 @@ export function buildApp(options?: BuildAppOptions) {
     sqsStore.shutdown();
   });
 
+  let lastMessageExpiry = Date.now();
+  app.addHook("onRequest", (request, _reply, done) => {
+    const now = Date.now();
+    if (now - lastMessageExpiry >= MESSAGE_EXPIRY_INTERVAL_MS) {
+      lastMessageExpiry = now;
+      try {
+        sqsStore.expireMessages();
+      } catch (err) {
+        request.log.error({ err }, "SQS message expiry failed");
+      }
+    }
+    done();
+  });
+
   app.get("/health", async () => {
     return { status: "ok" };
   });
@@ -475,6 +491,18 @@ export interface FauxqsServer {
   deleteTenant(prefix: string): void;
 }
 
+function resolveMaxMessageRetentionMs(maxSeconds: number | undefined): number | undefined {
+  const value = maxSeconds ?? (process.env.FAUXQS_MAX_MESSAGE_RETENTION || undefined);
+  if (value === undefined) return undefined;
+  const seconds = Number(value);
+  if (!Number.isInteger(seconds) || seconds <= 0) {
+    const source =
+      maxSeconds === undefined ? "FAUXQS_MAX_MESSAGE_RETENTION" : "messageRetention.maxSeconds";
+    throw new Error(`${source} must be a positive integer number of seconds (got "${value}")`);
+  }
+  return seconds * 1000;
+}
+
 export async function startFauxqs(options?: {
   port?: number;
   logger?: boolean;
@@ -498,6 +526,8 @@ export async function startFauxqs(options?: {
    *  ordering guarantee); a seed only makes that reordering deterministic. Use a FIFO queue if you need ordering.
    *  Env fallback: FAUXQS_ORDERING_SEED. */
   ordering?: { seed?: number };
+  /** Upper bound on every queue's MessageRetentionPeriod, in seconds. Env fallback: FAUXQS_MAX_MESSAGE_RETENTION. */
+  messageRetention?: { maxSeconds?: number };
 }): Promise<FauxqsServer> {
   const port = options?.port ?? parseInt(process.env.FAUXQS_PORT ?? "4566");
   const host = options?.host ?? process.env.FAUXQS_HOST;
@@ -529,6 +559,9 @@ export async function startFauxqs(options?: {
   if (orderingSeed !== undefined && !Number.isNaN(orderingSeed)) {
     sqsStore.random = mulberry32(orderingSeed);
   }
+  sqsStore.maxMessageRetentionMs = resolveMaxMessageRetentionMs(
+    options?.messageRetention?.maxSeconds,
+  );
 
   // Persistence: create managers and wire into stores before any data is loaded
   const persistenceManager = options?.dataDir ? new PersistenceManager(options.dataDir) : undefined;

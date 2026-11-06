@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, onTestFinished } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -1284,6 +1284,212 @@ describe("Persistence", () => {
     expect(result.Rules![0].Status).toBe("Enabled");
     expect(result.Rules![0].Expiration?.Days).toBe(1);
 
+    await server.stop();
+  });
+});
+
+describe("Persistence: SQS message retention", () => {
+  const t0 = Date.UTC(2026, 0, 1);
+  const retentionQueueKinds = [
+    { kind: "standard", queueName: "retention-persisted", attributes: {}, groupId: undefined },
+    {
+      kind: "FIFO",
+      queueName: "retention-persisted.fifo",
+      attributes: { FifoQueue: "true" },
+      groupId: "group-1",
+    },
+  ];
+  let dataDir: string;
+
+  function countStoredMessages(queueName: string): number {
+    const db = new DatabaseSync(join(dataDir, "fauxqs.db"));
+    const row = db
+      .prepare("SELECT COUNT(*) AS count FROM sqs_messages WHERE queue_name = ?")
+      .get(queueName) as { count: number };
+    db.close();
+    return row.count;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"], now: t0 });
+    dataDir = createTempDir();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it.each(retentionQueueKinds)(
+    "deletes the stored row of a $kind message that expired on receive",
+    async ({ queueName, attributes, groupId }) => {
+      let server = await startFauxqs({ port: 0, logger: false, dataDir });
+      server.createQueue(queueName, {
+        attributes: { ...attributes, MessageRetentionPeriod: "60" },
+      });
+      server.sendMessage(queueName, "expired", {
+        messageGroupId: groupId,
+        messageDeduplicationId: groupId ? "expired" : undefined,
+      });
+      await server.stop();
+      vi.setSystemTime(t0 + 30_000);
+      server = await startFauxqs({ port: 0, logger: false, dataDir });
+      const sqs = makeSqsClient(server.port);
+      const { QueueUrl } = await sqs.send(new GetQueueUrlCommand({ QueueName: queueName }));
+
+      vi.setSystemTime(t0 + 60_001);
+      const received = await sqs.send(new ReceiveMessageCommand({ QueueUrl }));
+      await server.stop();
+
+      expect(received.Messages).toBeUndefined();
+      expect(countStoredMessages(queueName)).toBe(0);
+    },
+  );
+
+  it.each(retentionQueueKinds)(
+    "keeps a $kind message in memory when a receive cannot delete its row",
+    async ({ queueName, attributes, groupId }) => {
+      let server = await startFauxqs({ port: 0, logger: false, dataDir });
+      server.createQueue(queueName, {
+        attributes: { ...attributes, MessageRetentionPeriod: "60" },
+      });
+      server.sendMessage(queueName, "expired", {
+        messageGroupId: groupId,
+        messageDeduplicationId: groupId ? "expired" : undefined,
+      });
+      await server.stop();
+      vi.setSystemTime(t0 + 30_000);
+      server = await startFauxqs({ port: 0, logger: false, dataDir });
+      const sqs = makeSqsClient(server.port);
+      const { QueueUrl } = await sqs.send(new GetQueueUrlCommand({ QueueName: queueName }));
+      const lock = new DatabaseSync(join(dataDir, "fauxqs.db"));
+      lock.exec("BEGIN IMMEDIATE");
+      vi.setSystemTime(t0 + 60_001);
+
+      await expect(sqs.send(new ReceiveMessageCommand({ QueueUrl }))).rejects.toThrow();
+
+      lock.exec("ROLLBACK");
+      lock.close();
+      expect(server.inspectQueue(queueName)!.messages.ready).toHaveLength(1);
+      await server.stop();
+    },
+  );
+
+  async function storeMessage(queueName: string, attributes: Record<string, string>): Promise<void> {
+    const server = await startFauxqs({ port: 0, logger: false, dataDir });
+    server.createQueue(queueName, { attributes });
+    server.sendMessage(queueName, "stored");
+    await server.stop();
+  }
+
+  it("does not load a message that expired while the server was stopped", async () => {
+    await storeMessage("retention-restart", { MessageRetentionPeriod: "60" });
+
+    vi.setSystemTime(t0 + 60_001);
+    let server = await startFauxqs({ port: 0, logger: false, dataDir });
+    expect(server.inspectQueue("retention-restart")!.messages.ready).toEqual([]);
+    await server.stop();
+
+    vi.setSystemTime(t0);
+    server = await startFauxqs({ port: 0, logger: false, dataDir });
+    expect(server.inspectQueue("retention-restart")!.messages.ready).toEqual([]);
+    await server.stop();
+  });
+
+  it("loads a message whose age equals MessageRetentionPeriod", async () => {
+    await storeMessage("retention-restart", { MessageRetentionPeriod: "60" });
+
+    vi.setSystemTime(t0 + 60_000);
+    const server = await startFauxqs({ port: 0, logger: false, dataDir });
+
+    expect(server.inspectQueue("retention-restart")!.messages.ready).toHaveLength(1);
+    await server.stop();
+  });
+
+  it.each(retentionQueueKinds)(
+    "keeps a $kind message and serves requests when the sweep cannot delete its row",
+    async ({ queueName, attributes, groupId }) => {
+      const server = await startFauxqs({ port: 0, logger: false, dataDir });
+      server.createQueue(queueName, {
+        attributes: { ...attributes, MessageRetentionPeriod: "60" },
+      });
+      server.sendMessage(queueName, "stored", {
+        messageGroupId: groupId,
+        messageDeduplicationId: groupId ? "stored" : undefined,
+      });
+      const lock = new DatabaseSync(join(dataDir, "fauxqs.db"));
+      lock.exec("BEGIN IMMEDIATE");
+      vi.setSystemTime(t0 + 120_000);
+
+      const lockedResponse = await fetch(`http://127.0.0.1:${server.port}/health`);
+
+      lock.exec("ROLLBACK");
+      lock.close();
+      expect(lockedResponse.status).toBe(200);
+      expect(server.inspectQueue(queueName)!.messages.ready).toHaveLength(1);
+      vi.setSystemTime(t0 + 180_000);
+      await fetch(`http://127.0.0.1:${server.port}/health`);
+      await server.stop();
+      expect(countStoredMessages(queueName)).toBe(0);
+    },
+  );
+
+  it("applies the retention cap to persisted messages at startup", async () => {
+    await storeMessage("retention-restart", {});
+
+    vi.setSystemTime(t0 + 60_001);
+    const server = await startFauxqs({
+      port: 0,
+      logger: false,
+      dataDir,
+      messageRetention: { maxSeconds: 60 },
+    });
+
+    expect(server.inspectQueue("retention-restart")!.messages.ready).toEqual([]);
+    await server.stop();
+  });
+
+  it("deletes an expired message whose delay has elapsed", async () => {
+    await storeMessage("retention-restart", { MessageRetentionPeriod: "60", DelaySeconds: "30" });
+
+    vi.setSystemTime(t0 + 60_001);
+    const server = await startFauxqs({ port: 0, logger: false, dataDir });
+
+    const { messages } = server.inspectQueue("retention-restart")!;
+    expect(messages.delayed).toEqual([]);
+    expect(messages.ready).toEqual([]);
+    await server.stop();
+  });
+
+  it("loads an expired message that is still delayed", async () => {
+    await storeMessage("retention-restart", { MessageRetentionPeriod: "60", DelaySeconds: "120" });
+
+    vi.setSystemTime(t0 + 90_000);
+    const server = await startFauxqs({ port: 0, logger: false, dataDir });
+
+    expect(server.inspectQueue("retention-restart")!.messages.delayed).toHaveLength(1);
+    await server.stop();
+  });
+
+  it("loads an expired message that is still in flight", async () => {
+    let server = await startFauxqs({ port: 0, logger: false, dataDir });
+    const sqs = makeSqsClient(server.port);
+    const { QueueUrl } = await sqs.send(
+      new CreateQueueCommand({
+        QueueName: "retention-restart-inflight",
+        Attributes: { MessageRetentionPeriod: "60", VisibilityTimeout: "30" },
+      }),
+    );
+    await sqs.send(new SendMessageCommand({ QueueUrl, MessageBody: "in-flight" }));
+    vi.setSystemTime(t0 + 50_000);
+    const received = await sqs.send(new ReceiveMessageCommand({ QueueUrl }));
+    expect(received.Messages).toHaveLength(1);
+    await server.stop();
+
+    vi.setSystemTime(t0 + 70_000);
+    server = await startFauxqs({ port: 0, logger: false, dataDir });
+
+    expect(server.inspectQueue("retention-restart-inflight")!.messages.inflight).toHaveLength(1);
     await server.stop();
   });
 });

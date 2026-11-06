@@ -35,6 +35,14 @@ interface StandardGroupPicker {
 /** Cap on retained message move task history, so repeated redrives don't grow unbounded. */
 const MESSAGE_MOVE_TASK_HISTORY_LIMIT = 100;
 
+function countMessagesSentBefore(cutoff: number, messages: SqsMessage[]): number {
+  let count = 0;
+  while (count < messages.length && messages[count].sentTimestamp < cutoff) {
+    count++;
+  }
+  return count;
+}
+
 export class SqsQueue {
   readonly name: string;
   readonly url: string;
@@ -58,6 +66,7 @@ export class SqsQueue {
   persistence?: PersistenceManager;
   /** PRNG for standard-queue reordering; injected from the store so all queues share one (optionally seeded) stream. */
   random: () => number = Math.random;
+  maxMessageRetentionMs?: number;
 
   // FIFO-specific fields
   fifoMessages: Map<string, SqsMessage[]> = new Map();
@@ -173,6 +182,43 @@ export class SqsQueue {
     return this.parsedRedrivePolicy ?? undefined;
   }
 
+  messageRetentionMs(): number {
+    const retentionMs = parseInt(this.attributes.MessageRetentionPeriod) * 1000;
+    return Math.min(retentionMs, this.maxMessageRetentionMs ?? Infinity);
+  }
+
+  expireMessages(): void {
+    const cutoff = Date.now() - this.messageRetentionMs();
+    if (!this.isFifo()) {
+      const expiredIds = this.messages
+        .filter((msg) => msg.sentTimestamp < cutoff)
+        .map((msg) => msg.messageId);
+      if (expiredIds.length === 0) return;
+      this.persistence?.deleteMessages(expiredIds);
+      this.messages = this.messages.filter((msg) => msg.sentTimestamp >= cutoff);
+      return;
+    }
+    const expiredHeads = new Map<string, number>();
+    const expiredIds: string[] = [];
+    for (const [groupId, groupMsgs] of this.fifoMessages) {
+      const expiredCount = countMessagesSentBefore(cutoff, groupMsgs);
+      if (expiredCount === 0) continue;
+      expiredHeads.set(groupId, expiredCount);
+      for (const msg of groupMsgs.slice(0, expiredCount)) {
+        expiredIds.push(msg.messageId);
+      }
+    }
+    if (expiredIds.length === 0) return;
+    this.persistence?.deleteMessages(expiredIds);
+    for (const [groupId, expiredCount] of expiredHeads) {
+      const groupMsgs = this.fifoMessages.get(groupId)!;
+      groupMsgs.splice(0, expiredCount);
+      if (groupMsgs.length === 0) {
+        this.fifoMessages.delete(groupId);
+      }
+    }
+  }
+
   enqueue(msg: SqsMessage): void {
     if (this.spy) {
       this.spy.addMessage(buildSqsSpyMessage(this.name, msg, "published"));
@@ -213,6 +259,7 @@ export class SqsQueue {
     }
 
     this.processTimers();
+    this.expireMessages();
 
     const visibilityTimeout =
       visibilityTimeoutOverride ?? parseInt(this.attributes.VisibilityTimeout);
@@ -363,6 +410,7 @@ export class SqsQueue {
     dlqResolver?: (arn: string) => SqsQueue | undefined,
   ): ReceivedMessage[] {
     this.processTimers();
+    const expiryCutoff = Date.now() - this.messageRetentionMs();
 
     const visibilityTimeout =
       visibilityTimeoutOverride ?? parseInt(this.attributes.VisibilityTimeout);
@@ -382,6 +430,14 @@ export class SqsQueue {
 
       // Take messages from this group in order (up to remaining count)
       while (result.length < count && groupMsgs.length > 0) {
+        const expiredCount = countMessagesSentBefore(expiryCutoff, groupMsgs);
+        if (expiredCount > 0) {
+          this.persistence?.deleteMessages(
+            groupMsgs.slice(0, expiredCount).map((expired) => expired.messageId),
+          );
+          groupMsgs.splice(0, expiredCount);
+          continue;
+        }
         const msg = groupMsgs.shift()!;
 
         msg.approximateReceiveCount++;
@@ -635,7 +691,7 @@ export class SqsQueue {
   }
 
   /**
-   * Remove and return all currently-visible (ready) messages. Used by message
+   * Remove all currently-visible (ready) messages and return the unexpired ones. Used by message
    * move tasks (DLQ redrive). Delayed and in-flight messages are left in place.
    *
    * `fifoLockedGroups` is intentionally left untouched: a locked group tracks an
@@ -644,6 +700,7 @@ export class SqsQueue {
    */
   removeAllReadyMessages(): SqsMessage[] {
     this.processTimers();
+    const expiryCutoff = Date.now() - this.messageRetentionMs();
     const result: SqsMessage[] = [];
     if (this.isFifo()) {
       // A locked group has an in-flight message; the rest of that group is not
@@ -662,7 +719,7 @@ export class SqsQueue {
     for (const msg of result) {
       this.persistence?.deleteMessage(msg.messageId);
     }
-    return result;
+    return result.filter((msg) => msg.sentTimestamp >= expiryCutoff);
   }
 
   /** Return a non-destructive snapshot of all messages in the queue, grouped by state. */
@@ -765,6 +822,7 @@ export class SqsStore {
   region?: string;
   spy?: MessageSpy;
   persistence?: PersistenceManager;
+  maxMessageRetentionMs?: number;
   private _random: () => number = Math.random;
 
   /** PRNG shared with every queue for standard-queue reordering. Seeded via the `ordering` option. */
@@ -789,6 +847,7 @@ export class SqsStore {
   ): SqsQueue {
     const queue = new SqsQueue(name, url, arn, attributes, tags);
     queue.random = this._random;
+    queue.maxMessageRetentionMs = this.maxMessageRetentionMs;
     if (this.spy) {
       queue.spy = this.spy;
     }
@@ -949,6 +1008,7 @@ export class SqsStore {
         msg.approximateFirstReceiveTimestamp = undefined;
         msg.delayUntil = undefined;
         msg.deadLetterSourceArn = undefined;
+        msg.sentTimestamp = Date.now();
         target.enqueue(msg);
         moved++;
       } else {
@@ -1056,6 +1116,13 @@ export class SqsStore {
   processAllTimers(): void {
     for (const queue of this.queues.values()) {
       queue.processTimers();
+    }
+  }
+
+  expireMessages(): void {
+    for (const queue of this.queues.values()) {
+      queue.processTimers();
+      queue.expireMessages();
     }
   }
 

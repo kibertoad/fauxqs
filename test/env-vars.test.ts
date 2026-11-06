@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, onTestFinished, vi } from "vitest";
 import { writeFileSync, unlinkSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -6,6 +6,7 @@ import { startFauxqs, type FauxqsServer } from "../src/app.js";
 import { createSqsClient, createSnsClient, createS3Client } from "./helpers/clients.js";
 import {
   ListQueuesCommand,
+  ReceiveMessageCommand,
 } from "@aws-sdk/client-sqs";
 import { ListTopicsCommand } from "@aws-sdk/client-sns";
 import {
@@ -143,5 +144,55 @@ describe("env vars", () => {
     const sns = createSnsClient(server.port, "eu-central-1");
     const result = await sns.send(new ListTopicsCommand({}));
     expect(result.Topics![0].TopicArn).toContain("eu-central-1");
+  });
+
+  async function receiveAfter(queueName: string, ageMs: number): Promise<number> {
+    const t0 = Date.UTC(2026, 0, 1);
+    vi.useFakeTimers({ toFake: ["Date"], now: t0 });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const { queueUrl } = server.createQueue(queueName);
+    server.sendMessage(queueName, "body");
+    vi.setSystemTime(t0 + ageMs);
+    const sqs = createSqsClient(server.port);
+    const result = await sqs.send(new ReceiveMessageCommand({ QueueUrl: queueUrl }));
+    sqs.destroy();
+    return result.Messages?.length ?? 0;
+  }
+
+  it("FAUXQS_MAX_MESSAGE_RETENTION caps message retention", async () => {
+    setEnv("FAUXQS_MAX_MESSAGE_RETENTION", "2");
+    server = await startFauxqs({ port: 0, logger: false });
+
+    expect(await receiveAfter("env-retention-q", 2_001)).toBe(0);
+  });
+
+  it("programmatic messageRetention.maxSeconds takes precedence over FAUXQS_MAX_MESSAGE_RETENTION", async () => {
+    setEnv("FAUXQS_MAX_MESSAGE_RETENTION", "2");
+    server = await startFauxqs({ port: 0, logger: false, messageRetention: { maxSeconds: 3600 } });
+
+    expect(await receiveAfter("env-retention-precedence-q", 2_001)).toBe(1);
+  });
+
+  it("treats an empty FAUXQS_MAX_MESSAGE_RETENTION as unset", async () => {
+    setEnv("FAUXQS_MAX_MESSAGE_RETENTION", "");
+    server = await startFauxqs({ port: 0, logger: false });
+
+    expect(await receiveAfter("env-retention-empty-q", 2_001)).toBe(1);
+  });
+
+  it.each(["0", "-5", "abc", "1.5"])("rejects FAUXQS_MAX_MESSAGE_RETENTION=%s", async (value) => {
+    setEnv("FAUXQS_MAX_MESSAGE_RETENTION", value);
+
+    await expect(startFauxqs({ port: 0, logger: false })).rejects.toThrow(
+      `FAUXQS_MAX_MESSAGE_RETENTION must be a positive integer number of seconds (got "${value}")`,
+    );
+  });
+
+  it("rejects a messageRetention.maxSeconds that is not a positive integer", async () => {
+    await expect(
+      startFauxqs({ port: 0, logger: false, messageRetention: { maxSeconds: 0 } }),
+    ).rejects.toThrow('messageRetention.maxSeconds must be a positive integer number of seconds (got "0")');
   });
 });
