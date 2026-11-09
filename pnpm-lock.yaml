@@ -25,7 +25,7 @@ importers:
         version: 4.14.1
       fastify:
         specifier: ^5.8.5
-        version: 5.12.7
+        version: 5.12.8
       toad-cache:
         specifier: ^3.7.1
         version: 3.7.4
@@ -194,8 +194,8 @@ packages:
   '@fastify/cors@11.3.1':
     resolution: {integrity: sha512-gZXNzd6FLHzOIfvoK4+Az3Wko2V6Y0MIsLxpyo4AEYl7a9q1JBPwPaxLea4nkr++8FCiJiPpYYo6E02uZW0dqw==}
 
-  '@fastify/deepmerge@3.2.2':
-    resolution: {integrity: sha512-155eqA/WMQdN6gUD4RrhS2K0Pcz2Ou9pQ86L0sipOpP9ONbTA6oYw/hW4VdBjR4egcDHqmWUK9x80oUX7S1mDQ==}
+  '@fastify/deepmerge@3.2.4':
+    resolution: {integrity: sha512-kc8GQq5gX9RRhw0rov3DMrN8wS8yRlxJRdDzsYwwdBV/wazuVgc/1K7CKL90tlvu3RlHan6Y0R0aE3nJtBz2eQ==}
 
   '@fastify/error@4.2.1':
     resolution: {integrity: sha512-MYBumuIwP+5MIpXSyKm6/o1Eigcoij186lWUssX3LH5U8KWqU0ktZhzC4CErIX9EJeQeRGI+zJZQWakBlFbUcg==}
@@ -203,8 +203,8 @@ packages:
   '@fastify/fast-json-stringify-compiler@5.1.1':
     resolution: {integrity: sha512-pyxRKk7UpUnnrztP9pF4+ZYxusEQ4LifTyzRdiXmyql1QezNHxO02D25MVU2o4kMeAMYWAjG6RKRlojgkbiDAw==}
 
-  '@fastify/forwarded@3.1.1':
-    resolution: {integrity: sha512-XfDtW2Icvhqi6DP1YHFK4q/E8WpNd3+raBdzAyVZxmTInbFTtnEEKvEAMMOVdFuRyv+ynYipaA9D8FvjPqACkw==}
+  '@fastify/forwarded@3.1.2':
+    resolution: {integrity: sha512-89WiRG+hW3VQSfCwg4Hb8b43PeyEX15K5+lEfsZ4EUth/FyOjS/lv8HsVuswUNXWiSnxMGNouE/fq/0w3VumHQ==}
 
   '@fastify/merge-json-schemas@0.2.2':
     resolution: {integrity: sha512-d/gx9sRbUCVgGRGzma46wLcwiY8noTqO2Nmjg/vbTARxHRE5bdh5PIL8s97Lt1X7ScRWRW52eVYxwIoPwIdVUA==}
@@ -601,13 +601,6 @@ packages:
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
-  '@smithy/core@3.38.0':
-    resolution: {integrity: sha512-aLyyCnK2p4yvNA2TaM+5owXqb+rZGSiUKEsNP329AzeYnERtAz7NrlTbRsaxqmZ0ooxwoID8LMm959UGQQDIsg==}
-    engines: {node: '>=18.0.0'}
-    deprecated: |-
-      Deprecated due to a bug in custom logger data redaction. Upgrade to the latest version. If you used a custom logger with this
-        version, review your logs and rotate any credentials or other secrets. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
-
   '@smithy/core@3.38.1':
     resolution: {integrity: sha512-U/mB2XiwTLaf+NSgLSWwJfptsMT/H8aBi0aTAA/E5e2/TagFeGCqAyhKGG0w0A9IWTkm4qYEmLoD/HB6aYfnRA==}
     engines: {node: '>=18.0.0'}
@@ -881,12 +874,12 @@ packages:
   fast-deep-equal@3.1.3:
     resolution: {integrity: sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q==}
 
-  fast-equals@6.2.1:
-    resolution: {integrity: sha512-s7KFkLPAAbIDGTh+nVYhjTiwKGvgMXAUG5vwzg8vQKj7NSRZ4eEGExBQ4rq9V90fTYVWd1cb/Wr4ffCNBmLQMQ==}
+  fast-equals@6.2.2:
+    resolution: {integrity: sha512-n+XqoarWCgcar0O3om3DeNYx6xTuLWGTUF1bRZ9iuO00tsPepzP1L4V7rqtxxZ4PEya34UCESReimFvxmEVwIA==}
     engines: {node: '>=6.0.0'}
 
-  fast-json-stringify@7.1.0:
-    resolution: {integrity: sha512-wAhAQ+es0aH+x5OofdCHlZZFdqwtiM6lpEosaRIwfg271WYeEQ/tPcXdu5vpzlqZpbJ4WNqaW4QR5UjfG4Dc2w==}
+  fast-json-stringify@7.2.1:
+    resolution: {integrity: sha512-GU16K+1IH8XSJ/suUaX/ONlJ5glCFvmBdra2nGI2ZGpBBXzqM/r/lzO02gjHYcRad1KKj6WvC+/RROggpg6acg==}
 
   fast-querystring@1.1.2:
     resolution: {integrity: sha512-g6KuKWmFXc0fID8WWH0jit4g0AGBoJhCkJMb1RmbsSEUNvQ+ZC8D6CUZ+GtF8nMzSPXnhiePyyqqipzNNEnHjg==}
@@ -894,17 +887,17 @@ packages:
   fast-safe-stringify@2.1.1:
     resolution: {integrity: sha512-W+KJc2dmILlPplD/H4K9l9LcAHAfPtP6BY84uVLXQ6Evcz9Lcg33Y2z1IVblT6xdY54PXYVHEv+0Wpq8Io6zkA==}
 
-  fast-uri@3.1.8:
-    resolution: {integrity: sha512-GZMtZUTNRpOVIECoXwLNZS5xUGE+mVNbTB8h/7Rwh2TFWcBQiPzTgyZi05BF9UMZKkLJv8XBRJTlU7zg8+ZfMg==}
+  fast-uri@3.1.9:
+    resolution: {integrity: sha512-hS/0Wt3Ya043oKXs0sIxrMpKQITXhMLIrVAKKXi4gozGC9v7YRWVnXIZzjNPTO02M9BdxLCWqK1yRXgNziVyJQ==}
 
-  fast-uri@4.2.2:
-    resolution: {integrity: sha512-EwVpUMzLVNOmcWW0zi5G3JJwkopB6XXjnVvNBGfqrMMsVew2hkQWl5e/pe/CfYUeS6jt4cIO2MnamEW7v/7wPw==}
+  fast-uri@4.2.3:
+    resolution: {integrity: sha512-I1PXwP5eAhlNlcdpjt9CgB59op2ZvZfxw+BkqGFVIUOgNpCVTcTqp3HhTX7brxj5vsip+nSY4nTvff+eIA76hg==}
 
   fastify-plugin@6.0.0:
     resolution: {integrity: sha512-fZOty7z3O7vOliF6d8bHE3wiEh1KcNnKEQensSgTk9C1DvN6nRLS++XVd86v33Hw/8u9Un8A1zDrQ8ujcQDHEg==}
 
-  fastify@5.12.7:
-    resolution: {integrity: sha512-v4pEPsTRPuqlDIYiQFB+BHjVN4SdHX9u0ABk0ZDUKbbdY1vsNryUd1j4Z+jQEZajvYIVk047Kimva9/AJ79GYw==}
+  fastify@5.12.8:
+    resolution: {integrity: sha512-moP8exb2sCHLUbJkwp+I6C0padhy4D8lp0SdmzY7HhSdZuqm7O/u3o2aq7u8okaQ//33QDzj3G/u+FsSdB8Qzw==}
 
   fastq@1.20.3:
     resolution: {integrity: sha512-XKv5nnLs6nLF71NgiKJLIZFLkPyIEuOselLG7ujZnGrRfQK8HpvY+WqKhAJUAdLomwVHErVS4LfxFlPq0/FTAw==}
@@ -1127,8 +1120,8 @@ packages:
     resolution: {integrity: sha512-Xf0nWe6RseziFMu+Ap9biiUbmplq6S9/p+7w7YXP/JBHhrUDDUhwa+vANyubuqfZWTveU//DYVGsDG7RKL/vEw==}
     engines: {node: '>=0.10.0'}
 
-  ret@0.5.0:
-    resolution: {integrity: sha512-I1XxrZSQ+oErkRR4jYbAyEEu2I0avBvvMM5JN+6EBprOGRCs63ENqZ3vjavq8fBw2+62G5LF5XelKwuJpcvcxw==}
+  ret@0.5.1:
+    resolution: {integrity: sha512-Z/nyvABwcRnRD2mMP7Kz6G1dFZZqX1mNErOnxF42OCQKE07b9k9hK9SQxHL3LFEZUdzQaLM4dId1E/E6Vm4WhA==}
     engines: {node: '>=10'}
 
   reusify@1.1.0:
@@ -1154,13 +1147,13 @@ packages:
   secure-json-parse@4.1.1:
     resolution: {integrity: sha512-lnd81MQEZKjhW/Gd2TQqdd4XP6QYNdDW/EP+I7nTrFHP9y2LmaGPIHk9xsnzcOiEr1c39c/e84xFgGviQKBTRw==}
 
-  semver@7.8.5:
-    resolution: {integrity: sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==}
+  semver@7.8.6:
+    resolution: {integrity: sha512-9lpSSU4Mly3mrtruwLs1eLK6+gzbzqeBFwRNjIjE+9LuDpWdYctrQlQ3ej1Ilgi7gknpsTRnPoLP8DpCHqHIJw==}
     engines: {node: '>=10'}
     hasBin: true
 
-  set-cookie-parser@3.1.3:
-    resolution: {integrity: sha512-xletSdAI5efyVJjsatBbzDkXl3M/Zmad3xfnQe7ZXuBB0yNwW7C2WFsNGjdRNfZunmNHQuX79xs/ACMTLCdcew==}
+  set-cookie-parser@3.2.2:
+    resolution: {integrity: sha512-df017qMeYuXo4emL09nlyMpi2i2MtEIKS/6jtXH3vmjFgIRsOi852/5RmhJ4EkvN3ZF8jXadM/EkTPXgc8yPIw==}
 
   sonic-boom@4.2.1:
     resolution: {integrity: sha512-w6AxtubXa2wTXAUsZMMWERrsIRAdrK0Sc+FUytWvYAhBJLyuI4llrMIC1DtlNSdI99EI86KZum2MMq3EAZlF9Q==}
@@ -1187,8 +1180,8 @@ packages:
     resolution: {integrity: sha512-yEFYrVhod+hdNyx7g5Bnkkb0G6si8HJurOoOEgC8B/O0uXLHlaey/65KRv6cuWBNhBgHKAROVpc7QyYqE5gFng==}
     engines: {node: '>=20'}
 
-  thread-stream@4.2.0:
-    resolution: {integrity: sha512-e2zZ96wSChazBsbENf/Pcm/4swHt2cEKQ92rhUjkL9GCKiTDJIaTBenjE/m9DXi0QBmTMDkFDdOomUy20A1tDQ==}
+  thread-stream@4.2.1:
+    resolution: {integrity: sha512-Stg6edJXC/6/xqGwSXwFokrUhChJ18amEjpKH89WrQQ0oVFDF+pUUcTpiwWhFUrE89Vf16FBOlwhaw+lescxMQ==}
     engines: {node: '>=20'}
 
   tinybench@6.2.2:
@@ -1218,9 +1211,6 @@ packages:
   toad-cache@3.7.4:
     resolution: {integrity: sha512-m1TdR/rvT7kgGJZhspNtXdsdYk0fddFpJJFlG5s+UkPFo6lkLoZ3YLOaovPYjq1R75NP5JfeTlSHaOsE09peCg==}
     engines: {node: '>=20'}
-
-  tslib@2.8.1:
-    resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
 
   tslib@2.9.1:
     resolution: {integrity: sha512-a4Ux9VKuIMHsOS7ENbEq6hK2ZGYIT27Rtl0E4eD9KqwxhKiQeMZE/9xb3IdYwWaSOyIBQLExhQgXDTYoiCxnWA==}
@@ -1591,22 +1581,22 @@ snapshots:
     dependencies:
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
-      fast-uri: 4.2.2
+      fast-uri: 4.2.3
 
   '@fastify/cors@11.3.1':
     dependencies:
       fastify-plugin: 6.0.0
       toad-cache: 3.7.4
 
-  '@fastify/deepmerge@3.2.2': {}
+  '@fastify/deepmerge@3.2.4': {}
 
   '@fastify/error@4.2.1': {}
 
   '@fastify/fast-json-stringify-compiler@5.1.1':
     dependencies:
-      fast-json-stringify: 7.1.0
+      fast-json-stringify: 7.2.1
 
-  '@fastify/forwarded@3.1.1': {}
+  '@fastify/forwarded@3.1.2': {}
 
   '@fastify/merge-json-schemas@0.2.2':
     dependencies:
@@ -1614,7 +1604,7 @@ snapshots:
 
   '@fastify/proxy-addr@5.1.2':
     dependencies:
-      '@fastify/forwarded': 3.1.1
+      '@fastify/forwarded': 3.1.2
       ipaddr.js: 2.5.0
 
   '@jridgewell/resolve-uri@3.1.2': {}
@@ -1642,7 +1632,7 @@ snapshots:
       '@lokalise/universal-ts-utils': 4.12.0
       '@message-queue-toolkit/schemas': 7.2.1(zod@4.4.3)
       dot-prop: 10.2.0
-      fast-equals: 6.2.1
+      fast-equals: 6.2.2
       json-stream-stringify: 3.1.7
       tmp: 0.2.7
       toad-cache: 3.7.4
@@ -1833,11 +1823,6 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
-  '@smithy/core@3.38.0':
-    dependencies:
-      '@smithy/types': 4.19.0
-      tslib: 2.8.1
-
   '@smithy/core@3.38.1':
     dependencies:
       '@smithy/types': 4.19.0
@@ -1987,7 +1972,7 @@ snapshots:
   ajv@8.20.0:
     dependencies:
       fast-deep-equal: 3.1.3
-      fast-uri: 3.1.8
+      fast-uri: 3.1.9
       json-schema-traverse: 1.0.0
       require-from-string: 2.0.2
 
@@ -2046,14 +2031,14 @@ snapshots:
 
   fast-deep-equal@3.1.3: {}
 
-  fast-equals@6.2.1: {}
+  fast-equals@6.2.2: {}
 
-  fast-json-stringify@7.1.0:
+  fast-json-stringify@7.2.1:
     dependencies:
       '@fastify/merge-json-schemas': 0.2.2
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
-      fast-uri: 4.2.2
+      fast-uri: 4.2.3
       json-schema-ref-resolver: 3.0.1
       rfdc: 1.4.1
 
@@ -2063,13 +2048,13 @@ snapshots:
 
   fast-safe-stringify@2.1.1: {}
 
-  fast-uri@3.1.8: {}
+  fast-uri@3.1.9: {}
 
-  fast-uri@4.2.2: {}
+  fast-uri@4.2.3: {}
 
   fastify-plugin@6.0.0: {}
 
-  fastify@5.12.7:
+  fastify@5.12.8:
     dependencies:
       '@fastify/ajv-compiler': 4.0.7
       '@fastify/error': 4.2.1
@@ -2077,14 +2062,14 @@ snapshots:
       '@fastify/proxy-addr': 5.1.2
       abstract-logging: 2.0.1
       avvio: 9.3.1
-      fast-json-stringify: 7.1.0
+      fast-json-stringify: 7.2.1
       find-my-way: 9.10.0
       light-my-request: 6.8.0
       pino: 10.4.0
       process-warning: 5.1.1
       rfdc: 1.4.1
       secure-json-parse: 4.1.1
-      semver: 7.8.5
+      semver: 7.8.6
       toad-cache: 3.7.4
 
   fastq@1.20.3:
@@ -2124,10 +2109,10 @@ snapshots:
 
   light-my-request@6.8.0:
     dependencies:
-      '@fastify/deepmerge': 3.2.2
+      '@fastify/deepmerge': 3.2.4
       cookie: 2.0.1
       process-warning: 5.1.1
-      set-cookie-parser: 3.1.3
+      set-cookie-parser: 3.2.2
 
   lightningcss-android-arm64@1.33.0:
     optional: true
@@ -2284,7 +2269,7 @@ snapshots:
       real-require: 1.0.0
       safe-stable-stringify: 2.5.0
       sonic-boom: 4.2.1
-      thread-stream: 4.2.0
+      thread-stream: 4.2.1
 
   postcss@8.5.32:
     dependencies:
@@ -2305,7 +2290,7 @@ snapshots:
 
   require-from-string@2.0.2: {}
 
-  ret@0.5.0: {}
+  ret@0.5.1: {}
 
   reusify@1.1.0: {}
 
@@ -2334,15 +2319,15 @@ snapshots:
 
   safe-regex2@5.1.2:
     dependencies:
-      ret: 0.5.0
+      ret: 0.5.1
 
   safe-stable-stringify@2.5.0: {}
 
   secure-json-parse@4.1.1: {}
 
-  semver@7.8.5: {}
+  semver@7.8.6: {}
 
-  set-cookie-parser@3.1.3: {}
+  set-cookie-parser@3.2.2: {}
 
   sonic-boom@4.2.1:
     dependencies:
@@ -2362,7 +2347,7 @@ snapshots:
 
   tagged-tag@1.0.0: {}
 
-  thread-stream@4.2.0:
+  thread-stream@4.2.1:
     dependencies:
       real-require: 1.0.0
 
@@ -2382,8 +2367,6 @@ snapshots:
   tmp@0.2.7: {}
 
   toad-cache@3.7.4: {}
-
-  tslib@2.8.1: {}
 
   tslib@2.9.1: {}
 
