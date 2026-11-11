@@ -303,13 +303,19 @@ export function buildApp(options?: BuildAppOptions) {
   let lastMessageExpiry = Date.now();
   app.addHook("onRequest", (request, _reply, done) => {
     const now = Date.now();
+    // A clock moved back, for example by fake timers, would otherwise stop the sweep.
+    if (now < lastMessageExpiry) {
+      lastMessageExpiry = now;
+    }
     if (now - lastMessageExpiry >= MESSAGE_EXPIRY_INTERVAL_MS) {
       lastMessageExpiry = now;
-      try {
-        sqsStore.expireMessages();
-      } catch (err) {
-        request.log.error({ err }, "SQS message expiry failed");
-      }
+      setImmediate(() => {
+        try {
+          sqsStore.expireMessages();
+        } catch (err) {
+          request.log.error({ err }, "SQS message expiry failed");
+        }
+      });
     }
     done();
   });

@@ -35,12 +35,26 @@ interface StandardGroupPicker {
 /** Cap on retained message move task history, so repeated redrives don't grow unbounded. */
 const MESSAGE_MOVE_TASK_HISTORY_LIMIT = 100;
 
-function countMessagesSentBefore(cutoff: number, messages: SqsMessage[]): number {
-  let count = 0;
-  while (count < messages.length && messages[count].sentTimestamp < cutoff) {
-    count++;
+/**
+ * Returns the messages enqueued at or after `cutoff`, or undefined when none were enqueued before
+ * it. Appends the ids of the earlier messages to `expiredIds`.
+ */
+function withoutExpired(
+  messages: SqsMessage[],
+  cutoff: number,
+  expiredIds: string[],
+): SqsMessage[] | undefined {
+  let kept: SqsMessage[] | undefined;
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.enqueueTimestamp < cutoff) {
+      kept ??= messages.slice(0, i);
+      expiredIds.push(msg.messageId);
+    } else if (kept) {
+      kept.push(msg);
+    }
   }
-  return count;
+  return kept;
 }
 
 export class SqsQueue {
@@ -55,7 +69,7 @@ export class SqsQueue {
   inflightMessages: Map<string, InflightEntry> = new Map();
   delayedMessages: SqsMessage[] = [];
   pollWaiters: Array<{
-    resolve: () => void;
+    resolve: (woken: boolean) => void;
     timer: ReturnType<typeof setTimeout>;
   }> = [];
   private pollTimer?: ReturnType<typeof setInterval>;
@@ -189,32 +203,26 @@ export class SqsQueue {
 
   expireMessages(): void {
     const cutoff = Date.now() - this.messageRetentionMs();
+    const expiredIds: string[] = [];
     if (!this.isFifo()) {
-      const expiredIds = this.messages
-        .filter((msg) => msg.sentTimestamp < cutoff)
-        .map((msg) => msg.messageId);
-      if (expiredIds.length === 0) return;
+      const kept = withoutExpired(this.messages, cutoff, expiredIds);
+      if (!kept) return;
       this.persistence?.deleteMessages(expiredIds);
-      this.messages = this.messages.filter((msg) => msg.sentTimestamp >= cutoff);
+      this.messages = kept;
       return;
     }
-    const expiredHeads = new Map<string, number>();
-    const expiredIds: string[] = [];
+    const keptGroups = new Map<string, SqsMessage[]>();
     for (const [groupId, groupMsgs] of this.fifoMessages) {
-      const expiredCount = countMessagesSentBefore(cutoff, groupMsgs);
-      if (expiredCount === 0) continue;
-      expiredHeads.set(groupId, expiredCount);
-      for (const msg of groupMsgs.slice(0, expiredCount)) {
-        expiredIds.push(msg.messageId);
-      }
+      const kept = withoutExpired(groupMsgs, cutoff, expiredIds);
+      if (kept) keptGroups.set(groupId, kept);
     }
     if (expiredIds.length === 0) return;
     this.persistence?.deleteMessages(expiredIds);
-    for (const [groupId, expiredCount] of expiredHeads) {
-      const groupMsgs = this.fifoMessages.get(groupId)!;
-      groupMsgs.splice(0, expiredCount);
-      if (groupMsgs.length === 0) {
+    for (const [groupId, kept] of keptGroups) {
+      if (kept.length === 0) {
         this.fifoMessages.delete(groupId);
+      } else {
+        this.fifoMessages.set(groupId, kept);
       }
     }
   }
@@ -410,7 +418,7 @@ export class SqsQueue {
     dlqResolver?: (arn: string) => SqsQueue | undefined,
   ): ReceivedMessage[] {
     this.processTimers();
-    const expiryCutoff = Date.now() - this.messageRetentionMs();
+    this.expireMessages();
 
     const visibilityTimeout =
       visibilityTimeoutOverride ?? parseInt(this.attributes.VisibilityTimeout);
@@ -430,14 +438,6 @@ export class SqsQueue {
 
       // Take messages from this group in order (up to remaining count)
       while (result.length < count && groupMsgs.length > 0) {
-        const expiredCount = countMessagesSentBefore(expiryCutoff, groupMsgs);
-        if (expiredCount > 0) {
-          this.persistence?.deleteMessages(
-            groupMsgs.slice(0, expiredCount).map((expired) => expired.messageId),
-          );
-          groupMsgs.splice(0, expiredCount);
-          continue;
-        }
         const msg = groupMsgs.shift()!;
 
         msg.approximateReceiveCount++;
@@ -455,6 +455,7 @@ export class SqsQueue {
             this.persistence?.deleteMessage(msg.messageId);
             // Record the origin queue so a message move task can redrive it back.
             msg.deadLetterSourceArn = this.arn;
+            msg.enqueueTimestamp = Date.now();
             dlq.enqueue(msg);
             continue;
           }
@@ -646,10 +647,11 @@ export class SqsQueue {
     }
   }
 
-  waitForMessages(waitTimeSeconds: number): Promise<void> {
+  /** Resolves `true` when messages may have become available, `false` on timeout or cancellation. */
+  waitForMessages(waitTimeSeconds: number): Promise<boolean> {
     return new Promise((resolve) => {
-      const wrappedResolve = () => {
-        resolve();
+      const wrappedResolve = (woken: boolean) => {
+        resolve(woken);
         this.stopPollTimerIfEmpty();
       };
 
@@ -658,7 +660,7 @@ export class SqsQueue {
         if (idx !== -1) {
           this.pollWaiters.splice(idx, 1);
         }
-        wrappedResolve();
+        wrappedResolve(false);
       }, waitTimeSeconds * 1000);
 
       this.pollWaiters.push({ resolve: wrappedResolve, timer });
@@ -691,8 +693,8 @@ export class SqsQueue {
   }
 
   /**
-   * Remove all currently-visible (ready) messages and return the unexpired ones. Used by message
-   * move tasks (DLQ redrive). Delayed and in-flight messages are left in place.
+   * Delete expired ready messages, then remove and return all other currently-visible (ready)
+   * messages. Used by message move tasks (DLQ redrive). Delayed and in-flight messages are left in place.
    *
    * `fifoLockedGroups` is intentionally left untouched: a locked group tracks an
    * in-flight message, which this method does not remove. That lock is released
@@ -700,7 +702,7 @@ export class SqsQueue {
    */
   removeAllReadyMessages(): SqsMessage[] {
     this.processTimers();
-    const expiryCutoff = Date.now() - this.messageRetentionMs();
+    this.expireMessages();
     const result: SqsMessage[] = [];
     if (this.isFifo()) {
       // A locked group has an in-flight message; the rest of that group is not
@@ -719,7 +721,7 @@ export class SqsQueue {
     for (const msg of result) {
       this.persistence?.deleteMessage(msg.messageId);
     }
-    return result.filter((msg) => msg.sentTimestamp >= expiryCutoff);
+    return result;
   }
 
   /** Return a non-destructive snapshot of all messages in the queue, grouped by state. */
@@ -757,7 +759,7 @@ export class SqsQueue {
   cancelWaiters(): void {
     for (const waiter of this.pollWaiters) {
       clearTimeout(waiter.timer);
-      waiter.resolve();
+      waiter.resolve(false);
     }
     this.pollWaiters = [];
     if (this.pollTimer) {
@@ -805,7 +807,7 @@ export class SqsQueue {
     while (this.pollWaiters.length > 0) {
       const waiter = this.pollWaiters.shift()!;
       clearTimeout(waiter.timer);
-      waiter.resolve();
+      waiter.resolve(true);
     }
   }
 }
@@ -822,8 +824,8 @@ export class SqsStore {
   region?: string;
   spy?: MessageSpy;
   persistence?: PersistenceManager;
-  maxMessageRetentionMs?: number;
   private _random: () => number = Math.random;
+  private _maxMessageRetentionMs?: number;
 
   /** PRNG shared with every queue for standard-queue reordering. Seeded via the `ordering` option. */
   get random(): () => number {
@@ -838,6 +840,19 @@ export class SqsStore {
     }
   }
 
+  /** Upper bound on every queue's MessageRetentionPeriod. Set via the `messageRetention` option. */
+  get maxMessageRetentionMs(): number | undefined {
+    return this._maxMessageRetentionMs;
+  }
+
+  /** A new cap propagates to already-created queues, not just future ones. */
+  set maxMessageRetentionMs(maxMs: number | undefined) {
+    this._maxMessageRetentionMs = maxMs;
+    for (const queue of this.queues.values()) {
+      queue.maxMessageRetentionMs = maxMs;
+    }
+  }
+
   createQueue(
     name: string,
     url: string,
@@ -847,7 +862,7 @@ export class SqsStore {
   ): SqsQueue {
     const queue = new SqsQueue(name, url, arn, attributes, tags);
     queue.random = this._random;
-    queue.maxMessageRetentionMs = this.maxMessageRetentionMs;
+    queue.maxMessageRetentionMs = this._maxMessageRetentionMs;
     if (this.spy) {
       queue.spy = this.spy;
     }
@@ -1008,7 +1023,7 @@ export class SqsStore {
         msg.approximateFirstReceiveTimestamp = undefined;
         msg.delayUntil = undefined;
         msg.deadLetterSourceArn = undefined;
-        msg.sentTimestamp = Date.now();
+        msg.enqueueTimestamp = Date.now();
         target.enqueue(msg);
         moved++;
       } else {
@@ -1165,6 +1180,7 @@ export class SqsStore {
       messageAttributes,
       md5OfMessageAttributes: md5OfMessageAttributes(messageAttributes),
       sentTimestamp: now,
+      enqueueTimestamp: now,
       approximateReceiveCount: 0,
       delayUntil: delaySeconds ? now + delaySeconds * 1000 : undefined,
       messageGroupId,

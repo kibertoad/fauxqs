@@ -1471,6 +1471,61 @@ describe("Persistence: SQS message retention", () => {
     await server.stop();
   });
 
+  it("measures the age of a message stored before enqueue timestamps from its send", async () => {
+    await storeMessage("retention-restart", { MessageRetentionPeriod: "60" });
+    const db = new DatabaseSync(join(dataDir, "fauxqs.db"));
+    db.exec("DROP INDEX sqs_messages_queue_enqueue");
+    db.exec("ALTER TABLE sqs_messages DROP COLUMN enqueue_timestamp");
+    db.close();
+
+    vi.setSystemTime(t0 + 30_000);
+    let server = await startFauxqs({ port: 0, logger: false, dataDir });
+    expect(server.inspectQueue("retention-restart")!.messages.ready).toHaveLength(1);
+    await server.stop();
+
+    vi.setSystemTime(t0 + 60_001);
+    server = await startFauxqs({ port: 0, logger: false, dataDir });
+    expect(server.inspectQueue("retention-restart")!.messages.ready).toEqual([]);
+    await server.stop();
+  });
+
+  it("keeps the new retention period of a redriven message after a restart", async () => {
+    let server = await startFauxqs({ port: 0, logger: false, dataDir });
+    let sqs = makeSqsClient(server.port);
+    const dlq = await sqs.send(new CreateQueueCommand({ QueueName: "retention-redrive-dlq" }));
+    const { Attributes } = await sqs.send(
+      new GetQueueAttributesCommand({ QueueUrl: dlq.QueueUrl, AttributeNames: ["QueueArn"] }),
+    );
+    const dlqArn = Attributes!.QueueArn!;
+    const source = await sqs.send(
+      new CreateQueueCommand({
+        QueueName: "retention-redrive-source",
+        Attributes: {
+          MessageRetentionPeriod: "60",
+          VisibilityTimeout: "0",
+          RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn, maxReceiveCount: 1 }),
+        },
+      }),
+    );
+    await sqs.send(new SendMessageCommand({ QueueUrl: source.QueueUrl, MessageBody: "redriven" }));
+    await sqs.send(new ReceiveMessageCommand({ QueueUrl: source.QueueUrl }));
+    await sqs.send(new ReceiveMessageCommand({ QueueUrl: source.QueueUrl }));
+    vi.setSystemTime(t0 + 120_000);
+    await sqs.send(new StartMessageMoveTaskCommand({ SourceArn: dlqArn }));
+    await server.stop();
+
+    vi.setSystemTime(t0 + 150_000);
+    server = await startFauxqs({ port: 0, logger: false, dataDir });
+    sqs = makeSqsClient(server.port);
+    const { QueueUrl } = await sqs.send(
+      new GetQueueUrlCommand({ QueueName: "retention-redrive-source" }),
+    );
+    const received = await sqs.send(new ReceiveMessageCommand({ QueueUrl }));
+    await server.stop();
+
+    expect(received.Messages?.map((message) => message.Body)).toEqual(["redriven"]);
+  });
+
   it("loads an expired message that is still in flight", async () => {
     let server = await startFauxqs({ port: 0, logger: false, dataDir });
     const sqs = makeSqsClient(server.port);

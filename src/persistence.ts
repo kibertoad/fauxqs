@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS sqs_messages (
   sequence_number TEXT,
   receipt_handle TEXT,
   visibility_deadline INTEGER,
-  dead_letter_source_arn TEXT
+  dead_letter_source_arn TEXT,
+  enqueue_timestamp INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS sns_topics (
@@ -193,6 +194,15 @@ export class PersistenceManager implements S3PersistenceProvider {
     if (!hasColumn("sqs_messages", "dead_letter_source_arn")) {
       this.db.exec("ALTER TABLE sqs_messages ADD COLUMN dead_letter_source_arn TEXT");
     }
+    if (!hasColumn("sqs_messages", "enqueue_timestamp")) {
+      this.transaction(() => {
+        this.db.exec("ALTER TABLE sqs_messages ADD COLUMN enqueue_timestamp INTEGER");
+        this.db.exec("UPDATE sqs_messages SET enqueue_timestamp = sent_timestamp");
+      });
+    }
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS sqs_messages_queue_enqueue ON sqs_messages (queue_name, enqueue_timestamp)",
+    );
   }
 
   private prepareStatements(): PreparedStatements {
@@ -214,8 +224,8 @@ export class PersistenceManager implements S3PersistenceProvider {
           message_id, queue_name, body, md5_of_body, message_attributes, md5_of_message_attributes,
           sent_timestamp, approximate_receive_count, approximate_first_receive_timestamp,
           delay_until, message_group_id, message_deduplication_id, sequence_number,
-          receipt_handle, visibility_deadline, dead_letter_source_arn
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          receipt_handle, visibility_deadline, dead_letter_source_arn, enqueue_timestamp
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `),
       deleteMessage: this.db.prepare("DELETE FROM sqs_messages WHERE message_id = ?"),
       updateMessageInflight: this.db.prepare(`
@@ -226,7 +236,7 @@ export class PersistenceManager implements S3PersistenceProvider {
       loadMessages: this.db.prepare("SELECT * FROM sqs_messages WHERE queue_name = ?"),
       deleteExpiredMessages: this.db.prepare(`
         DELETE FROM sqs_messages
-        WHERE queue_name = ? AND sent_timestamp < ?
+        WHERE queue_name = ? AND enqueue_timestamp < ?
           AND (visibility_deadline IS NULL OR visibility_deadline <= ?)
           AND (delay_until IS NULL OR delay_until <= ?)
       `),
@@ -367,6 +377,7 @@ export class PersistenceManager implements S3PersistenceProvider {
       null,
       null,
       msg.deadLetterSourceArn ?? null,
+      msg.enqueueTimestamp,
     );
   }
 
@@ -690,6 +701,7 @@ export class PersistenceManager implements S3PersistenceProvider {
       receipt_handle: string | null;
       visibility_deadline: number | null;
       dead_letter_source_arn: string | null;
+      enqueue_timestamp: number;
     }>;
 
     for (const row of rows) {
@@ -700,6 +712,7 @@ export class PersistenceManager implements S3PersistenceProvider {
         messageAttributes: JSON.parse(row.message_attributes),
         md5OfMessageAttributes: row.md5_of_message_attributes,
         sentTimestamp: row.sent_timestamp,
+        enqueueTimestamp: row.enqueue_timestamp,
         approximateReceiveCount: row.approximate_receive_count,
         approximateFirstReceiveTimestamp: row.approximate_first_receive_timestamp ?? undefined,
         delayUntil: row.delay_until ?? undefined,

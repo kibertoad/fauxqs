@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from "vitest";
 import {
   CreateQueueCommand,
@@ -10,6 +11,7 @@ import {
 import { createSqsClient } from "../helpers/clients.js";
 import { startFauxqsTestServer, type FauxqsServer } from "../helpers/setup.js";
 import { startFauxqs } from "../../src/app.js";
+import { SqsStore } from "../../src/sqs/sqsStore.js";
 
 const t0 = Date.UTC(2026, 0, 1);
 
@@ -200,6 +202,49 @@ describe("SQS message retention", () => {
     expect(await receiveBodies(sourceUrl)).toEqual(["redriven"]);
   });
 
+  it("keeps the SentTimestamp of a redriven message", async () => {
+    const dlqUrl = await createQueue("retention-redrive-sent-dlq", {});
+    const dlqArn = await queueArn(dlqUrl);
+    const sourceUrl = await createQueue("retention-redrive-sent-source", {
+      VisibilityTimeout: "0",
+      RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn, maxReceiveCount: 1 }),
+    });
+    await send(sourceUrl, "redriven");
+    expect(await receiveBodies(sourceUrl)).toEqual(["redriven"]);
+    expect(await receiveBodies(sourceUrl)).toEqual([]);
+    vi.setSystemTime(t0 + 120_000);
+
+    await sqs.send(new StartMessageMoveTaskCommand({ SourceArn: dlqArn }));
+
+    const { Messages } = await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: sourceUrl, MessageSystemAttributeNames: ["SentTimestamp"] }),
+    );
+    expect(Messages?.map((message) => message.Attributes?.SentTimestamp)).toEqual([String(t0)]);
+  });
+
+  it("starts a new retention period for a message moved to a FIFO dead-letter queue", async () => {
+    const dlqUrl = await createQueue("retention-fifo-dlq.fifo", {
+      FifoQueue: "true",
+      MessageRetentionPeriod: "60",
+    });
+    const sourceUrl = await createQueue("retention-fifo-source.fifo", {
+      FifoQueue: "true",
+      VisibilityTimeout: "0",
+      RedrivePolicy: JSON.stringify({
+        deadLetterTargetArn: await queueArn(dlqUrl),
+        maxReceiveCount: 1,
+      }),
+    });
+    await send(sourceUrl, "dead-lettered", "group-1");
+    expect(await receiveBodies(sourceUrl)).toEqual(["dead-lettered"]);
+    vi.setSystemTime(t0 + 50_000);
+    expect(await receiveBodies(sourceUrl)).toEqual([]);
+
+    vi.setSystemTime(t0 + 100_000);
+
+    expect(await receiveBodies(dlqUrl)).toEqual(["dead-lettered"]);
+  });
+
   it("does not deliver an expired FIFO message queued behind a dead-lettered one", async () => {
     const dlqUrl = await createQueue("retention-gap-dlq.fifo", { FifoQueue: "true" });
     const queueUrl = await createQueue("retention-gap.fifo", {
@@ -249,6 +294,59 @@ describe("SQS message retention", () => {
 
     const { messages } = server.inspectQueue("retention-redrive-order.fifo")!;
     expect(messages.ready.map((message) => message.body)).toEqual(["fresh"]);
+  });
+
+  async function sendExpiredBehindFresh(queueName: string): Promise<string> {
+    const queueUrl = await createQueue(queueName, {
+      FifoQueue: "true",
+      MessageRetentionPeriod: "60",
+      DelaySeconds: "60",
+    });
+    await send(queueUrl, "expired", "group-1");
+    await sqs.send(
+      new SetQueueAttributesCommand({ QueueUrl: queueUrl, Attributes: { DelaySeconds: "0" } }),
+    );
+    vi.setSystemTime(t0 + 10_000);
+    await send(queueUrl, "fresh", "group-1");
+    return queueUrl;
+  }
+
+  it("removes an expired FIFO message queued behind a fresh one on receive", async () => {
+    const queueUrl = await sendExpiredBehindFresh("retention-unordered-receive.fifo");
+    vi.setSystemTime(t0 + 60_001);
+
+    expect(await receiveBodies(queueUrl)).toEqual(["fresh"]);
+    expect(server.inspectQueue("retention-unordered-receive.fifo")!.messages.ready).toEqual([]);
+  });
+
+  it("removes an expired FIFO message queued behind a fresh one in the sweep", async () => {
+    await sendExpiredBehindFresh("retention-unordered-sweep.fifo");
+
+    await requestHealthAt(server, t0 + 60_001);
+
+    const { messages } = server.inspectQueue("retention-unordered-sweep.fifo")!;
+    expect(messages.ready.map((message) => message.body)).toEqual(["fresh"]);
+  });
+
+  it("keeps a long poll waiting when the message that woke it has expired", async () => {
+    const queueUrl = await createQueue("retention-long-poll", { MessageRetentionPeriod: "60" });
+    await send(queueUrl, "expired");
+    vi.setSystemTime(t0 + 50_000);
+    await sqs.send(new ReceiveMessageCommand({ QueueUrl: queueUrl, VisibilityTimeout: 20 }));
+    vi.setSystemTime(t0 + 65_000);
+    const longPoll = sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: queueUrl, WaitTimeSeconds: 20 }),
+    );
+    await delay(100);
+
+    vi.setSystemTime(t0 + 71_000);
+    await vi.waitFor(() => {
+      expect(server.inspectQueue("retention-long-poll")!.messages.inflight).toEqual([]);
+    });
+    await send(queueUrl, "later");
+
+    const { Messages } = await longPoll;
+    expect(Messages?.map((message) => message.Body)).toEqual(["later"]);
   });
 
   it("does not redrive an expired dead-lettered message", async () => {
@@ -332,6 +430,32 @@ describe("SQS message retention sweep", () => {
     await requestHealthAt(server, t0 + 120_000);
     expect(server.inspectQueue("retention-sweep-interval")!.messages.ready).toEqual([]);
   });
+
+  it("runs the sweep after the request that starts it", async () => {
+    server.createQueue("retention-sweep-deferred", { attributes: { MessageRetentionPeriod: "60" } });
+    server.sendMessage("retention-sweep-deferred", "expired");
+    vi.setSystemTime(t0 + 120_000);
+
+    const response = await fetch(
+      `http://127.0.0.1:${server.port}/_fauxqs/queues/retention-sweep-deferred`,
+    );
+
+    const inspected = (await response.json()) as { messages: { ready: unknown[] } };
+    expect(inspected.messages.ready).toHaveLength(1);
+    expect(server.inspectQueue("retention-sweep-deferred")!.messages.ready).toEqual([]);
+  });
+
+  it("sweeps again after the clock moves back", async () => {
+    const dayBefore = t0 - 86_400_000;
+    vi.setSystemTime(dayBefore);
+    server.createQueue("retention-clock-back", { attributes: { MessageRetentionPeriod: "60" } });
+    server.sendMessage("retention-clock-back", "expired");
+
+    await requestHealthAt(server, dayBefore);
+    await requestHealthAt(server, dayBefore + 120_000);
+
+    expect(server.inspectQueue("retention-clock-back")!.messages.ready).toEqual([]);
+  });
 });
 
 describe("SQS message retention cap", () => {
@@ -389,6 +513,25 @@ describe("SQS message retention cap", () => {
 
     expect(received).toBe(0);
   });
+});
+
+it("applies a retention cap set after the queue exists", () => {
+  vi.useFakeTimers({ toFake: ["Date"], now: t0 });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  const store = new SqsStore();
+  const queue = store.createQueue(
+    "retention-cap-late",
+    "http://localhost/retention-cap-late",
+    "arn:aws:sqs:us-east-1:000000000000:retention-cap-late",
+  );
+  queue.enqueue(SqsStore.createMessage("capped"));
+
+  store.maxMessageRetentionMs = 60_000;
+  vi.setSystemTime(t0 + 60_001);
+
+  expect(queue.dequeue(10)).toEqual([]);
 });
 
 it("starts without a repeating timer", async () => {
