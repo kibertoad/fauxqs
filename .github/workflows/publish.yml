@@ -129,6 +129,17 @@ jobs:
       - name: Publish to npm
         run: pnpm publish --provenance --access public --no-git-checks
 
+      # The notes start at the previous tag rather than the previous GitHub
+      # Release, so a version released without a Release entry does not pull
+      # its changes into the next version's notes.
+      - name: Create GitHub Release
+        run: |
+          previous="$(git describe --tags --abbrev=0 "$TAG^")"
+          gh release create "$TAG" --verify-tag --generate-notes --notes-start-tag "$previous"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.bump.outputs.tag }}
+
   docker:
     needs: publish
     uses: $/.github/workflows/docker-publish.yml
