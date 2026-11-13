@@ -13,6 +13,11 @@ export interface SqsMessage {
   messageAttributes: Record<string, MessageAttributeValue>;
   md5OfMessageAttributes: string;
   sentTimestamp: number;
+  /**
+   * When the message entered its current queue. Message retention is measured from it. A redrive
+   * and a move to a FIFO dead-letter queue reset it, as on AWS; neither changes sentTimestamp.
+   */
+  enqueueTimestamp: number;
   approximateReceiveCount: number;
   approximateFirstReceiveTimestamp?: number;
   delayUntil?: number;

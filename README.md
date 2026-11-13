@@ -96,6 +96,7 @@ The server starts on port `4566` and handles SQS, SNS, and S3 on a single endpoi
 | `FAUXQS_S3_STORAGE_DIR` | Directory for file-based S3 object storage (see [File-based S3 storage](#file-based-s3-storage)). Independent of `FAUXQS_DATA_DIR`. | (none) |
 | `FAUXQS_DISABLE_CHECKSUM_VALIDATION` | Set to `true` to stop verifying uploaded bodies against the `x-amz-checksum-*`/`Content-MD5` header the client sent (see [Relaxed rules](#relaxed-rules)) | `false` |
 | `FAUXQS_ORDERING_SEED` | Seed for the standard-queue reordering PRNG, for deterministic delivery order (see [Message ordering](#message-ordering)). Omit for non-deterministic ordering. | (none) |
+| `FAUXQS_MAX_MESSAGE_RETENTION` | Upper bound, in seconds, on every queue's `MessageRetentionPeriod` (see [SQS Features](#sqs-features)). Omit to use each queue's own retention. | (none) |
 | `FAUXQS_DNS_NAME` | Domain that dnsmasq resolves (including all subdomains) to the container IP. Only needed when the container hostname doesn't match the docker-compose service name — e.g., when using `container_name` or running with plain `docker run`. In docker-compose the hostname is set to the service name automatically, so this is rarely needed. (Docker only) | container hostname |
 | `FAUXQS_DNS_UPSTREAM` | Where dnsmasq forwards non-fauxqs DNS queries (e.g., `registry.npmjs.org`). Change this if you're in a corporate network with an internal DNS server, or if you prefer a different public resolver like `1.1.1.1`. (Docker only) | `8.8.8.8` |
 | `FAUXQS_RUN_USER` | User the server process runs as (see [Container user](#container-user)). Accepts a name, a uid, or `uid:gid`. (Docker only) | `node` (uid 1000) |
@@ -1095,7 +1096,7 @@ const server = await startFauxqs({ port: 4566, dataDir: "./data" });
 
 All mutations are written through to SQLite immediately (no batching or delayed flush). On restart with the same `dataDir`, the server restores all state including:
 
-- SQS queues with attributes, tags, and messages (ready, delayed, and inflight with their visibility deadlines)
+- SQS queues with attributes, tags, and messages (ready, delayed, and inflight with their visibility deadlines). Ready messages older than their queue's [retention](#sqs-features) are deleted instead of loaded
 - FIFO sequence counters (no duplicate sequence numbers after restart)
 - SNS topics with attributes and tags, subscriptions with attributes (fan-out works immediately after restart)
 - S3 buckets (including directory bucket type and lifecycle configurations), objects with metadata, and in-progress multipart uploads
@@ -1363,6 +1364,7 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **Message attributes** with MD5 checksums matching the AWS algorithm
 - **Visibility timeout** — messages become invisible after receive and reappear after timeout
 - **Delay queues** — per-queue default delay and per-message delay overrides
+- **Message retention** — a ready message older than its queue's `MessageRetentionPeriod` is deleted when the queue is received from, before a message move task, and by a sweep of all queues that runs after the first request fauxqs handles after each minute. Age is measured with the process clock from the time the message entered the queue, so fake timers that move `Date` past the retention also expire messages. As on AWS, a message moved to a standard dead-letter queue keeps its age, and a message moved to a FIFO dead-letter queue or redriven by a message move task starts a new retention period. `SentTimestamp` keeps the original send time. In-flight and delayed messages are checked once they become visible, and `GetQueueAttributes` counts an expired message until it is deleted. To cap the retention of every queue, for example in a short-lived environment where some queues have no consumer, pass `messageRetention: { maxSeconds }` to `startFauxqs` or set `FAUXQS_MAX_MESSAGE_RETENTION`; `GetQueueAttributes` still returns each queue's own value
 - **Long polling** — `WaitTimeSeconds` on ReceiveMessage blocks until messages arrive or timeout
 - **Dead letter queues** — messages exceeding `maxReceiveCount` are moved to the configured DLQ. `ListDeadLetterSourceQueues` enumerates the queues feeding a DLQ, and message move tasks (`StartMessageMoveTask`, `ListMessageMoveTasks`, `CancelMessageMoveTask`) redrive dead-lettered messages back to their origin queue or an explicit destination. Move tasks run synchronously and complete immediately: `ListMessageMoveTasks` reports them as `COMPLETED`, `CancelMessageMoveTask` rejects them because a finished task cannot be cancelled, and `MaxNumberOfMessagesPerSecond` is accepted but not enforced
 - **Batch operations** — SendMessageBatch, DeleteMessageBatch, ChangeMessageVisibilityBatch with entry ID validation (`InvalidBatchEntryId`) and total batch size validation (`BatchRequestTooLong`)

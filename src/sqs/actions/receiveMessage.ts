@@ -46,12 +46,17 @@ export async function receiveMessage(
 
   const dlqResolver = (arn: string) => store.getQueueByArn(arn);
 
+  const deadline = Date.now() + waitTimeSeconds * 1000;
   let messages = queue.dequeue(maxNumberOfMessages, visibilityTimeout, dlqResolver);
 
-  // Long polling: if no messages and WaitTimeSeconds > 0, wait
-  if (messages.length === 0 && waitTimeSeconds > 0) {
-    await queue.waitForMessages(waitTimeSeconds);
+  // Long polling: a wake-up can find nothing to deliver, for example when another receiver took the
+  // message or it expired, so keep waiting until WaitTimeSeconds ends.
+  while (messages.length === 0) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    const woken = await queue.waitForMessages(remainingMs / 1000);
     messages = queue.dequeue(maxNumberOfMessages, visibilityTimeout, dlqResolver);
+    if (!woken) break;
   }
 
   // Add system attributes if requested (merge both legacy and modern parameter names)
