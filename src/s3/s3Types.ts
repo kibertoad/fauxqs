@@ -42,7 +42,10 @@ export interface S3Object {
 
 export interface MultipartPart {
   partNumber: number;
+  /** Empty while a persistence provider holds the part; read it with `readPartBody`. */
   body: Buffer;
+  /** Length of the part body in bytes. */
+  size: number;
   etag: string;
   lastModified: Date;
   checksumValue?: string;

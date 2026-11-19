@@ -115,9 +115,11 @@ export interface BuildAppOptions {
   /** Seed for the standard-queue reordering PRNG. Standard queues always reorder (real SQS/SNS give no
    *  ordering guarantee); a seed only makes that reordering deterministic. Use a FIFO queue if you need ordering. */
   ordering?: { seed?: number };
+  /** Runs at the end of every expiry sweep, after expired messages and objects are deleted. */
+  afterExpirySweep?: () => void;
 }
 
-const MESSAGE_EXPIRY_INTERVAL_MS = 60_000;
+const EXPIRY_SWEEP_INTERVAL_MS = 60_000;
 
 export function buildApp(options?: BuildAppOptions) {
   const app = Fastify({
@@ -300,20 +302,30 @@ export function buildApp(options?: BuildAppOptions) {
     sqsStore.shutdown();
   });
 
-  let lastMessageExpiry = Date.now();
+  let lastExpirySweep = Date.now();
   app.addHook("onRequest", (request, _reply, done) => {
     const now = Date.now();
     // A clock moved back, for example by fake timers, would otherwise stop the sweep.
-    if (now < lastMessageExpiry) {
-      lastMessageExpiry = now;
+    if (now < lastExpirySweep) {
+      lastExpirySweep = now;
     }
-    if (now - lastMessageExpiry >= MESSAGE_EXPIRY_INTERVAL_MS) {
-      lastMessageExpiry = now;
+    if (now - lastExpirySweep >= EXPIRY_SWEEP_INTERVAL_MS) {
+      lastExpirySweep = now;
       setImmediate(() => {
         try {
           sqsStore.expireMessages();
         } catch (err) {
           request.log.error({ err }, "SQS message expiry failed");
+        }
+        try {
+          s3Store.expireObjects();
+        } catch (err) {
+          request.log.error({ err }, "S3 object expiry failed");
+        }
+        try {
+          options?.afterExpirySweep?.();
+        } catch (err) {
+          request.log.error({ err }, "Reclaiming storage after expiry failed");
         }
       });
     }
@@ -497,13 +509,16 @@ export interface FauxqsServer {
   deleteTenant(prefix: string): void;
 }
 
-function resolveMaxMessageRetentionMs(maxSeconds: number | undefined): number | undefined {
-  const value = maxSeconds ?? (process.env.FAUXQS_MAX_MESSAGE_RETENTION || undefined);
+function resolveMaxRetentionMs(
+  maxSeconds: number | undefined,
+  envName: string,
+  optionName: string,
+): number | undefined {
+  const value = maxSeconds ?? (process.env[envName] || undefined);
   if (value === undefined) return undefined;
   const seconds = Number(value);
   if (!Number.isInteger(seconds) || seconds <= 0) {
-    const source =
-      maxSeconds === undefined ? "FAUXQS_MAX_MESSAGE_RETENTION" : "messageRetention.maxSeconds";
+    const source = maxSeconds === undefined ? envName : optionName;
     throw new Error(`${source} must be a positive integer number of seconds (got "${value}")`);
   }
   return seconds * 1000;
@@ -534,6 +549,9 @@ export async function startFauxqs(options?: {
   ordering?: { seed?: number };
   /** Upper bound on every queue's MessageRetentionPeriod, in seconds. Env fallback: FAUXQS_MAX_MESSAGE_RETENTION. */
   messageRetention?: { maxSeconds?: number };
+  /** Upper bound, in seconds, on the age of every S3 object and incomplete multipart upload.
+   *  Env fallback: FAUXQS_MAX_OBJECT_RETENTION. */
+  objectRetention?: { maxSeconds?: number };
 }): Promise<FauxqsServer> {
   const port = options?.port ?? parseInt(process.env.FAUXQS_PORT ?? "4566");
   const host = options?.host ?? process.env.FAUXQS_HOST;
@@ -565,8 +583,15 @@ export async function startFauxqs(options?: {
   if (orderingSeed !== undefined && !Number.isNaN(orderingSeed)) {
     sqsStore.random = mulberry32(orderingSeed);
   }
-  sqsStore.maxMessageRetentionMs = resolveMaxMessageRetentionMs(
+  sqsStore.maxMessageRetentionMs = resolveMaxRetentionMs(
     options?.messageRetention?.maxSeconds,
+    "FAUXQS_MAX_MESSAGE_RETENTION",
+    "messageRetention.maxSeconds",
+  );
+  s3Store.maxObjectRetentionMs = resolveMaxRetentionMs(
+    options?.objectRetention?.maxSeconds,
+    "FAUXQS_MAX_OBJECT_RETENTION",
+    "objectRetention.maxSeconds",
   );
 
   // Persistence: create managers and wire into stores before any data is loaded
@@ -641,7 +666,23 @@ export async function startFauxqs(options?: {
     stores: { sqsStore, snsStore, s3Store },
     relaxedRules,
     tenantManager,
+    afterExpirySweep: () => persistenceManager?.reclaimFreeSpace(),
   });
+
+  for (const warning of persistenceManager?.loadWarnings ?? []) {
+    app.log.warn(warning);
+  }
+  // Expire what aged out while the server was down, then give the freed space back.
+  try {
+    s3Store.expireObjects();
+  } catch (err) {
+    app.log.error({ err }, "S3 object expiry at startup failed");
+  }
+  try {
+    persistenceManager?.reclaimFreeSpace({ rebuild: true });
+  } catch (err) {
+    app.log.error({ err }, "Reclaiming storage at startup failed");
+  }
 
   if (persistenceManager) {
     app.addHook("preClose", () => {

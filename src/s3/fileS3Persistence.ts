@@ -2,6 +2,7 @@ import {
   mkdirSync,
   writeFileSync,
   readFileSync,
+  statSync,
   unlinkSync,
   readdirSync,
   rmSync,
@@ -223,6 +224,12 @@ export class FileS3Persistence implements S3PersistenceProvider {
     this.cleanEmptyParents(dirname(srcData), objectsDir);
   }
 
+  deleteObjects(bucket: string, keys: string[]): void {
+    for (const key of keys) {
+      this.deleteObject(bucket, key);
+    }
+  }
+
   // ── On-demand body read ──
 
   readBody(bucket: string, key: string): Buffer {
@@ -273,6 +280,10 @@ export class FileS3Persistence implements S3PersistenceProvider {
     if (existsSync(uploadDir)) {
       rmSync(uploadDir, { recursive: true, force: true });
     }
+  }
+
+  readPartBody(uploadId: string, partNumber: number): Buffer {
+    return readFileSync(join(this.multipartDir, uploadId, "parts", `${partNumber}.data`));
   }
 
   completeMultipartUpload(uploadId: string, bucket: string, obj: S3Object): void {
@@ -378,16 +389,16 @@ export class FileS3Persistence implements S3PersistenceProvider {
         ...(checksumAlgorithm && { checksumAlgorithm }),
       };
 
-      // Load parts fully (they're temporary, needed for completeMultipartUpload concatenation)
+      // Load part metadata only. completeMultipartUpload reads the bodies with readPartBody.
       const partsDir = join(this.multipartDir, uploadId, "parts");
       if (existsSync(partsDir)) {
         for (const file of readdirSync(partsDir)) {
           if (!file.endsWith(".meta.json")) continue;
           const partMeta: PartMeta = JSON.parse(readFileSync(join(partsDir, file), "utf-8"));
-          const partBody = readFileSync(join(partsDir, `${partMeta.partNumber}.data`));
           upload.parts.set(partMeta.partNumber, {
             partNumber: partMeta.partNumber,
-            body: partBody,
+            body: Buffer.alloc(0),
+            size: statSync(join(partsDir, `${partMeta.partNumber}.data`)).size,
             etag: partMeta.etag,
             lastModified: new Date(partMeta.lastModified),
             ...(partMeta.checksumValue && { checksumValue: partMeta.checksumValue }),

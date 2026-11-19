@@ -2,9 +2,15 @@ import { createHash, randomBytes } from "node:crypto";
 import { S3Error } from "../common/errors.ts";
 import type { MessageSpy } from "../spy.ts";
 import type { S3PersistenceProvider } from "./s3Persistence.ts";
-import type { S3Object, MultipartUpload, ChecksumAlgorithm } from "./s3Types.ts";
+import type { S3Object, MultipartUpload, MultipartPart, ChecksumAlgorithm } from "./s3Types.ts";
 import { computeChecksum, computeCompositeChecksum } from "./checksum.ts";
 import type { S3EventDispatcher, S3NotificationConfiguration } from "./notifications.ts";
+import {
+  objectExpiredByRules,
+  parseLifecycleRules,
+  uploadAbortedByRules,
+  type LifecycleRule,
+} from "./lifecycle.ts";
 
 export type BucketType = "general-purpose" | "directory";
 
@@ -16,6 +22,8 @@ export class S3Store {
   private bucketCreationDates = new Map<string, Date>();
   private bucketTypes = new Map<string, BucketType>();
   private bucketLifecycleConfigurations = new Map<string, string>();
+  /** Parsed form of each bucket's lifecycle configuration, filled on first use by expireObjects. */
+  private bucketLifecycleRules = new Map<string, LifecycleRule[]>();
   protected multipartUploads = new Map<string, MultipartUpload>();
   private multipartUploadsByBucket = new Map<string, Set<string>>();
   spy?: MessageSpy;
@@ -24,6 +32,11 @@ export class S3Store {
   /** Dispatches S3 object events to SQS/SNS. Set by buildApp; undefined disables notifications. */
   notificationDispatcher?: S3EventDispatcher;
   private bucketNotificationConfigurations = new Map<string, S3NotificationConfiguration>();
+  /**
+   * Upper bound, in milliseconds, on the age of every object and incomplete multipart upload.
+   * Set via the `objectRetention` option. Undefined leaves expiry to bucket lifecycle rules.
+   */
+  maxObjectRetentionMs?: number;
 
   createBucket(name: string, type?: BucketType): void {
     if (!this.buckets.has(name)) {
@@ -64,6 +77,7 @@ export class S3Store {
 
   putBucketLifecycleConfiguration(name: string, config: string): void {
     this.bucketLifecycleConfigurations.set(name, config);
+    this.bucketLifecycleRules.delete(name);
     this.persistence?.saveBucketLifecycleConfiguration(name, config);
   }
 
@@ -73,11 +87,13 @@ export class S3Store {
 
   deleteBucketLifecycleConfiguration(name: string): void {
     this.bucketLifecycleConfigurations.delete(name);
+    this.bucketLifecycleRules.delete(name);
     this.persistence?.deleteBucketLifecycleConfiguration(name);
   }
 
   restoreBucketLifecycleConfiguration(name: string, config: string): void {
     this.bucketLifecycleConfigurations.set(name, config);
+    this.bucketLifecycleRules.delete(name);
   }
 
   putBucketNotificationConfiguration(name: string, config: S3NotificationConfiguration): void {
@@ -166,6 +182,7 @@ export class S3Store {
     this.bucketCreationDates.delete(name);
     this.bucketTypes.delete(name);
     this.bucketLifecycleConfigurations.delete(name);
+    this.bucketLifecycleRules.delete(name);
     this.bucketNotificationConfigurations.delete(name);
     this.persistence?.deleteBucket(name);
   }
@@ -544,15 +561,23 @@ export class S3Store {
             value: computeChecksum(upload.checksumAlgorithm, body),
           }
         : undefined);
-    const part = {
+    const part: MultipartPart = {
       partNumber,
       body,
+      size: body.length,
       etag,
       lastModified: new Date(),
       ...(resolved && { checksumValue: resolved.value }),
     };
-    upload.parts.set(partNumber, part);
     this.persistence?.upsertMultipartPart(uploadId, part);
+
+    // When persistence is active, keep only metadata in memory. completeMultipartUpload reads
+    // the body back, so an unfinished upload costs no memory however long it stays open.
+    if (this.persistence) {
+      upload.parts.set(partNumber, { ...part, body: Buffer.alloc(0) });
+    } else {
+      upload.parts.set(partNumber, part);
+    }
 
     return { etag, ...(resolved && { checksum: resolved }) };
   }
@@ -589,9 +614,7 @@ export class S3Store {
       }
     }
 
-    // Validate all specified parts exist and ETags match, collect buffers and sizes in one pass
-    const orderedParts: Buffer[] = [];
-    const partDigests: Buffer[] = [];
+    // Validate all specified parts exist, their ETags match and their sizes are allowed
     const partSizes: number[] = [];
     const MIN_PART_SIZE = 5 * 1024 * 1024;
     for (let i = 0; i < partSpecs.length; i++) {
@@ -615,16 +638,26 @@ export class S3Store {
         );
       }
       // Validate non-last parts are >= 5 MiB (AWS enforces at CompleteMultipartUpload time)
-      if (i < partSpecs.length - 1 && part.body.length < MIN_PART_SIZE) {
+      if (i < partSpecs.length - 1 && part.size < MIN_PART_SIZE) {
         throw new S3Error(
           "EntityTooSmall",
           "Your proposed upload is smaller than the minimum allowed size",
           400,
         );
       }
-      orderedParts.push(part.body);
-      partDigests.push(createHash("md5").update(part.body).digest());
-      partSizes.push(part.body.length);
+      partSizes.push(part.size);
+    }
+
+    // Collect the part bodies only after every part has passed validation, so a rejected
+    // request reads nothing back from persistence.
+    const orderedParts: Buffer[] = [];
+    const partDigests: Buffer[] = [];
+    for (const spec of partSpecs) {
+      const partBody = this.persistence
+        ? this.persistence.readPartBody(uploadId, spec.partNumber)
+        : upload.parts.get(spec.partNumber)!.body;
+      orderedParts.push(partBody);
+      partDigests.push(createHash("md5").update(partBody).digest());
     }
 
     // Collect per-part checksums before the part buffers are released. The
@@ -762,6 +795,72 @@ export class S3Store {
     this.persistence?.deleteMultipartUpload(uploadId);
   }
 
+  private lifecycleRules(bucket: string): LifecycleRule[] {
+    let rules = this.bucketLifecycleRules.get(bucket);
+    if (!rules) {
+      const config = this.bucketLifecycleConfigurations.get(bucket);
+      rules = config ? parseLifecycleRules(config) : [];
+      this.bucketLifecycleRules.set(bucket, rules);
+    }
+    return rules;
+  }
+
+  /**
+   * Delete every object that a lifecycle `Expiration` rule of its bucket or `maxObjectRetentionMs`
+   * has expired, and abort every incomplete multipart upload that an
+   * `AbortIncompleteMultipartUpload` rule or `maxObjectRetentionMs` has expired.
+   *
+   * An object deleted by a lifecycle rule produces an `s3:LifecycleExpiration:Delete` event.
+   * Persisted data is deleted first, so when that throws the entries stay in memory and the
+   * next call retries them.
+   */
+  expireObjects(): void {
+    const now = Date.now();
+    const maxAgeCutoff =
+      this.maxObjectRetentionMs === undefined ? undefined : now - this.maxObjectRetentionMs;
+
+    for (const [bucket, objects] of this.buckets) {
+      const rules = this.lifecycleRules(bucket);
+      if (maxAgeCutoff === undefined && rules.length === 0) continue;
+
+      const expiredKeys: string[] = [];
+      const expiredByRule: string[] = [];
+      for (const obj of objects.values()) {
+        const lastModified = obj.lastModified.getTime();
+        if (objectExpiredByRules(rules, obj.key, obj.contentLength, lastModified, now)) {
+          expiredKeys.push(obj.key);
+          expiredByRule.push(obj.key);
+        } else if (maxAgeCutoff !== undefined && lastModified < maxAgeCutoff) {
+          expiredKeys.push(obj.key);
+        }
+      }
+      if (expiredKeys.length > 0) {
+        this.persistence?.deleteObjects(bucket, expiredKeys);
+        for (const key of expiredKeys) {
+          objects.delete(key);
+        }
+        for (const key of expiredByRule) {
+          this.fireObjectEvent(bucket, key, "LifecycleExpiration:Delete");
+        }
+      }
+
+      const bucketUploads = this.multipartUploadsByBucket.get(bucket);
+      if (!bucketUploads) continue;
+      for (const uploadId of bucketUploads) {
+        const upload = this.multipartUploads.get(uploadId)!;
+        const initiated = upload.initiated.getTime();
+        if (
+          (maxAgeCutoff !== undefined && initiated < maxAgeCutoff) ||
+          uploadAbortedByRules(rules, upload.key, initiated, now)
+        ) {
+          this.persistence?.deleteMultipartUpload(uploadId);
+          this.multipartUploads.delete(uploadId);
+          bucketUploads.delete(uploadId);
+        }
+      }
+    }
+  }
+
   /** Remove all objects from a single bucket and abort its multipart uploads. No-op if the bucket does not exist. */
   emptyBucket(name: string): void {
     const objects = this.buckets.get(name);
@@ -792,6 +891,7 @@ export class S3Store {
     this.bucketCreationDates.clear();
     this.bucketTypes.clear();
     this.bucketLifecycleConfigurations.clear();
+    this.bucketLifecycleRules.clear();
     this.bucketNotificationConfigurations.clear();
     this.multipartUploads.clear();
     this.multipartUploadsByBucket.clear();
