@@ -16,6 +16,15 @@ import type { S3Store, BucketType } from "./s3Store.ts";
 import type { S3Object, MultipartUpload, MultipartPart } from "./s3Types.ts";
 import { toChecksumAlgorithm } from "./checksum.ts";
 
+/** Remove a file. A file that does not exist is not an error; anything else is thrown. */
+function unlinkIfExists(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+}
+
 /**
  * Encode an S3 key into a filesystem-safe relative path.
  * Slashes become directory separators; unsafe filesystem chars are percent-encoded.
@@ -224,10 +233,28 @@ export class FileS3Persistence implements S3PersistenceProvider {
     this.cleanEmptyParents(dirname(srcData), objectsDir);
   }
 
+  /**
+   * Delete the files of each key. A file that is already gone counts as deleted; any other
+   * unlink error is thrown after every key has been tried, so the caller keeps the key and can
+   * retry it. The metadata file goes first, so a key whose data file could not be removed is
+   * not loaded again after a restart.
+   */
   deleteObjects(bucket: string, keys: string[]): void {
+    const objectsDir = join(this.bucketsDir, bucket, "objects");
+    let firstError: unknown;
     for (const key of keys) {
-      this.deleteObject(bucket, key);
+      const relPath = encodeKeyToPath(key);
+      const dataPath = join(objectsDir, relPath + ".data");
+      try {
+        unlinkIfExists(join(objectsDir, relPath + ".meta.json"));
+        unlinkIfExists(dataPath);
+      } catch (err) {
+        firstError ??= err;
+        continue;
+      }
+      this.cleanEmptyParents(dirname(dataPath), objectsDir);
     }
+    if (firstError !== undefined) throw firstError;
   }
 
   // ── On-demand body read ──

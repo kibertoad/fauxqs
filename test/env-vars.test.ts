@@ -249,4 +249,10 @@ describe("env vars", () => {
       startFauxqs({ port: 0, logger: false, objectRetention: { maxSeconds: 0 } }),
     ).rejects.toThrow('objectRetention.maxSeconds must be a positive integer number of seconds (got "0")');
   });
+
+  it("rejects an objectRetention.maxSeconds that puts the cutoff outside the Date range", async () => {
+    await expect(
+      startFauxqs({ port: 0, logger: false, objectRetention: { maxSeconds: 10_000_000_000_000 } }),
+    ).rejects.toThrow('objectRetention.maxSeconds must be at most 3153600000000 seconds (got "10000000000000")');
+  });
 });

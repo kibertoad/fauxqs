@@ -60,7 +60,7 @@ import { getCallerIdentity } from "./sts/getCallerIdentity.ts";
 import { sqsQueueArn, snsTopicArn } from "./common/arnHelper.ts";
 import { DEFAULT_REGION, SNS_MAX_MESSAGE_SIZE_BYTES } from "./common/types.ts";
 import { mulberry32 } from "./common/prng.ts";
-import { loadInitConfig, applyInitConfig } from "./initConfig.ts";
+import { loadInitConfig, applyInitConfig, applyInitLifecycleConfigurations } from "./initConfig.ts";
 import { MessageSpy, buildSnsSpyMessage, type MessageSpyReader } from "./spy.ts";
 import { PersistenceManager } from "./persistence.ts";
 import { FileS3Persistence } from "./s3/fileS3Persistence.ts";
@@ -509,6 +509,9 @@ export interface FauxqsServer {
   deleteTenant(prefix: string): void;
 }
 
+/** 100,000 years. Larger caps put the expiry cutoff before the earliest time a Date can hold. */
+const MAX_RETENTION_SECONDS = 100_000 * 365 * 24 * 60 * 60;
+
 function resolveMaxRetentionMs(
   maxSeconds: number | undefined,
   envName: string,
@@ -517,9 +520,13 @@ function resolveMaxRetentionMs(
   const value = maxSeconds ?? (process.env[envName] || undefined);
   if (value === undefined) return undefined;
   const seconds = Number(value);
+  const source = maxSeconds === undefined ? envName : optionName;
   if (!Number.isInteger(seconds) || seconds <= 0) {
-    const source = maxSeconds === undefined ? envName : optionName;
     throw new Error(`${source} must be a positive integer number of seconds (got "${value}")`);
+  }
+  // The cutoff (now minus the cap) must stay inside the range a Date can hold.
+  if (seconds > MAX_RETENTION_SECONDS) {
+    throw new Error(`${source} must be at most ${MAX_RETENTION_SECONDS} seconds (got "${value}")`);
   }
   return seconds * 1000;
 }
@@ -672,8 +679,10 @@ export async function startFauxqs(options?: {
   for (const warning of persistenceManager?.loadWarnings ?? []) {
     app.log.warn(warning);
   }
-  // Expire what aged out while the server was down, then give the freed space back.
+  // Expire what aged out while the server was down, then give the freed space back. Lifecycle
+  // rules from the init config go in first, so they replace the stored rules for this sweep too.
   try {
+    if (initConfig) applyInitLifecycleConfigurations(initConfig, s3Store);
     s3Store.expireObjects();
   } catch (err) {
     app.log.error({ err }, "S3 object expiry at startup failed");

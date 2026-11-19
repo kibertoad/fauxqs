@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -13,6 +13,7 @@ import {
   PutBucketLifecycleConfigurationCommand,
   PutBucketNotificationConfigurationCommand,
   PutObjectCommand,
+  type S3Client,
   UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { createS3Client } from "../helpers/clients.js";
@@ -41,6 +42,39 @@ function countRows(dataDir: string, table: string): number {
   return queryDb<{ count: number }>(dataDir, `SELECT COUNT(*) AS count FROM ${table}`).count;
 }
 
+// Servers and clients a test opened and has not closed yet. A failed assertion skips the test's
+// own stop() and destroy() calls, so each afterEach closes what is left before it removes the
+// directories they use.
+const openServers = new Set<FauxqsServer>();
+const openClients = new Set<S3Client>();
+
+async function startServer(options: Parameters<typeof startFauxqs>[0]): Promise<FauxqsServer> {
+  const server = await startFauxqs(options);
+  openServers.add(server);
+  const stop = server.stop.bind(server);
+  server.stop = () => {
+    openServers.delete(server);
+    return stop();
+  };
+  return server;
+}
+
+function s3Client(port: number): S3Client {
+  const client = createS3Client(port);
+  openClients.add(client);
+  const destroy = client.destroy.bind(client);
+  client.destroy = () => {
+    openClients.delete(client);
+    destroy();
+  };
+  return client;
+}
+
+async function closeOpen(): Promise<void> {
+  for (const client of openClients) client.destroy();
+  for (const server of openServers) await server.stop();
+}
+
 describe.each([
   { backend: "SQLite", useFiles: false },
   { backend: "file", useFiles: true },
@@ -49,7 +83,7 @@ describe.each([
   let s3StorageDir: string;
 
   function start(): Promise<FauxqsServer> {
-    return startFauxqs({
+    return startServer({
       port: 0,
       logger: false,
       dataDir,
@@ -62,7 +96,8 @@ describe.each([
     s3StorageDir = createTempDir();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeOpen();
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(s3StorageDir, { recursive: true, force: true });
   });
@@ -72,7 +107,7 @@ describe.each([
     const part2 = Buffer.from("tail");
 
     let server = await start();
-    let s3 = createS3Client(server.port);
+    let s3 = s3Client(server.port);
     await s3.send(new CreateBucketCommand({ Bucket: "multipart-restart" }));
     const { UploadId } = await s3.send(
       new CreateMultipartUploadCommand({ Bucket: "multipart-restart", Key: "big" }),
@@ -90,7 +125,7 @@ describe.each([
     await server.stop();
 
     server = await start();
-    s3 = createS3Client(server.port);
+    s3 = s3Client(server.port);
     const uploaded2 = await s3.send(
       new UploadPartCommand({
         Bucket: "multipart-restart",
@@ -123,7 +158,7 @@ describe.each([
 
   it("rejects a non-final part under 5 MiB that was stored before a restart", async () => {
     let server = await start();
-    let s3 = createS3Client(server.port);
+    let s3 = s3Client(server.port);
     await s3.send(new CreateBucketCommand({ Bucket: "multipart-small" }));
     const { UploadId } = await s3.send(
       new CreateMultipartUploadCommand({ Bucket: "multipart-small", Key: "k" }),
@@ -145,7 +180,7 @@ describe.each([
     await server.stop();
 
     server = await start();
-    s3 = createS3Client(server.port);
+    s3 = s3Client(server.port);
     await expect(
       s3.send(
         new CompleteMultipartUploadCommand({
@@ -159,6 +194,42 @@ describe.each([
     s3.destroy();
     await server.stop();
   });
+
+  it.runIf(useFiles)(
+    "refuses to complete with a stored part body that does not match its ETag",
+    async () => {
+      const server = await start();
+      const s3 = s3Client(server.port);
+      await s3.send(new CreateBucketCommand({ Bucket: "multipart-mismatch" }));
+      const { UploadId } = await s3.send(
+        new CreateMultipartUploadCommand({ Bucket: "multipart-mismatch", Key: "k" }),
+      );
+      const { ETag } = await s3.send(
+        new UploadPartCommand({
+          Bucket: "multipart-mismatch",
+          Key: "k",
+          UploadId,
+          PartNumber: 1,
+          Body: "original",
+        }),
+      );
+      // What a replacement leaves behind when its data was written and its metadata was not.
+      writeFileSync(join(s3StorageDir, "_multipart", UploadId!, "parts", "1.data"), "replaced");
+
+      await expect(
+        s3.send(
+          new CompleteMultipartUploadCommand({
+            Bucket: "multipart-mismatch",
+            Key: "k",
+            UploadId,
+            MultipartUpload: { Parts: [{ PartNumber: 1, ETag }] },
+          }),
+        ),
+      ).rejects.toMatchObject({ name: "InternalError" });
+      s3.destroy();
+      await server.stop();
+    },
+  );
 });
 
 describe("Persistence: S3 object expiry", () => {
@@ -169,14 +240,15 @@ describe("Persistence: S3 object expiry", () => {
     dataDir = createTempDir();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
+    await closeOpen();
     rmSync(dataDir, { recursive: true, force: true });
   });
 
   async function storeObjectAndUpload(bucket: string): Promise<void> {
-    const server = await startFauxqs({ port: 0, logger: false, dataDir });
-    const s3 = createS3Client(server.port);
+    const server = await startServer({ port: 0, logger: false, dataDir });
+    const s3 = s3Client(server.port);
     await s3.send(new CreateBucketCommand({ Bucket: bucket }));
     await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "old", Body: "data" }));
     const { UploadId } = await s3.send(
@@ -190,7 +262,7 @@ describe("Persistence: S3 object expiry", () => {
   }
 
   async function listKeys(server: FauxqsServer, bucket: string): Promise<string[]> {
-    const s3 = createS3Client(server.port);
+    const s3 = s3Client(server.port);
     const { Contents } = await s3.send(new ListObjectsV2Command({ Bucket: bucket }));
     s3.destroy();
     return (Contents ?? []).map((object) => object.Key!);
@@ -200,7 +272,7 @@ describe("Persistence: S3 object expiry", () => {
     await storeObjectAndUpload("cap-restart");
 
     vi.setSystemTime(t0 + 60_001);
-    const server = await startFauxqs({
+    const server = await startServer({
       port: 0,
       logger: false,
       dataDir,
@@ -218,7 +290,7 @@ describe("Persistence: S3 object expiry", () => {
     await storeObjectAndUpload("cap-boundary");
 
     vi.setSystemTime(t0 + 60_000);
-    const server = await startFauxqs({
+    const server = await startServer({
       port: 0,
       logger: false,
       dataDir,
@@ -231,8 +303,8 @@ describe("Persistence: S3 object expiry", () => {
   });
 
   it("deletes the stored row of an object that a lifecycle rule expired while the server was stopped", async () => {
-    let server = await startFauxqs({ port: 0, logger: false, dataDir });
-    const s3 = createS3Client(server.port);
+    let server = await startServer({ port: 0, logger: false, dataDir });
+    const s3 = s3Client(server.port);
     await s3.send(new CreateBucketCommand({ Bucket: "rule-restart" }));
     await s3.send(
       new PutBucketLifecycleConfigurationCommand({
@@ -247,17 +319,54 @@ describe("Persistence: S3 object expiry", () => {
     await server.stop();
 
     vi.setSystemTime(t0 + DAY);
-    server = await startFauxqs({ port: 0, logger: false, dataDir });
+    server = await startServer({ port: 0, logger: false, dataDir });
 
     expect(await listKeys(server, "rule-restart")).toEqual([]);
     await server.stop();
     expect(countRows(dataDir, "s3_objects")).toBe(0);
   });
 
+  it("uses the lifecycle rules from the init config for the startup sweep", async () => {
+    let server = await startServer({ port: 0, logger: false, dataDir });
+    const s3 = s3Client(server.port);
+    await s3.send(new CreateBucketCommand({ Bucket: "init-rules" }));
+    await s3.send(
+      new PutBucketLifecycleConfigurationCommand({
+        Bucket: "init-rules",
+        LifecycleConfiguration: {
+          Rules: [{ ID: "all", Status: "Enabled", Filter: {}, Expiration: { Days: 1 } }],
+        },
+      }),
+    );
+    await s3.send(new PutObjectCommand({ Bucket: "init-rules", Key: "a", Body: "data" }));
+    s3.destroy();
+    await server.stop();
+
+    vi.setSystemTime(t0 + 2 * DAY);
+    server = await startServer({
+      port: 0,
+      logger: false,
+      dataDir,
+      init: {
+        buckets: [
+          {
+            name: "init-rules",
+            lifecycleConfiguration: {
+              Rules: [{ ID: "all", Status: "Disabled", Expiration: { Days: 1 } }],
+            },
+          },
+        ],
+      },
+    });
+
+    expect(await listKeys(server, "init-rules")).toEqual(["a"]);
+    await server.stop();
+  });
+
   it("sends the lifecycle event at startup for an object that both a rule and objectRetention.maxSeconds expired", async () => {
-    let server = await startFauxqs({ port: 0, logger: false, dataDir });
+    let server = await startServer({ port: 0, logger: false, dataDir });
     const { queueArn } = server.createQueue("rule-and-cap-events");
-    const s3 = createS3Client(server.port);
+    const s3 = s3Client(server.port);
     await s3.send(new CreateBucketCommand({ Bucket: "rule-and-cap" }));
     await s3.send(
       new PutBucketLifecycleConfigurationCommand({
@@ -280,7 +389,7 @@ describe("Persistence: S3 object expiry", () => {
     await server.stop();
 
     vi.setSystemTime(t0 + DAY);
-    server = await startFauxqs({
+    server = await startServer({
       port: 0,
       logger: false,
       dataDir,
@@ -307,7 +416,8 @@ describe("Persistence: loading SQS messages", () => {
     dataDir = createTempDir();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeOpen();
     rmSync(dataDir, { recursive: true, force: true });
   });
 
@@ -318,7 +428,7 @@ describe("Persistence: loading SQS messages", () => {
     "restores more $kind messages than one load page holds, in send order",
     async ({ queueName, attributes, fifo }) => {
       const bodies = Array.from({ length: 1205 }, (_, i) => `m${i}`);
-      let server = await startFauxqs({ port: 0, logger: false, dataDir });
+      let server = await startServer({ port: 0, logger: false, dataDir });
       server.createQueue(queueName, { attributes });
       for (const body of bodies) {
         server.sendMessage(
@@ -329,7 +439,7 @@ describe("Persistence: loading SQS messages", () => {
       }
       await server.stop();
 
-      server = await startFauxqs({ port: 0, logger: false, dataDir });
+      server = await startServer({ port: 0, logger: false, dataDir });
 
       const { ready } = server.inspectQueue(queueName)!.messages;
       expect(ready.map((message) => message.body)).toEqual(bodies);
@@ -343,7 +453,7 @@ describe("Persistence: loading SQS messages", () => {
 
     async function storeMessages(advanceClock: boolean): Promise<void> {
       vi.useFakeTimers({ toFake: ["Date"], now: t0 });
-      const server = await startFauxqs({ port: 0, logger: false, dataDir });
+      const server = await startServer({ port: 0, logger: false, dataDir });
       server.createQueue("budget-a");
       server.createQueue("budget-b");
       for (let i = 0; i < 6; i++) {
@@ -356,8 +466,11 @@ describe("Persistence: loading SQS messages", () => {
     function load(messageLoadBudgetBytes: number): { warnings: string[]; bodies: string[] } {
       const sqsStore = new SqsStore();
       const persistence = new PersistenceManager(dataDir, { messageLoadBudgetBytes });
-      persistence.load(sqsStore, new SnsStore(), new S3Store());
-      persistence.close();
+      try {
+        persistence.load(sqsStore, new SnsStore(), new S3Store());
+      } finally {
+        persistence.close();
+      }
       const bodies = [...sqsStore.allQueues()]
         .flatMap((queue) => queue.messages.map((message) => message.body))
         .sort();
@@ -405,8 +518,9 @@ describe("Persistence: reclaiming database space", () => {
     dataDir = createTempDir();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
+    await closeOpen();
     rmSync(dataDir, { recursive: true, force: true });
   });
 
@@ -416,8 +530,8 @@ describe("Persistence: reclaiming database space", () => {
 
   it("shrinks the database file in the sweep after objects are deleted", async () => {
     vi.useFakeTimers({ toFake: ["Date"], now: t0 });
-    const server = await startFauxqs({ port: 0, logger: false, dataDir });
-    const s3 = createS3Client(server.port);
+    const server = await startServer({ port: 0, logger: false, dataDir });
+    const s3 = s3Client(server.port);
     await s3.send(new CreateBucketCommand({ Bucket: "reclaim" }));
     await s3.send(
       new PutObjectCommand({ Bucket: "reclaim", Key: "big", Body: Buffer.alloc(PART_SIZE, "x") }),
@@ -442,7 +556,7 @@ describe("Persistence: reclaiming database space", () => {
     legacy.close();
     expect(dbSize()).toBeGreaterThan(PART_SIZE);
 
-    const server = await startFauxqs({ port: 0, logger: false, dataDir });
+    const server = await startServer({ port: 0, logger: false, dataDir });
     await server.stop();
 
     expect(dbSize()).toBeLessThan(1024 * 1024);

@@ -76,9 +76,10 @@ export class S3Store {
   }
 
   putBucketLifecycleConfiguration(name: string, config: string): void {
+    // Persist first, so a failed write leaves the last stored rules in effect.
+    this.persistence?.saveBucketLifecycleConfiguration(name, config);
     this.bucketLifecycleConfigurations.set(name, config);
     this.bucketLifecycleRules.delete(name);
-    this.persistence?.saveBucketLifecycleConfiguration(name, config);
   }
 
   getBucketLifecycleConfiguration(name: string): string | undefined {
@@ -86,9 +87,9 @@ export class S3Store {
   }
 
   deleteBucketLifecycleConfiguration(name: string): void {
+    this.persistence?.deleteBucketLifecycleConfiguration(name);
     this.bucketLifecycleConfigurations.delete(name);
     this.bucketLifecycleRules.delete(name);
-    this.persistence?.deleteBucketLifecycleConfiguration(name);
   }
 
   restoreBucketLifecycleConfiguration(name: string, config: string): void {
@@ -656,8 +657,18 @@ export class S3Store {
       const partBody = this.persistence
         ? this.persistence.readPartBody(uploadId, spec.partNumber)
         : upload.parts.get(spec.partNumber)!.body;
+      const digest = createHash("md5").update(partBody).digest();
+      // A part's ETag is the MD5 of its body. A stored body that no longer matches (for example,
+      // a replacement whose UploadPart failed after its data was written) must not be committed.
+      if (digest.toString("hex") !== upload.parts.get(spec.partNumber)!.etag.replaceAll('"', "")) {
+        throw new S3Error(
+          "InternalError",
+          `The stored body of part ${spec.partNumber} does not match its ETag`,
+          500,
+        );
+      }
       orderedParts.push(partBody);
-      partDigests.push(createHash("md5").update(partBody).digest());
+      partDigests.push(digest);
     }
 
     // Collect per-part checksums before the part buffers are released. The
@@ -812,10 +823,12 @@ export class S3Store {
    *
    * An object deleted by a lifecycle rule produces an `s3:LifecycleExpiration:Delete` event.
    * Persisted data is deleted first, so when that throws the entries stay in memory and the
-   * next call retries them.
+   * next call retries them. A failure in one bucket or upload does not stop the sweep: the
+   * rest is still expired, and the errors are thrown together at the end.
    */
   expireObjects(): void {
     const now = Date.now();
+    const failures: unknown[] = [];
     const maxAgeCutoff =
       this.maxObjectRetentionMs === undefined ? undefined : now - this.maxObjectRetentionMs;
 
@@ -835,12 +848,31 @@ export class S3Store {
         }
       }
       if (expiredKeys.length > 0) {
-        this.persistence?.deleteObjects(bucket, expiredKeys);
-        for (const key of expiredKeys) {
+        let deletedKeys = expiredKeys;
+        try {
+          this.persistence?.deleteObjects(bucket, expiredKeys);
+        } catch (err) {
+          // Part of the batch may be gone already. Delete key by key, so every key whose stored
+          // data is gone also leaves memory, and the rest stay for the next sweep.
+          failures.push(err);
+          deletedKeys = [];
+          for (const key of expiredKeys) {
+            try {
+              this.persistence!.deleteObjects(bucket, [key]);
+              deletedKeys.push(key);
+            } catch {
+              // Reported through the batch error above.
+            }
+          }
+        }
+        const deleted = new Set(deletedKeys);
+        for (const key of deletedKeys) {
           objects.delete(key);
         }
         for (const key of expiredByRule) {
-          this.fireObjectEvent(bucket, key, "LifecycleExpiration:Delete");
+          if (deleted.has(key)) {
+            this.fireObjectEvent(bucket, key, "LifecycleExpiration:Delete");
+          }
         }
       }
 
@@ -853,11 +885,22 @@ export class S3Store {
           (maxAgeCutoff !== undefined && initiated < maxAgeCutoff) ||
           uploadAbortedByRules(rules, upload.key, initiated, now)
         ) {
-          this.persistence?.deleteMultipartUpload(uploadId);
+          try {
+            this.persistence?.deleteMultipartUpload(uploadId);
+          } catch (err) {
+            // Keep the upload indexed so the next sweep retries it, and go on with the rest.
+            failures.push(err);
+            continue;
+          }
           this.multipartUploads.delete(uploadId);
           bucketUploads.delete(uploadId);
         }
       }
+    }
+
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, `${failures.length} S3 expiry deletions failed`);
     }
   }
 

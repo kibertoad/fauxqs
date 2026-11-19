@@ -251,6 +251,8 @@ export class PersistenceManager implements S3PersistenceProvider {
   private readonly messageLoadBudgetBytes: number;
   /** Data that loading had to drop, for the caller to log once it has a logger. */
   readonly loadWarnings: string[] = [];
+  /** The last WAL checkpoint was blocked by another connection, so reclaimFreeSpace retries it. */
+  private checkpointPending = false;
 
   constructor(dataDir: string, options?: PersistenceOptions) {
     this.messageLoadBudgetBytes =
@@ -1148,12 +1150,17 @@ export class PersistenceManager implements S3PersistenceProvider {
       if (livePages * this.pragmaNumber("page_size") > REBUILD_MAX_LIVE_BYTES) return;
       this.db.exec("PRAGMA auto_vacuum = INCREMENTAL");
       this.db.exec("VACUUM");
-    } else {
-      if (freePages < RECLAIM_MIN_FREE_PAGES) return;
+    } else if (freePages >= RECLAIM_MIN_FREE_PAGES) {
       this.db.exec(`PRAGMA incremental_vacuum(${RECLAIM_MAX_PAGES})`);
+    } else if (!this.checkpointPending) {
+      return;
     }
-    // In WAL mode the database file shrinks when the change is checkpointed.
-    this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    // In WAL mode the database file shrinks when the change is checkpointed. Another connection
+    // can keep the checkpoint from finishing; the next call then retries it.
+    const result = this.db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as
+      | { busy: number }
+      | undefined;
+    this.checkpointPending = result !== undefined && result.busy !== 0;
   }
 
   close(): void {

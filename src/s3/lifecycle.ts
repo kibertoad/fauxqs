@@ -21,10 +21,41 @@ function positiveInteger(text: string | undefined): number | undefined {
   return Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
-function nonNegativeInteger(text: string | undefined): number | undefined {
-  if (text === undefined) return undefined;
+/** Marks an element that is present but whose value cannot be used. */
+const INVALID = Symbol("invalid");
+
+/**
+ * Read `<name>` from a rule. `undefined` means the element is absent. {@link INVALID} means it is
+ * present but unreadable, for example with whitespace before `>` (which `xmlElement` does not
+ * match), so the caller can skip the rule instead of widening it.
+ */
+function ruleElement(block: string, name: string): string | undefined | typeof INVALID {
+  const value = xmlElement(block, name);
+  if (value !== undefined) return value;
+  // A self-closing element such as `<Prefix/>` is empty, which is a valid value.
+  if (new RegExp(String.raw`<${name}\s*/>`).test(block)) return "";
+  return new RegExp(String.raw`<${name}[\s>]`).test(block) ? INVALID : undefined;
+}
+
+function nonNegativeInteger(
+  text: string | undefined | typeof INVALID,
+): number | undefined | typeof INVALID {
+  if (text === undefined || text === INVALID) return text;
   const value = Number(text.trim());
-  return Number.isInteger(value) && value >= 0 ? value : undefined;
+  return Number.isInteger(value) && value >= 0 ? value : INVALID;
+}
+
+/**
+ * S3 requires an expiration date at midnight UTC, in ISO 8601. A date-time without a zone is
+ * read as UTC, the way S3 reads it, instead of as local time. Any other value makes the
+ * expiration unusable.
+ */
+function expirationDateOf(text: string | undefined): number | undefined | typeof INVALID {
+  if (text === undefined) return undefined;
+  let iso = text.trim();
+  if (/T[\d:.]+$/.test(iso)) iso += "Z";
+  const value = Date.parse(iso);
+  return Number.isNaN(value) || value % DAY_MS !== 0 ? INVALID : value;
 }
 
 /**
@@ -37,25 +68,29 @@ export function parseLifecycleRules(xml: string): LifecycleRule[] {
   const rules: LifecycleRule[] = [];
   for (const block of xmlBlocks(xml, "Rule")) {
     if (xmlElement(block, "Status")?.trim() !== "Enabled") continue;
-    if (block.includes("<Tag>")) continue;
+    if (/<Tag[\s>/]/.test(block)) continue;
 
     const expiration = xmlBlocks(block, "Expiration")[0];
     const abort = xmlBlocks(block, "AbortIncompleteMultipartUpload")[0];
     const expirationDays = positiveInteger(expiration && xmlElement(expiration, "Days"));
-    const dateText = expiration && xmlElement(expiration, "Date");
-    const parsedDate = dateText === undefined ? Number.NaN : Date.parse(dateText.trim());
-    const expirationDate = Number.isNaN(parsedDate) ? undefined : parsedDate;
+    const parsedDate = expirationDateOf(expiration && xmlElement(expiration, "Date"));
+    const expirationDate = parsedDate === INVALID ? undefined : parsedDate;
     const abortDays = positiveInteger(abort && xmlElement(abort, "DaysAfterInitiation"));
     if (expirationDays === undefined && expirationDate === undefined && abortDays === undefined) {
       continue;
     }
 
     // <Prefix> sits directly in the rule (the older form), in <Filter>, or in <Filter><And>.
-    // An absent or empty prefix matches every key.
-    const objectSizeGreaterThan = nonNegativeInteger(xmlElement(block, "ObjectSizeGreaterThan"));
-    const objectSizeLessThan = nonNegativeInteger(xmlElement(block, "ObjectSizeLessThan"));
+    // An absent or empty prefix matches every key. A filter element that is present but
+    // unreadable skips the rule: dropping it would make the rule match more objects.
+    const prefix = ruleElement(block, "Prefix");
+    const objectSizeGreaterThan = nonNegativeInteger(ruleElement(block, "ObjectSizeGreaterThan"));
+    const objectSizeLessThan = nonNegativeInteger(ruleElement(block, "ObjectSizeLessThan"));
+    if (prefix === INVALID || objectSizeGreaterThan === INVALID || objectSizeLessThan === INVALID) {
+      continue;
+    }
     rules.push({
-      prefix: xmlElement(block, "Prefix") ?? "",
+      prefix: prefix ?? "",
       ...(objectSizeGreaterThan !== undefined && { objectSizeGreaterThan }),
       ...(objectSizeLessThan !== undefined && { objectSizeLessThan }),
       ...(expirationDays !== undefined && { expirationDays }),
