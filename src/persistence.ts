@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { getHeapStatistics } from "node:v8";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import type { SqsStore, SqsQueue } from "./sqs/sqsStore.ts";
 import type { SqsMessage } from "./sqs/sqsTypes.ts";
@@ -8,7 +9,7 @@ import type { SnsTopic, SnsSubscription } from "./sns/snsTypes.ts";
 import type { S3Store, BucketType } from "./s3/s3Store.ts";
 import type { S3Object, MultipartUpload, MultipartPart } from "./s3/s3Types.ts";
 import { toChecksumAlgorithm } from "./s3/checksum.ts";
-import type { S3PersistenceProvider } from "./s3/s3Persistence.ts";
+import type { LoadS3Options, S3PersistenceProvider } from "./s3/s3Persistence.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sqs_queues (
@@ -121,6 +122,96 @@ CREATE TABLE IF NOT EXISTS s3_multipart_parts (
 );
 `;
 
+/** Rows read per query while loading persisted state, so no result set is held in full. */
+const LOAD_PAGE_SIZE = 1000;
+
+/** Share of V8's heap limit that persisted SQS messages may fill at startup. */
+const MESSAGE_LOAD_HEAP_SHARE = 0.3;
+
+/** Estimated heap cost of one loaded message on top of its body and attributes. */
+const MESSAGE_OVERHEAD_BYTES = 512;
+
+/**
+ * Estimated heap bytes per character of the stored attributes JSON once it is parsed: two bytes
+ * per character for strings V8 stores as UTF-16, and the same again for the objects that hold
+ * each attribute's name, data type and value.
+ */
+const ATTRIBUTE_HEAP_BYTES_PER_CHAR = 4;
+
+/**
+ * Estimated heap cost of one stored message, in SQL. V8 keeps a string with only Latin-1
+ * characters at one byte per character and any other string at two, so a body that is not
+ * plain ASCII counts two bytes per character. Latin-1 text outside ASCII is counted at two as
+ * well, which overestimates it.
+ */
+const MESSAGE_LOAD_COST_SQL = `(
+  CASE WHEN octet_length(body) = length(body) THEN length(body) ELSE 2 * length(body) END
+  + ${ATTRIBUTE_HEAP_BYTES_PER_CHAR} * length(message_attributes)
+  + ${MESSAGE_OVERHEAD_BYTES}
+)`;
+
+/** Pages released per reclaimFreeSpace call, which bounds how long one call blocks. */
+const RECLAIM_MAX_PAGES = 16_384;
+
+/** reclaimFreeSpace leaves a smaller free list alone: the next writes reuse those pages. */
+const RECLAIM_MIN_FREE_PAGES = 256;
+
+/**
+ * Largest amount of live data that a database created without auto_vacuum is rebuilt for at
+ * startup. The rebuild copies all live data, so its duration grows with this size.
+ */
+const REBUILD_MAX_LIVE_BYTES = 64 * 1024 * 1024;
+
+export interface PersistenceOptions {
+  /**
+   * Estimated heap bytes that persisted SQS messages may take at startup. When the stored
+   * messages need more, the oldest are deleted before loading. Defaults to a share of V8's
+   * heap limit.
+   */
+  messageLoadBudgetBytes?: number;
+}
+
+interface SqsMessageRow {
+  id: number;
+  message_id: string;
+  queue_name: string;
+  body: string;
+  md5_of_body: string;
+  message_attributes: string;
+  md5_of_message_attributes: string;
+  sent_timestamp: number;
+  approximate_receive_count: number;
+  approximate_first_receive_timestamp: number | null;
+  delay_until: number | null;
+  message_group_id: string | null;
+  message_deduplication_id: string | null;
+  sequence_number: string | null;
+  receipt_handle: string | null;
+  visibility_deadline: number | null;
+  dead_letter_source_arn: string | null;
+  enqueue_timestamp: number;
+}
+
+interface S3ObjectMetaRow {
+  id: number;
+  bucket: string;
+  key: string;
+  content_type: string;
+  content_length: number;
+  etag: string;
+  last_modified: string;
+  metadata: string;
+  content_language: string | null;
+  content_disposition: string | null;
+  cache_control: string | null;
+  content_encoding: string | null;
+  parts: string | null;
+  checksum_algorithm: string | null;
+  checksum_value: string | null;
+  checksum_type: string | null;
+  part_checksums: string | null;
+}
+
 interface PreparedStatements {
   insertQueue: StatementSync;
   deleteQueue: StatementSync;
@@ -131,8 +222,11 @@ interface PreparedStatements {
   deleteMessage: StatementSync;
   updateMessageInflight: StatementSync;
   deleteQueueMessages: StatementSync;
-  loadMessages: StatementSync;
+  loadMessagesPage: StatementSync;
   deleteExpiredMessages: StatementSync;
+  messageLoadCost: StatementSync;
+  messageLoadCutoff: StatementSync;
+  deleteMessagesUpTo: StatementSync;
   deleteAllMessages: StatementSync;
   insertTopic: StatementSync;
   deleteTopic: StatementSync;
@@ -155,27 +249,48 @@ interface PreparedStatements {
   deleteObject: StatementSync;
   deleteObjectsByBucket: StatementSync;
   deleteAllObjects: StatementSync;
-  loadObjectsMeta: StatementSync;
+  loadObjectsMetaPage: StatementSync;
+  deleteObjectsOlderThan: StatementSync;
+  deleteMultipartUploadsOlderThan: StatementSync;
   insertMultipartUpload: StatementSync;
   deleteMultipartUpload: StatementSync;
   loadMultipartUploads: StatementSync;
   upsertMultipartPart: StatementSync;
   deleteMultipartParts: StatementSync;
-  loadMultipartParts: StatementSync;
+  loadMultipartPartsMeta: StatementSync;
   deleteAllMultipartParts: StatementSync;
   deleteAllMultipartUploads: StatementSync;
   readBody: StatementSync;
+  readPartBody: StatementSync;
+  pragmaAutoVacuum: StatementSync;
+  pragmaFreelistCount: StatementSync;
+  pragmaPageCount: StatementSync;
+  pragmaPageSize: StatementSync;
+  walCheckpoint: StatementSync;
 }
 
 export class PersistenceManager implements S3PersistenceProvider {
   private db: DatabaseSync;
   private stmts: PreparedStatements;
+  private readonly messageLoadBudgetBytes: number;
+  /** Data that loading had to drop, for the caller to log once it has a logger. */
+  readonly loadWarnings: string[] = [];
+  /** The last WAL checkpoint was blocked by another connection, so reclaimFreeSpace retries it. */
+  private checkpointPending = false;
 
-  constructor(dataDir: string) {
+  constructor(dataDir: string, options?: PersistenceOptions) {
+    this.messageLoadBudgetBytes =
+      options?.messageLoadBudgetBytes ??
+      Math.floor(getHeapStatistics().heap_size_limit * MESSAGE_LOAD_HEAP_SHARE);
     mkdirSync(dataDir, { recursive: true });
     const dbPath = join(dataDir, "fauxqs.db");
     this.db = new DatabaseSync(dbPath, { enableForeignKeyConstraints: true });
+    // Takes effect only while the database has no tables. A database created by an older
+    // fauxqs version keeps auto_vacuum off until reclaimFreeSpace rebuilds it.
+    this.db.exec("PRAGMA auto_vacuum = INCREMENTAL");
     this.db.exec("PRAGMA journal_mode = WAL");
+    // A checkpoint otherwise leaves the WAL file at the largest size it ever reached.
+    this.db.exec("PRAGMA journal_size_limit = 67108864");
     this.db.exec(SCHEMA);
     this.migrate();
     this.stmts = this.prepareStatements();
@@ -233,13 +348,33 @@ export class PersistenceManager implements S3PersistenceProvider {
         WHERE message_id = ?
       `),
       deleteQueueMessages: this.db.prepare("DELETE FROM sqs_messages WHERE queue_name = ?"),
-      loadMessages: this.db.prepare("SELECT * FROM sqs_messages WHERE queue_name = ?"),
+      loadMessagesPage: this.db.prepare(`
+        SELECT rowid AS id, * FROM sqs_messages
+        WHERE queue_name = ? AND (enqueue_timestamp, rowid) > (?, ?)
+        ORDER BY enqueue_timestamp, rowid
+        LIMIT ${LOAD_PAGE_SIZE}
+      `),
       deleteExpiredMessages: this.db.prepare(`
         DELETE FROM sqs_messages
         WHERE queue_name = ? AND enqueue_timestamp < ?
           AND (visibility_deadline IS NULL OR visibility_deadline <= ?)
           AND (delay_until IS NULL OR delay_until <= ?)
       `),
+      messageLoadCost: this.db.prepare(`
+        SELECT coalesce(sum(${MESSAGE_LOAD_COST_SQL}), 0) AS bytes
+        FROM sqs_messages
+      `),
+      // The newest message at which the running cost, newest first, exceeds the budget.
+      messageLoadCutoff: this.db.prepare(`
+        SELECT enqueue_timestamp, id FROM (
+          SELECT enqueue_timestamp, rowid AS id,
+            sum(${MESSAGE_LOAD_COST_SQL}) OVER (ORDER BY enqueue_timestamp DESC, rowid DESC) AS running
+          FROM sqs_messages
+        ) WHERE running > ? ORDER BY running LIMIT 1
+      `),
+      deleteMessagesUpTo: this.db.prepare(
+        "DELETE FROM sqs_messages WHERE (enqueue_timestamp, rowid) <= (?, ?)",
+      ),
       deleteAllMessages: this.db.prepare("DELETE FROM sqs_messages"),
       insertTopic: this.db.prepare(`
         INSERT OR REPLACE INTO sns_topics (arn, name, attributes, tags, subscription_arns)
@@ -290,8 +425,21 @@ export class PersistenceManager implements S3PersistenceProvider {
       deleteObject: this.db.prepare("DELETE FROM s3_objects WHERE bucket = ? AND key = ?"),
       deleteObjectsByBucket: this.db.prepare("DELETE FROM s3_objects WHERE bucket = ?"),
       deleteAllObjects: this.db.prepare("DELETE FROM s3_objects"),
-      loadObjectsMeta: this.db.prepare(
-        "SELECT bucket, key, content_type, content_length, etag, last_modified, metadata, content_language, content_disposition, cache_control, content_encoding, parts, checksum_algorithm, checksum_value, checksum_type, part_checksums FROM s3_objects",
+      loadObjectsMetaPage: this.db.prepare(`
+        SELECT rowid AS id, bucket, key, content_type, content_length, etag, last_modified, metadata, content_language, content_disposition, cache_control, content_encoding, parts, checksum_algorithm, checksum_value, checksum_type, part_checksums
+        FROM s3_objects WHERE rowid > ? ORDER BY rowid LIMIT ${LOAD_PAGE_SIZE}
+      `),
+      // last_modified and initiated hold Date.toISOString() output, which sorts chronologically.
+      // Buckets with a lifecycle configuration, stored or given in the second parameter as a
+      // JSON array of names, are left to S3Store.expireObjects at startup, which sends the
+      // LifecycleExpiration event for objects that a rule expired.
+      deleteObjectsOlderThan: this.db.prepare(`
+        DELETE FROM s3_objects WHERE last_modified < ?
+          AND bucket NOT IN (SELECT bucket FROM s3_bucket_lifecycle_configurations)
+          AND bucket NOT IN (SELECT value FROM json_each(?))
+      `),
+      deleteMultipartUploadsOlderThan: this.db.prepare(
+        "DELETE FROM s3_multipart_uploads WHERE initiated < ?",
       ),
       insertMultipartUpload: this.db.prepare(`
         INSERT OR REPLACE INTO s3_multipart_uploads (
@@ -308,10 +456,20 @@ export class PersistenceManager implements S3PersistenceProvider {
         VALUES (?, ?, ?, ?, ?, ?)
       `),
       deleteMultipartParts: this.db.prepare("DELETE FROM s3_multipart_parts WHERE upload_id = ?"),
-      loadMultipartParts: this.db.prepare("SELECT * FROM s3_multipart_parts WHERE upload_id = ?"),
+      loadMultipartPartsMeta: this.db.prepare(
+        "SELECT upload_id, part_number, length(body) AS size, etag, last_modified, checksum_value FROM s3_multipart_parts",
+      ),
       deleteAllMultipartParts: this.db.prepare("DELETE FROM s3_multipart_parts"),
       deleteAllMultipartUploads: this.db.prepare("DELETE FROM s3_multipart_uploads"),
       readBody: this.db.prepare("SELECT body FROM s3_objects WHERE bucket = ? AND key = ?"),
+      readPartBody: this.db.prepare(
+        "SELECT body FROM s3_multipart_parts WHERE upload_id = ? AND part_number = ?",
+      ),
+      pragmaAutoVacuum: this.db.prepare("PRAGMA auto_vacuum"),
+      pragmaFreelistCount: this.db.prepare("PRAGMA freelist_count"),
+      pragmaPageCount: this.db.prepare("PRAGMA page_count"),
+      pragmaPageSize: this.db.prepare("PRAGMA page_size"),
+      walCheckpoint: this.db.prepare("PRAGMA wal_checkpoint(TRUNCATE)"),
     };
   }
 
@@ -516,6 +674,14 @@ export class PersistenceManager implements S3PersistenceProvider {
     this.stmts.deleteObject.run(bucket, key);
   }
 
+  deleteObjects(bucket: string, keys: string[]): void {
+    this.transaction(() => {
+      for (const key of keys) {
+        this.stmts.deleteObject.run(bucket, key);
+      }
+    });
+  }
+
   deleteObjectsByBucket(bucket: string): void {
     this.stmts.deleteObjectsByBucket.run(bucket);
   }
@@ -595,6 +761,16 @@ export class PersistenceManager implements S3PersistenceProvider {
     this.stmts.deleteMultipartUpload.run(uploadId);
   }
 
+  readPartBody(uploadId: string, partNumber: number): Buffer {
+    const row = this.stmts.readPartBody.get(uploadId, partNumber) as
+      | { body: Uint8Array }
+      | undefined;
+    if (!row) {
+      throw new Error(`Multipart part not found in persistence: ${uploadId}/${partNumber}`);
+    }
+    return Buffer.from(row.body);
+  }
+
   completeMultipartUpload(uploadId: string, bucket: string, obj: S3Object): void {
     this.transaction(() => {
       this.upsertObject(bucket, obj);
@@ -635,9 +811,9 @@ export class PersistenceManager implements S3PersistenceProvider {
 
   // ── Load on startup ──
 
-  load(sqsStore: SqsStore, snsStore: SnsStore, s3Store: S3Store): void {
+  load(sqsStore: SqsStore, snsStore: SnsStore, s3Store: S3Store, s3Options?: LoadS3Options): void {
     this.loadSqsAndSns(sqsStore, snsStore);
-    this.loadS3(s3Store);
+    this.loadS3(s3Store, s3Options);
   }
 
   loadSqsAndSns(sqsStore: SqsStore, snsStore: SnsStore): void {
@@ -646,10 +822,21 @@ export class PersistenceManager implements S3PersistenceProvider {
     this.loadSnsSubscriptions(snsStore);
   }
 
-  loadS3(s3Store: S3Store): void {
+  loadS3(s3Store: S3Store, options?: LoadS3Options): void {
     this.loadS3Buckets(s3Store);
     this.loadS3BucketLifecycleConfigurations(s3Store);
     this.loadS3BucketNotificationConfigurations(s3Store);
+    if (s3Store.maxObjectRetentionMs !== undefined) {
+      // Drop what the retention cap has expired before its metadata is loaded. Objects in
+      // buckets with lifecycle rules, stored or from the init config, stay until expireObjects
+      // checks the rules first.
+      const cutoff = new Date(Date.now() - s3Store.maxObjectRetentionMs).toISOString();
+      this.stmts.deleteObjectsOlderThan.run(
+        cutoff,
+        JSON.stringify(options?.lifecycleBuckets ?? []),
+      );
+      this.stmts.deleteMultipartUploadsOlderThan.run(cutoff);
+    }
     this.loadS3Objects(s3Store);
     this.loadS3MultipartUploads(s3Store);
   }
@@ -666,6 +853,7 @@ export class PersistenceManager implements S3PersistenceProvider {
       sequence_counter: number;
     }>;
 
+    const queues: SqsQueue[] = [];
     for (const row of rows) {
       const attributes = JSON.parse(row.attributes);
       const tags = JSON.parse(row.tags);
@@ -676,96 +864,119 @@ export class PersistenceManager implements S3PersistenceProvider {
       (queue as { createdTimestamp: number }).createdTimestamp = row.created_timestamp;
       queue.lastModifiedTimestamp = row.last_modified_timestamp;
       queue.sequenceCounter = row.sequence_counter;
+      queues.push(queue);
+    }
 
-      this.loadSqsMessages(queue);
+    const now = Date.now();
+    for (const queue of queues) {
+      this.stmts.deleteExpiredMessages.run(queue.name, now - queue.messageRetentionMs(), now, now);
+    }
+    this.trimMessagesToLoadBudget();
+    for (const queue of queues) {
+      this.loadSqsMessages(queue, now);
     }
   }
 
-  private loadSqsMessages(queue: SqsQueue): void {
-    const now = Date.now();
-    this.stmts.deleteExpiredMessages.run(queue.name, now - queue.messageRetentionMs(), now, now);
-    const rows = this.stmts.loadMessages.all(queue.name) as Array<{
-      message_id: string;
-      queue_name: string;
-      body: string;
-      md5_of_body: string;
-      message_attributes: string;
-      md5_of_message_attributes: string;
-      sent_timestamp: number;
-      approximate_receive_count: number;
-      approximate_first_receive_timestamp: number | null;
-      delay_until: number | null;
-      message_group_id: string | null;
-      message_deduplication_id: string | null;
-      sequence_number: string | null;
-      receipt_handle: string | null;
-      visibility_deadline: number | null;
-      dead_letter_source_arn: string | null;
-      enqueue_timestamp: number;
-    }>;
+  /**
+   * Every loaded message stays on the JS heap. When the stored messages would not fit, the
+   * process would run out of memory on every start and never reach the code that expires
+   * them, so this deletes the oldest messages of all queues until the rest fits the budget.
+   */
+  private trimMessagesToLoadBudget(): void {
+    const { bytes } = this.stmts.messageLoadCost.get() as { bytes: number };
+    if (bytes <= this.messageLoadBudgetBytes) return;
+    const cutoff = this.stmts.messageLoadCutoff.get(this.messageLoadBudgetBytes) as
+      | { enqueue_timestamp: number; id: number }
+      | undefined;
+    if (!cutoff) return;
+    const { changes } = this.stmts.deleteMessagesUpTo.run(cutoff.enqueue_timestamp, cutoff.id);
+    const toMiB = (value: number) => Math.ceil(value / (1024 * 1024));
+    this.loadWarnings.push(
+      `Persisted SQS messages need about ${toMiB(bytes)} MiB of heap and the startup budget is ` +
+        `${toMiB(this.messageLoadBudgetBytes)} MiB. Deleted the ${changes} oldest messages.`,
+    );
+  }
 
-    for (const row of rows) {
-      const msg: SqsMessage = {
-        messageId: row.message_id,
-        body: row.body,
-        md5OfBody: row.md5_of_body,
-        messageAttributes: JSON.parse(row.message_attributes),
-        md5OfMessageAttributes: row.md5_of_message_attributes,
-        sentTimestamp: row.sent_timestamp,
-        enqueueTimestamp: row.enqueue_timestamp,
-        approximateReceiveCount: row.approximate_receive_count,
-        approximateFirstReceiveTimestamp: row.approximate_first_receive_timestamp ?? undefined,
-        delayUntil: row.delay_until ?? undefined,
-        messageGroupId: row.message_group_id ?? undefined,
-        messageDeduplicationId: row.message_deduplication_id ?? undefined,
-        sequenceNumber: row.sequence_number ?? undefined,
-        deadLetterSourceArn: row.dead_letter_source_arn ?? undefined,
-      };
-
-      // Recalculate message state from persisted timestamps
-      if (row.receipt_handle && row.visibility_deadline) {
-        if (row.visibility_deadline > now) {
-          // Still inflight
-          queue.inflightMessages.set(row.receipt_handle, {
-            message: msg,
-            receiptHandle: row.receipt_handle,
-            visibilityDeadline: row.visibility_deadline,
-          });
-          if (msg.messageGroupId && queue.isFifo()) {
-            const count = queue.fifoLockedGroups.get(msg.messageGroupId) ?? 0;
-            queue.fifoLockedGroups.set(msg.messageGroupId, count + 1);
-          }
-          continue;
-        }
-        // Visibility expired — clear inflight state in DB
-        this.stmts.updateMessageInflight.run(
-          null,
-          null,
-          row.approximate_receive_count,
-          row.approximate_first_receive_timestamp,
-          row.message_id,
-        );
+  private loadSqsMessages(queue: SqsQueue, now: number): void {
+    let lastTimestamp = -1;
+    let lastId = -1;
+    for (;;) {
+      const rows = this.stmts.loadMessagesPage.all(
+        queue.name,
+        lastTimestamp,
+        lastId,
+      ) as unknown as SqsMessageRow[];
+      for (const row of rows) {
+        this.restoreSqsMessage(queue, row, now);
       }
+      if (rows.length < LOAD_PAGE_SIZE) return;
+      const last = rows[rows.length - 1];
+      lastTimestamp = last.enqueue_timestamp;
+      lastId = last.id;
+    }
+  }
 
-      // Place into ready or delayed
-      if (msg.delayUntil && msg.delayUntil > now) {
-        if (queue.isFifo()) {
-          const groupId = msg.messageGroupId ?? "__default";
-          const group = queue.fifoDelayed.get(groupId) ?? [];
-          group.push(msg);
-          queue.fifoDelayed.set(groupId, group);
-        } else {
-          queue.delayedMessages.push(msg);
+  private restoreSqsMessage(queue: SqsQueue, row: SqsMessageRow, now: number): void {
+    const msg: SqsMessage = {
+      messageId: row.message_id,
+      body: row.body,
+      md5OfBody: row.md5_of_body,
+      messageAttributes: JSON.parse(row.message_attributes),
+      md5OfMessageAttributes: row.md5_of_message_attributes,
+      sentTimestamp: row.sent_timestamp,
+      enqueueTimestamp: row.enqueue_timestamp,
+      approximateReceiveCount: row.approximate_receive_count,
+      approximateFirstReceiveTimestamp: row.approximate_first_receive_timestamp ?? undefined,
+      delayUntil: row.delay_until ?? undefined,
+      messageGroupId: row.message_group_id ?? undefined,
+      messageDeduplicationId: row.message_deduplication_id ?? undefined,
+      sequenceNumber: row.sequence_number ?? undefined,
+      deadLetterSourceArn: row.dead_letter_source_arn ?? undefined,
+    };
+
+    // Recalculate message state from persisted timestamps
+    if (row.receipt_handle && row.visibility_deadline) {
+      if (row.visibility_deadline > now) {
+        // Still inflight
+        queue.inflightMessages.set(row.receipt_handle, {
+          message: msg,
+          receiptHandle: row.receipt_handle,
+          visibilityDeadline: row.visibility_deadline,
+        });
+        if (msg.messageGroupId && queue.isFifo()) {
+          const count = queue.fifoLockedGroups.get(msg.messageGroupId) ?? 0;
+          queue.fifoLockedGroups.set(msg.messageGroupId, count + 1);
         }
+        return;
+      }
+      // Visibility expired — clear inflight state in DB
+      this.stmts.updateMessageInflight.run(
+        null,
+        null,
+        row.approximate_receive_count,
+        row.approximate_first_receive_timestamp,
+        row.message_id,
+      );
+    }
+
+    // Place into ready or delayed
+    if (msg.delayUntil && msg.delayUntil > now) {
+      if (queue.isFifo()) {
+        const groupId = msg.messageGroupId ?? "__default";
+        const group = queue.fifoDelayed.get(groupId) ?? [];
+        group.push(msg);
+        queue.fifoDelayed.set(groupId, group);
       } else {
-        if (queue.isFifo()) {
-          const groupId = msg.messageGroupId ?? "__default";
-          const group = queue.fifoMessages.get(groupId) ?? [];
-          group.push(msg);
-          queue.fifoMessages.set(groupId, group);
-        } else {
-          queue.messages.push(msg);
-        }
+        queue.delayedMessages.push(msg);
+      }
+    } else {
+      if (queue.isFifo()) {
+        const groupId = msg.messageGroupId ?? "__default";
+        const group = queue.fifoMessages.get(groupId) ?? [];
+        group.push(msg);
+        queue.fifoMessages.set(groupId, group);
+      } else {
+        queue.messages.push(msg);
       }
     }
   }
@@ -854,49 +1065,40 @@ export class PersistenceManager implements S3PersistenceProvider {
 
   private loadS3Objects(s3Store: S3Store): void {
     // Load metadata only — bodies are read on demand via readBody()
-    const rows = this.stmts.loadObjectsMeta.all() as Array<{
-      bucket: string;
-      key: string;
-      content_type: string;
-      content_length: number;
-      etag: string;
-      last_modified: string;
-      metadata: string;
-      content_language: string | null;
-      content_disposition: string | null;
-      cache_control: string | null;
-      content_encoding: string | null;
-      parts: string | null;
-      checksum_algorithm: string | null;
-      checksum_value: string | null;
-      checksum_type: string | null;
-      part_checksums: string | null;
-    }>;
-
-    for (const row of rows) {
-      const checksumAlgorithm = toChecksumAlgorithm(row.checksum_algorithm);
-      const obj: S3Object = {
-        key: row.key,
-        body: Buffer.alloc(0),
-        contentType: row.content_type,
-        contentLength: row.content_length,
-        etag: row.etag,
-        lastModified: new Date(row.last_modified),
-        metadata: JSON.parse(row.metadata),
-        ...(row.content_language && { contentLanguage: row.content_language }),
-        ...(row.content_disposition && { contentDisposition: row.content_disposition }),
-        ...(row.cache_control && { cacheControl: row.cache_control }),
-        ...(row.content_encoding && { contentEncoding: row.content_encoding }),
-        ...(row.parts && { parts: JSON.parse(row.parts) }),
-        ...(checksumAlgorithm && { checksumAlgorithm }),
-        ...(row.checksum_value && { checksumValue: row.checksum_value }),
-        ...(row.checksum_type && {
-          checksumType: row.checksum_type as "FULL_OBJECT" | "COMPOSITE",
-        }),
-        ...(row.part_checksums && { partChecksums: JSON.parse(row.part_checksums) }),
-      };
-      s3Store.restoreObject(row.bucket, obj);
+    let lastId = -1;
+    for (;;) {
+      const rows = this.stmts.loadObjectsMetaPage.all(lastId) as unknown as S3ObjectMetaRow[];
+      for (const row of rows) {
+        this.restoreS3Object(s3Store, row);
+      }
+      if (rows.length < LOAD_PAGE_SIZE) return;
+      lastId = rows[rows.length - 1].id;
     }
+  }
+
+  private restoreS3Object(s3Store: S3Store, row: S3ObjectMetaRow): void {
+    const checksumAlgorithm = toChecksumAlgorithm(row.checksum_algorithm);
+    const obj: S3Object = {
+      key: row.key,
+      body: Buffer.alloc(0),
+      contentType: row.content_type,
+      contentLength: row.content_length,
+      etag: row.etag,
+      lastModified: new Date(row.last_modified),
+      metadata: JSON.parse(row.metadata),
+      ...(row.content_language && { contentLanguage: row.content_language }),
+      ...(row.content_disposition && { contentDisposition: row.content_disposition }),
+      ...(row.cache_control && { cacheControl: row.cache_control }),
+      ...(row.content_encoding && { contentEncoding: row.content_encoding }),
+      ...(row.parts && { parts: JSON.parse(row.parts) }),
+      ...(checksumAlgorithm && { checksumAlgorithm }),
+      ...(row.checksum_value && { checksumValue: row.checksum_value }),
+      ...(row.checksum_type && {
+        checksumType: row.checksum_type as "FULL_OBJECT" | "COMPOSITE",
+      }),
+      ...(row.part_checksums && { partChecksums: JSON.parse(row.part_checksums) }),
+    };
+    s3Store.restoreObject(row.bucket, obj);
   }
 
   private loadS3MultipartUploads(s3Store: S3Store): void {
@@ -914,6 +1116,32 @@ export class PersistenceManager implements S3PersistenceProvider {
       checksum_algorithm: string | null;
     }>;
 
+    // Part bodies stay in the database. completeMultipartUpload reads them with readPartBody.
+    const partRows = this.stmts.loadMultipartPartsMeta.all() as Array<{
+      upload_id: string;
+      part_number: number;
+      size: number;
+      etag: string;
+      last_modified: string;
+      checksum_value: string | null;
+    }>;
+    const partsByUpload = new Map<string, Map<number, MultipartPart>>();
+    for (const pRow of partRows) {
+      let parts = partsByUpload.get(pRow.upload_id);
+      if (!parts) {
+        parts = new Map();
+        partsByUpload.set(pRow.upload_id, parts);
+      }
+      parts.set(pRow.part_number, {
+        partNumber: pRow.part_number,
+        body: Buffer.alloc(0),
+        size: pRow.size,
+        etag: pRow.etag,
+        lastModified: new Date(pRow.last_modified),
+        ...(pRow.checksum_value && { checksumValue: pRow.checksum_value }),
+      });
+    }
+
     for (const row of uploadRows) {
       const checksumAlgorithm = toChecksumAlgorithm(row.checksum_algorithm);
       const upload: MultipartUpload = {
@@ -922,7 +1150,7 @@ export class PersistenceManager implements S3PersistenceProvider {
         key: row.key,
         contentType: row.content_type,
         metadata: JSON.parse(row.metadata),
-        parts: new Map(),
+        parts: partsByUpload.get(row.upload_id) ?? new Map(),
         initiated: new Date(row.initiated),
         ...(row.content_language && { contentLanguage: row.content_language }),
         ...(row.content_disposition && { contentDisposition: row.content_disposition }),
@@ -931,27 +1159,47 @@ export class PersistenceManager implements S3PersistenceProvider {
         ...(checksumAlgorithm && { checksumAlgorithm }),
       };
 
-      const partRows = this.stmts.loadMultipartParts.all(row.upload_id) as Array<{
-        upload_id: string;
-        part_number: number;
-        body: Uint8Array;
-        etag: string;
-        last_modified: string;
-        checksum_value: string | null;
-      }>;
-
-      for (const pRow of partRows) {
-        upload.parts.set(pRow.part_number, {
-          partNumber: pRow.part_number,
-          body: Buffer.from(pRow.body),
-          etag: pRow.etag,
-          lastModified: new Date(pRow.last_modified),
-          ...(pRow.checksum_value && { checksumValue: pRow.checksum_value }),
-        });
-      }
-
       s3Store.restoreMultipartUpload(upload);
     }
+  }
+
+  private static pragmaNumber(statement: StatementSync): number {
+    const row = statement.get() as Record<string, number>;
+    return Object.values(row)[0];
+  }
+
+  /**
+   * Return pages freed by deletes to the filesystem, at most RECLAIM_MAX_PAGES per call.
+   * SQLite otherwise keeps them in the file for reuse, so the file never shrinks.
+   *
+   * A database created before fauxqs enabled auto_vacuum cannot release pages one step at a
+   * time. With `rebuild` set, such a database is rebuilt once with VACUUM, provided its live
+   * data is at most REBUILD_MAX_LIVE_BYTES. A larger one keeps its size.
+   */
+  reclaimFreeSpace(options?: { rebuild?: boolean }): void {
+    const pragma = PersistenceManager.pragmaNumber;
+    const freePages = pragma(this.stmts.pragmaFreelistCount);
+    let changed = false;
+    if (pragma(this.stmts.pragmaAutoVacuum) === 0) {
+      const livePages = pragma(this.stmts.pragmaPageCount) - freePages;
+      if (
+        options?.rebuild &&
+        livePages * pragma(this.stmts.pragmaPageSize) <= REBUILD_MAX_LIVE_BYTES
+      ) {
+        this.db.exec("PRAGMA auto_vacuum = INCREMENTAL");
+        this.db.exec("VACUUM");
+        changed = true;
+      }
+    } else if (freePages >= RECLAIM_MIN_FREE_PAGES) {
+      this.db.exec(`PRAGMA incremental_vacuum(${RECLAIM_MAX_PAGES})`);
+      changed = true;
+    }
+    if (!changed && !this.checkpointPending) return;
+    // In WAL mode the database file shrinks when the change is checkpointed. Another connection
+    // can keep the checkpoint from finishing; the next call then retries it, also on a database
+    // that keeps auto_vacuum off.
+    const result = this.stmts.walCheckpoint.get() as { busy: number } | undefined;
+    this.checkpointPending = result !== undefined && result.busy !== 0;
   }
 
   close(): void {

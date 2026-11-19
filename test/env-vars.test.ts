@@ -11,6 +11,8 @@ import {
 import { ListTopicsCommand } from "@aws-sdk/client-sns";
 import {
   ListBucketsCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
 } from "@aws-sdk/client-s3";
 import { computeChecksum } from "../src/s3/checksum.js";
 
@@ -194,5 +196,63 @@ describe("env vars", () => {
     await expect(
       startFauxqs({ port: 0, logger: false, messageRetention: { maxSeconds: 0 } }),
     ).rejects.toThrow('messageRetention.maxSeconds must be a positive integer number of seconds (got "0")');
+  });
+
+  async function objectCountAfter(bucket: string, ageMs: number): Promise<number> {
+    const t0 = Date.UTC(2026, 0, 1);
+    vi.useFakeTimers({ toFake: ["Date"], now: t0 });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    server.createBucket(bucket);
+    const s3 = createS3Client(server.port);
+    onTestFinished(() => s3.destroy());
+    await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "k", Body: "body" }));
+    // The request that starts the expiry sweep. The sweep runs after its response.
+    vi.setSystemTime(t0 + ageMs);
+    await fetch(`http://127.0.0.1:${server.port}/health`);
+    await new Promise((resolve) => setImmediate(resolve));
+    const result = await s3.send(new ListObjectsV2Command({ Bucket: bucket }));
+    return result.KeyCount ?? 0;
+  }
+
+  it("FAUXQS_MAX_OBJECT_RETENTION caps object age", async () => {
+    setEnv("FAUXQS_MAX_OBJECT_RETENTION", "60");
+    server = await startFauxqs({ port: 0, logger: false });
+
+    expect(await objectCountAfter("env-object-retention", 60_001)).toBe(0);
+  });
+
+  it("programmatic objectRetention.maxSeconds takes precedence over FAUXQS_MAX_OBJECT_RETENTION", async () => {
+    setEnv("FAUXQS_MAX_OBJECT_RETENTION", "60");
+    server = await startFauxqs({ port: 0, logger: false, objectRetention: { maxSeconds: 3600 } });
+
+    expect(await objectCountAfter("env-object-retention-precedence", 60_001)).toBe(1);
+  });
+
+  it("keeps objects of any age when FAUXQS_MAX_OBJECT_RETENTION is unset", async () => {
+    server = await startFauxqs({ port: 0, logger: false });
+
+    expect(await objectCountAfter("env-object-retention-unset", 30 * 24 * 3600 * 1000)).toBe(1);
+  });
+
+  it.each(["0", "-5", "abc", "1.5"])("rejects FAUXQS_MAX_OBJECT_RETENTION=%s", async (value) => {
+    setEnv("FAUXQS_MAX_OBJECT_RETENTION", value);
+
+    await expect(startFauxqs({ port: 0, logger: false })).rejects.toThrow(
+      `FAUXQS_MAX_OBJECT_RETENTION must be a positive integer number of seconds (got "${value}")`,
+    );
+  });
+
+  it("rejects an objectRetention.maxSeconds that is not a positive integer", async () => {
+    await expect(
+      startFauxqs({ port: 0, logger: false, objectRetention: { maxSeconds: 0 } }),
+    ).rejects.toThrow('objectRetention.maxSeconds must be a positive integer number of seconds (got "0")');
+  });
+
+  it("rejects an objectRetention.maxSeconds that puts the cutoff outside the Date range", async () => {
+    await expect(
+      startFauxqs({ port: 0, logger: false, objectRetention: { maxSeconds: 10_000_000_000_000 } }),
+    ).rejects.toThrow('objectRetention.maxSeconds must be at most 3153600000000 seconds (got "10000000000000")');
   });
 });

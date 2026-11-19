@@ -29,6 +29,7 @@ All state is in-memory by default. Optional SQLite-based persistence is availabl
     - [Queue inspection](#queue-inspection)
     - [Multi-tenant management](#multi-tenant-management)
   - [Persistence](#persistence)
+  - [Bounding storage](#bounding-storage)
   - [Configurable queue URL host](#configurable-queue-url-host)
   - [Region](#region)
 - [Supported API Actions](#supported-api-actions)
@@ -97,6 +98,7 @@ The server starts on port `4566` and handles SQS, SNS, and S3 on a single endpoi
 | `FAUXQS_DISABLE_CHECKSUM_VALIDATION` | Set to `true` to stop verifying uploaded bodies against the `x-amz-checksum-*`/`Content-MD5` header the client sent (see [Relaxed rules](#relaxed-rules)) | `false` |
 | `FAUXQS_ORDERING_SEED` | Seed for the standard-queue reordering PRNG, for deterministic delivery order (see [Message ordering](#message-ordering)). Omit for non-deterministic ordering. | (none) |
 | `FAUXQS_MAX_MESSAGE_RETENTION` | Upper bound, in seconds, on every queue's `MessageRetentionPeriod` (see [SQS Features](#sqs-features)). Omit to use each queue's own retention. | (none) |
+| `FAUXQS_MAX_OBJECT_RETENTION` | Upper bound, in seconds, on the age of every S3 object and incomplete multipart upload (see [S3 Features](#s3-features)). Omit to expire only by bucket lifecycle rules. | (none) |
 | `FAUXQS_DNS_NAME` | Domain that dnsmasq resolves (including all subdomains) to the container IP. Only needed when the container hostname doesn't match the docker-compose service name — e.g., when using `container_name` or running with plain `docker run`. In docker-compose the hostname is set to the service name automatically, so this is rarely needed. (Docker only) | container hostname |
 | `FAUXQS_DNS_UPSTREAM` | Where dnsmasq forwards non-fauxqs DNS queries (e.g., `registry.npmjs.org`). Change this if you're in a corporate network with an internal DNS server, or if you prefer a different public resolver like `1.1.1.1`. (Docker only) | `8.8.8.8` |
 | `FAUXQS_RUN_USER` | User the server process runs as (see [Container user](#container-user)). Accepts a name, a uid, or `uid:gid`. (Docker only) | `node` (uid 1000) |
@@ -1096,12 +1098,22 @@ const server = await startFauxqs({ port: 4566, dataDir: "./data" });
 
 All mutations are written through to SQLite immediately (no batching or delayed flush). On restart with the same `dataDir`, the server restores all state including:
 
-- SQS queues with attributes, tags, and messages (ready, delayed, and inflight with their visibility deadlines). Ready messages older than their queue's [retention](#sqs-features) are deleted instead of loaded
+- SQS queues with attributes, tags, and messages (ready, delayed, and inflight with their visibility deadlines). Ready messages older than their queue's [retention](#sqs-features) are deleted instead of loaded, and so are the oldest messages when the stored backlog would not fit in memory (see [Bounding storage](#bounding-storage))
 - FIFO sequence counters (no duplicate sequence numbers after restart)
 - SNS topics with attributes and tags, subscriptions with attributes (fan-out works immediately after restart)
-- S3 buckets (including directory bucket type and lifecycle configurations), objects with metadata, and in-progress multipart uploads
+- S3 buckets (including directory bucket type and lifecycle configurations), objects with metadata, and in-progress multipart uploads. Objects and uploads that a lifecycle rule or the [object retention cap](#s3-features) expired while the server was stopped are deleted at startup
 
 `reset()` and `purgeAll()` also write through to the database — `reset()` clears messages and objects, `purgeAll()` clears everything.
+
+### Bounding storage
+
+A long-lived instance with persistence keeps whatever clients leave behind. These settings and behaviours bound its memory and disk use:
+
+- **Messages** — set `FAUXQS_MAX_MESSAGE_RETENTION` (or `messageRetention: { maxSeconds }`) so that a queue without a consumer drops messages sooner than the 4-day default `MessageRetentionPeriod`.
+- **Objects and incomplete multipart uploads** — set `FAUXQS_MAX_OBJECT_RETENTION` (or `objectRetention: { maxSeconds }`), or put a lifecycle configuration with `Expiration` and `AbortIncompleteMultipartUpload` rules on each bucket (see [S3 Features](#s3-features)). With neither, objects and unfinished uploads stay until a client deletes them, as on AWS.
+- **Queues, topics and buckets** — [tenant management](#multi-tenant-management) deletes groups of resources that nobody has used for `FAUXQS_TENANT_TTL` seconds.
+- **Memory at startup** — every stored message is loaded onto the JS heap. Before loading, fauxqs estimates how much heap the stored messages need. When that exceeds 30% of V8's heap limit, it deletes the oldest messages across all queues until the rest fits and logs a warning with the number deleted, so an oversized backlog costs its oldest messages and the server still starts. To keep more, raise the heap limit with `NODE_OPTIONS=--max-old-space-size=<MiB>`. S3 object bodies and multipart part bodies stay on disk and are read when a request needs them.
+- **Database file size** — at startup and after each expiry sweep, fauxqs returns up to 64 MiB of pages freed by deletes to the filesystem. A database created by fauxqs 2.14 or older is rebuilt once at startup with `VACUUM` to make that possible, provided it holds at most 64 MiB of live data. That rebuild returns all of the free space, with no 64 MiB limit. A larger database keeps its file size and reuses its free pages for new data.
 
 ### File-based S3 storage
 
@@ -1406,7 +1418,8 @@ Returns a mock identity with account `000000000000` and ARN `arn:aws:iam::000000
 - **GetObjectAttributes** — selective metadata retrieval via `x-amz-object-attributes` header: ETag, StorageClass, ObjectSize, ObjectParts (with pagination), and Checksum (including per-part checksums for multipart objects)
 - **RenameObject** — atomic rename within directory buckets (`PUT /:bucket/:key?renameObject`). Preserves all metadata, ETag, timestamps, and checksums. Rejects general-purpose buckets. Default no-overwrite (412 if destination exists unless `If-Match` is provided). Supports source and destination conditional headers.
 - **Directory buckets** — `CreateBucket` accepts `<Type>Directory</Type>` in the body. Programmatic API: `server.createBucket("name", { type: "directory" })`. Init config supports `{ name, type, lifecycleConfiguration }` objects in the `buckets` array.
-- **Lifecycle configuration** — PutBucketLifecycleConfiguration, GetBucketLifecycleConfiguration, and DeleteBucketLifecycle. Lifecycle configs are stored and returned as-is (rules are not enforced — fauxqs is a mock). Persisted across restarts. Can also be set declaratively via init config.
+- **Lifecycle configuration** — PutBucketLifecycleConfiguration, GetBucketLifecycleConfiguration, and DeleteBucketLifecycle. Configurations are persisted across restarts and can also be set declaratively via init config. Enabled rules are enforced for `Expiration` (`Days` or `Date`) and `AbortIncompleteMultipartUpload`, filtered by prefix and object size. As on AWS, `Days` count from the object's last modification (or the upload's initiation) and the result is rounded up to the next midnight UTC. A `Date` must be midnight UTC (a date-time without a zone is read as UTC); any other date is ignored. A rule whose prefix or size filter fauxqs cannot read is skipped, so it never matches more objects than it names. Lifecycle rules from the init config replace the stored ones before the startup sweep. Expired objects are deleted at startup and by the sweep that also expires SQS messages, which runs after the first request fauxqs handles after each minute. Age is measured with the process clock, so fake timers that move `Date` also expire objects. Each object a rule deletes produces an `s3:LifecycleExpiration:Delete` event. Transition and noncurrent-version rules are stored and have no effect, and a rule with a tag filter matches nothing because fauxqs stores no object tags.
+- **Object retention cap** — pass `objectRetention: { maxSeconds }` to `startFauxqs` or set `FAUXQS_MAX_OBJECT_RETENTION` to delete every object last modified longer ago than that, and abort every multipart upload initiated longer ago, in every bucket. The cap needs no lifecycle configuration and produces no events. It is meant for long-lived environments where nothing else cleans up (see [Bounding storage](#bounding-storage)).
 - **Path-style and virtual-hosted-style** — both S3 URL styles are supported (see below)
 - **CORS** — permissive CORS headers are enabled by default, allowing browser-based presigned URL uploads (see below)
 - **Conditional operations** — the full precondition matrix. A single-object operation whose precondition does not hold fails with `412 Precondition Failed`; `DeleteObjects` answers `200 OK` and reports the failure as an `<Error>` entry against the object that carried it:

@@ -60,7 +60,7 @@ import { getCallerIdentity } from "./sts/getCallerIdentity.ts";
 import { sqsQueueArn, snsTopicArn } from "./common/arnHelper.ts";
 import { DEFAULT_REGION, SNS_MAX_MESSAGE_SIZE_BYTES } from "./common/types.ts";
 import { mulberry32 } from "./common/prng.ts";
-import { loadInitConfig, applyInitConfig } from "./initConfig.ts";
+import { loadInitConfig, applyInitConfig, type FauxqsInitConfig } from "./initConfig.ts";
 import { MessageSpy, buildSnsSpyMessage, type MessageSpyReader } from "./spy.ts";
 import { PersistenceManager } from "./persistence.ts";
 import { FileS3Persistence } from "./s3/fileS3Persistence.ts";
@@ -115,9 +115,11 @@ export interface BuildAppOptions {
   /** Seed for the standard-queue reordering PRNG. Standard queues always reorder (real SQS/SNS give no
    *  ordering guarantee); a seed only makes that reordering deterministic. Use a FIFO queue if you need ordering. */
   ordering?: { seed?: number };
+  /** Runs at the end of every expiry sweep, after expired messages and objects are deleted. */
+  afterExpirySweep?: () => void;
 }
 
-const MESSAGE_EXPIRY_INTERVAL_MS = 60_000;
+const EXPIRY_SWEEP_INTERVAL_MS = 60_000;
 
 export function buildApp(options?: BuildAppOptions) {
   const app = Fastify({
@@ -300,22 +302,43 @@ export function buildApp(options?: BuildAppOptions) {
     sqsStore.shutdown();
   });
 
-  let lastMessageExpiry = Date.now();
+  let lastExpirySweep = Date.now();
+  let runningSweep: Promise<void> | undefined;
+  app.addHook("preClose", async () => {
+    // Stores and persistence close after this hook, so let a running sweep finish first.
+    await runningSweep;
+  });
   app.addHook("onRequest", (request, _reply, done) => {
     const now = Date.now();
     // A clock moved back, for example by fake timers, would otherwise stop the sweep.
-    if (now < lastMessageExpiry) {
-      lastMessageExpiry = now;
+    if (now < lastExpirySweep) {
+      lastExpirySweep = now;
     }
-    if (now - lastMessageExpiry >= MESSAGE_EXPIRY_INTERVAL_MS) {
-      lastMessageExpiry = now;
-      setImmediate(() => {
-        try {
-          sqsStore.expireMessages();
-        } catch (err) {
-          request.log.error({ err }, "SQS message expiry failed");
-        }
-      });
+    if (now - lastExpirySweep >= EXPIRY_SWEEP_INTERVAL_MS && !runningSweep) {
+      lastExpirySweep = now;
+      runningSweep = new Promise<void>((resolve) => setImmediate(resolve))
+        .then(async () => {
+          try {
+            sqsStore.expireMessages();
+          } catch (err) {
+            request.log.error({ err }, "SQS message expiry failed");
+          }
+          try {
+            // Gives requests a turn between steps, so a sweep over many objects does not
+            // stall them.
+            await s3Store.expireObjectsInSteps();
+          } catch (err) {
+            request.log.error({ err }, "S3 object expiry failed");
+          }
+          try {
+            options?.afterExpirySweep?.();
+          } catch (err) {
+            request.log.error({ err }, "Reclaiming storage after expiry failed");
+          }
+        })
+        .finally(() => {
+          runningSweep = undefined;
+        });
     }
     done();
   });
@@ -497,14 +520,24 @@ export interface FauxqsServer {
   deleteTenant(prefix: string): void;
 }
 
-function resolveMaxMessageRetentionMs(maxSeconds: number | undefined): number | undefined {
-  const value = maxSeconds ?? (process.env.FAUXQS_MAX_MESSAGE_RETENTION || undefined);
+/** 100,000 years. Larger caps put the expiry cutoff before the earliest time a Date can hold. */
+const MAX_RETENTION_SECONDS = 100_000 * 365 * 24 * 60 * 60;
+
+function resolveMaxRetentionMs(
+  maxSeconds: number | undefined,
+  envName: string,
+  optionName: string,
+): number | undefined {
+  const value = maxSeconds ?? (process.env[envName] || undefined);
   if (value === undefined) return undefined;
   const seconds = Number(value);
+  const source = maxSeconds === undefined ? envName : optionName;
   if (!Number.isInteger(seconds) || seconds <= 0) {
-    const source =
-      maxSeconds === undefined ? "FAUXQS_MAX_MESSAGE_RETENTION" : "messageRetention.maxSeconds";
     throw new Error(`${source} must be a positive integer number of seconds (got "${value}")`);
+  }
+  // The cutoff (now minus the cap) must stay inside the range a Date can hold.
+  if (seconds > MAX_RETENTION_SECONDS) {
+    throw new Error(`${source} must be at most ${MAX_RETENTION_SECONDS} seconds (got "${value}")`);
   }
   return seconds * 1000;
 }
@@ -534,6 +567,9 @@ export async function startFauxqs(options?: {
   ordering?: { seed?: number };
   /** Upper bound on every queue's MessageRetentionPeriod, in seconds. Env fallback: FAUXQS_MAX_MESSAGE_RETENTION. */
   messageRetention?: { maxSeconds?: number };
+  /** Upper bound, in seconds, on the age of every S3 object and incomplete multipart upload.
+   *  Env fallback: FAUXQS_MAX_OBJECT_RETENTION. */
+  objectRetention?: { maxSeconds?: number };
 }): Promise<FauxqsServer> {
   const port = options?.port ?? parseInt(process.env.FAUXQS_PORT ?? "4566");
   const host = options?.host ?? process.env.FAUXQS_HOST;
@@ -565,8 +601,15 @@ export async function startFauxqs(options?: {
   if (orderingSeed !== undefined && !Number.isNaN(orderingSeed)) {
     sqsStore.random = mulberry32(orderingSeed);
   }
-  sqsStore.maxMessageRetentionMs = resolveMaxMessageRetentionMs(
+  sqsStore.maxMessageRetentionMs = resolveMaxRetentionMs(
     options?.messageRetention?.maxSeconds,
+    "FAUXQS_MAX_MESSAGE_RETENTION",
+    "messageRetention.maxSeconds",
+  );
+  s3Store.maxObjectRetentionMs = resolveMaxRetentionMs(
+    options?.objectRetention?.maxSeconds,
+    "FAUXQS_MAX_OBJECT_RETENTION",
+    "objectRetention.maxSeconds",
   );
 
   // Persistence: create managers and wire into stores before any data is loaded
@@ -577,18 +620,23 @@ export async function startFauxqs(options?: {
     ? new FileS3Persistence(options.s3StorageDir)
     : persistenceManager;
 
+  // Resolved before loading, because loading needs the buckets it gives lifecycle rules.
+  // It is applied after the server listens.
+  const initConfig = init ? (typeof init === "string" ? loadInitConfig(init) : init) : undefined;
+  const loadS3Options = { lifecycleBuckets: initLifecycleBuckets(initConfig) };
+
   // Load persisted state BEFORE assigning persistence to stores.
   // This avoids INSERT OR REPLACE triggering ON DELETE CASCADE during load.
   if (persistenceManager && s3Persistence === persistenceManager) {
     // Single persistence backend for everything (existing behavior)
-    persistenceManager.load(sqsStore, snsStore, s3Store);
+    persistenceManager.load(sqsStore, snsStore, s3Store, loadS3Options);
   } else {
     // Separate backends: SQLite for SQS/SNS, file-based (or none) for S3
     if (persistenceManager) {
       persistenceManager.loadSqsAndSns(sqsStore, snsStore);
     }
     if (s3Persistence) {
-      s3Persistence.loadS3(s3Store);
+      s3Persistence.loadS3(s3Store, loadS3Options);
     }
   }
 
@@ -614,9 +662,8 @@ export async function startFauxqs(options?: {
     s3Store.spy = messageSpy;
   }
 
-  // Tenant management: create manager and wire usage tracker into stores
-  // We need the init config to use as a template, so resolve it here but defer application
-  const initConfig = init ? (typeof init === "string" ? loadInitConfig(init) : init) : undefined;
+  // Tenant management: create manager and wire usage tracker into stores.
+  // The init config (resolved before loading) is its template.
 
   let tenantManager: TenantManager | undefined;
   if (options?.tenant) {
@@ -641,8 +688,12 @@ export async function startFauxqs(options?: {
     stores: { sqsStore, snsStore, s3Store },
     relaxedRules,
     tenantManager,
+    afterExpirySweep: () => persistenceManager?.reclaimFreeSpace(),
   });
 
+  for (const warning of persistenceManager?.loadWarnings ?? []) {
+    app.log.warn(warning);
+  }
   if (persistenceManager) {
     app.addHook("preClose", () => {
       persistenceManager.close();
@@ -980,6 +1031,20 @@ export async function startFauxqs(options?: {
     server.setup(initConfig);
   }
 
+  // Expire what aged out while the server was down, then give the freed space back. This runs
+  // after setup, so the sweep uses the lifecycle rules the init config sets. Nothing awaits
+  // between listen and here, so no request is served before the sweep.
+  try {
+    s3Store.expireObjects();
+  } catch (err) {
+    app.log.error({ err }, "S3 object expiry at startup failed");
+  }
+  try {
+    persistenceManager?.reclaimFreeSpace({ rebuild: true });
+  } catch (err) {
+    app.log.error({ err }, "Reclaiming storage at startup failed");
+  }
+
   // Start tenant manager after server is listening and init config is applied
   if (tenantManager) {
     tenantManager.setPort(actualPort);
@@ -987,4 +1052,13 @@ export async function startFauxqs(options?: {
   }
 
   return server;
+}
+
+/** Buckets that the init config gives a lifecycle configuration. */
+function initLifecycleBuckets(config: FauxqsInitConfig | undefined): string[] {
+  const names: string[] = [];
+  for (const entry of config?.buckets ?? []) {
+    if (typeof entry !== "string" && entry.lifecycleConfiguration) names.push(entry.name);
+  }
+  return names;
 }

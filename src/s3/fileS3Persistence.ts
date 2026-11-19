@@ -2,6 +2,7 @@ import {
   mkdirSync,
   writeFileSync,
   readFileSync,
+  statSync,
   unlinkSync,
   readdirSync,
   rmSync,
@@ -14,6 +15,15 @@ import type { S3PersistenceProvider } from "./s3Persistence.ts";
 import type { S3Store, BucketType } from "./s3Store.ts";
 import type { S3Object, MultipartUpload, MultipartPart } from "./s3Types.ts";
 import { toChecksumAlgorithm } from "./checksum.ts";
+
+/** Remove a file. A file that does not exist is not an error; anything else is thrown. */
+function unlinkIfExists(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+}
 
 /**
  * Encode an S3 key into a filesystem-safe relative path.
@@ -223,6 +233,30 @@ export class FileS3Persistence implements S3PersistenceProvider {
     this.cleanEmptyParents(dirname(srcData), objectsDir);
   }
 
+  /**
+   * Delete the files of each key. A file that is already gone counts as deleted; any other
+   * unlink error is thrown after every key has been tried, so the caller keeps the key and can
+   * retry it. The metadata file goes first, so a key whose data file could not be removed is
+   * not loaded again after a restart.
+   */
+  deleteObjects(bucket: string, keys: string[]): void {
+    const objectsDir = join(this.bucketsDir, bucket, "objects");
+    let firstError: unknown;
+    for (const key of keys) {
+      const relPath = encodeKeyToPath(key);
+      const dataPath = join(objectsDir, relPath + ".data");
+      try {
+        unlinkIfExists(join(objectsDir, relPath + ".meta.json"));
+        unlinkIfExists(dataPath);
+      } catch (err) {
+        firstError ??= err;
+        continue;
+      }
+      this.cleanEmptyParents(dirname(dataPath), objectsDir);
+    }
+    if (firstError !== undefined) throw firstError;
+  }
+
   // ── On-demand body read ──
 
   readBody(bucket: string, key: string): Buffer {
@@ -273,6 +307,10 @@ export class FileS3Persistence implements S3PersistenceProvider {
     if (existsSync(uploadDir)) {
       rmSync(uploadDir, { recursive: true, force: true });
     }
+  }
+
+  readPartBody(uploadId: string, partNumber: number): Buffer {
+    return readFileSync(join(this.multipartDir, uploadId, "parts", `${partNumber}.data`));
   }
 
   completeMultipartUpload(uploadId: string, bucket: string, obj: S3Object): void {
@@ -378,16 +416,16 @@ export class FileS3Persistence implements S3PersistenceProvider {
         ...(checksumAlgorithm && { checksumAlgorithm }),
       };
 
-      // Load parts fully (they're temporary, needed for completeMultipartUpload concatenation)
+      // Load part metadata only. completeMultipartUpload reads the bodies with readPartBody.
       const partsDir = join(this.multipartDir, uploadId, "parts");
       if (existsSync(partsDir)) {
         for (const file of readdirSync(partsDir)) {
           if (!file.endsWith(".meta.json")) continue;
           const partMeta: PartMeta = JSON.parse(readFileSync(join(partsDir, file), "utf-8"));
-          const partBody = readFileSync(join(partsDir, `${partMeta.partNumber}.data`));
           upload.parts.set(partMeta.partNumber, {
             partNumber: partMeta.partNumber,
-            body: partBody,
+            body: Buffer.alloc(0),
+            size: statSync(join(partsDir, `${partMeta.partNumber}.data`)).size,
             etag: partMeta.etag,
             lastModified: new Date(partMeta.lastModified),
             ...(partMeta.checksumValue && { checksumValue: partMeta.checksumValue }),
