@@ -11,6 +11,7 @@ import {
   GetObjectCommand,
   ListObjectsV2Command,
   PutBucketLifecycleConfigurationCommand,
+  PutBucketNotificationConfigurationCommand,
   PutObjectCommand,
   UploadPartCommand,
 } from "@aws-sdk/client-s3";
@@ -249,6 +250,51 @@ describe("Persistence: S3 object expiry", () => {
     server = await startFauxqs({ port: 0, logger: false, dataDir });
 
     expect(await listKeys(server, "rule-restart")).toEqual([]);
+    await server.stop();
+    expect(countRows(dataDir, "s3_objects")).toBe(0);
+  });
+
+  it("sends the lifecycle event at startup for an object that both a rule and objectRetention.maxSeconds expired", async () => {
+    let server = await startFauxqs({ port: 0, logger: false, dataDir });
+    const { queueArn } = server.createQueue("rule-and-cap-events");
+    const s3 = createS3Client(server.port);
+    await s3.send(new CreateBucketCommand({ Bucket: "rule-and-cap" }));
+    await s3.send(
+      new PutBucketLifecycleConfigurationCommand({
+        Bucket: "rule-and-cap",
+        LifecycleConfiguration: {
+          Rules: [{ ID: "all", Status: "Enabled", Filter: {}, Expiration: { Days: 1 } }],
+        },
+      }),
+    );
+    await s3.send(
+      new PutBucketNotificationConfigurationCommand({
+        Bucket: "rule-and-cap",
+        NotificationConfiguration: {
+          QueueConfigurations: [{ QueueArn: queueArn, Events: ["s3:LifecycleExpiration:Delete"] }],
+        },
+      }),
+    );
+    await s3.send(new PutObjectCommand({ Bucket: "rule-and-cap", Key: "a", Body: "data" }));
+    s3.destroy();
+    await server.stop();
+
+    vi.setSystemTime(t0 + DAY);
+    server = await startFauxqs({
+      port: 0,
+      logger: false,
+      dataDir,
+      objectRetention: { maxSeconds: 60 },
+    });
+
+    expect(await listKeys(server, "rule-and-cap")).toEqual([]);
+    await vi.waitFor(() => {
+      const { ready } = server.inspectQueue("rule-and-cap-events")!.messages;
+      const records = ready.flatMap((message) => JSON.parse(message.body).Records ?? []);
+      expect(records.map((record) => [record.eventName, record.s3.object.key])).toEqual([
+        ["LifecycleExpiration:Delete", "a"],
+      ]);
+    });
     await server.stop();
     expect(countRows(dataDir, "s3_objects")).toBe(0);
   });

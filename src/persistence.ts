@@ -345,7 +345,7 @@ export class PersistenceManager implements S3PersistenceProvider {
             sum(octet_length(body) + octet_length(message_attributes) + ${MESSAGE_OVERHEAD_BYTES})
               OVER (ORDER BY enqueue_timestamp DESC, rowid DESC) AS running
           FROM sqs_messages
-        ) WHERE running > ? LIMIT 1
+        ) WHERE running > ? ORDER BY running LIMIT 1
       `),
       deleteMessagesUpTo: this.db.prepare(
         "DELETE FROM sqs_messages WHERE (enqueue_timestamp, rowid) <= (?, ?)",
@@ -405,7 +405,12 @@ export class PersistenceManager implements S3PersistenceProvider {
         FROM s3_objects WHERE rowid > ? ORDER BY rowid LIMIT ${LOAD_PAGE_SIZE}
       `),
       // last_modified and initiated hold Date.toISOString() output, which sorts chronologically.
-      deleteObjectsOlderThan: this.db.prepare("DELETE FROM s3_objects WHERE last_modified < ?"),
+      // Buckets with a lifecycle configuration are left to S3Store.expireObjects at startup,
+      // which sends the LifecycleExpiration event for objects that a rule expired.
+      deleteObjectsOlderThan: this.db.prepare(`
+        DELETE FROM s3_objects WHERE last_modified < ?
+          AND bucket NOT IN (SELECT bucket FROM s3_bucket_lifecycle_configurations)
+      `),
       deleteMultipartUploadsOlderThan: this.db.prepare(
         "DELETE FROM s3_multipart_uploads WHERE initiated < ?",
       ),
@@ -790,7 +795,8 @@ export class PersistenceManager implements S3PersistenceProvider {
     this.loadS3BucketLifecycleConfigurations(s3Store);
     this.loadS3BucketNotificationConfigurations(s3Store);
     if (s3Store.maxObjectRetentionMs !== undefined) {
-      // Drop what the retention cap has expired before its metadata is loaded.
+      // Drop what the retention cap has expired before its metadata is loaded. Objects in
+      // buckets with lifecycle rules stay until expireObjects checks the rules first.
       const cutoff = new Date(Date.now() - s3Store.maxObjectRetentionMs).toISOString();
       this.stmts.deleteObjectsOlderThan.run(cutoff);
       this.stmts.deleteMultipartUploadsOlderThan.run(cutoff);
