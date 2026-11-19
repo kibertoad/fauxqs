@@ -409,6 +409,67 @@ describe("Persistence: S3 object expiry", () => {
   });
 });
 
+describe("Persistence: S3 object expiry with lifecycle rules from the init config", () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"], now: t0 });
+    dataDir = createTempDir();
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    await closeOpen();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("sends the lifecycle event at startup when only the init config sets the rule and objectRetention.maxSeconds also expired the object", async () => {
+    let server = await startServer({ port: 0, logger: false, dataDir });
+    const { queueArn } = server.createQueue("init-rule-events");
+    const s3 = s3Client(server.port);
+    await s3.send(new CreateBucketCommand({ Bucket: "init-rule-and-cap" }));
+    await s3.send(
+      new PutBucketNotificationConfigurationCommand({
+        Bucket: "init-rule-and-cap",
+        NotificationConfiguration: {
+          QueueConfigurations: [{ QueueArn: queueArn, Events: ["s3:LifecycleExpiration:Delete"] }],
+        },
+      }),
+    );
+    await s3.send(new PutObjectCommand({ Bucket: "init-rule-and-cap", Key: "a", Body: "data" }));
+    s3.destroy();
+    await server.stop();
+
+    vi.setSystemTime(t0 + DAY);
+    server = await startServer({
+      port: 0,
+      logger: false,
+      dataDir,
+      objectRetention: { maxSeconds: 60 },
+      init: {
+        buckets: [
+          {
+            name: "init-rule-and-cap",
+            lifecycleConfiguration: {
+              Rules: [{ ID: "all", Status: "Enabled", Expiration: { Days: 1 } }],
+            },
+          },
+        ],
+      },
+    });
+
+    await vi.waitFor(() => {
+      const { ready } = server.inspectQueue("init-rule-events")!.messages;
+      const records = ready.flatMap((message) => JSON.parse(message.body).Records ?? []);
+      expect(records.map((record) => [record.eventName, record.s3.object.key])).toEqual([
+        ["LifecycleExpiration:Delete", "a"],
+      ]);
+    });
+    await server.stop();
+    expect(countRows(dataDir, "s3_objects")).toBe(0);
+  });
+});
+
 describe("Persistence: loading SQS messages", () => {
   let dataDir: string;
 
@@ -448,17 +509,18 @@ describe("Persistence: loading SQS messages", () => {
   );
 
   describe("over the startup heap budget", () => {
-    // What one stored message with body "mN" and no attributes ("{}") counts for.
-    const messageCost = 2 + 2 + 512;
+    // What one stored message with body "mN" and no attributes ("{}") counts for: one byte per
+    // ASCII body character, four per attributes JSON character, and the per-message overhead.
+    const messageCost = 2 + 4 * 2 + 512;
 
-    async function storeMessages(advanceClock: boolean): Promise<void> {
+    async function storeMessages(advanceClock: boolean, bodyPrefix = "m"): Promise<void> {
       vi.useFakeTimers({ toFake: ["Date"], now: t0 });
       const server = await startServer({ port: 0, logger: false, dataDir });
       server.createQueue("budget-a");
       server.createQueue("budget-b");
       for (let i = 0; i < 6; i++) {
         if (advanceClock) vi.setSystemTime(t0 + i * 1000);
-        server.sendMessage(i % 2 === 0 ? "budget-a" : "budget-b", `m${i}`);
+        server.sendMessage(i % 2 === 0 ? "budget-a" : "budget-b", `${bodyPrefix}${i}`);
       }
       await server.stop();
     }
@@ -498,6 +560,16 @@ describe("Persistence: loading SQS messages", () => {
       const { bodies } = load(messageCost * 2);
 
       expect(bodies).toEqual(["m4", "m5"]);
+    });
+
+    it("counts two bytes per character for a body that is not plain ASCII", async () => {
+      await storeMessages(true, "ж");
+
+      // "жN" is 2 characters and 3 UTF-8 bytes. Counted per UTF-8 byte, two messages
+      // would fit in this budget; V8 stores the string as UTF-16, so only one does.
+      const { bodies } = load(2 * (3 + 4 * 2 + 512));
+
+      expect(bodies).toEqual(["ж5"]);
     });
 
     it("loads everything and reports nothing when the messages fit", async () => {

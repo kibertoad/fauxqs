@@ -60,7 +60,7 @@ import { getCallerIdentity } from "./sts/getCallerIdentity.ts";
 import { sqsQueueArn, snsTopicArn } from "./common/arnHelper.ts";
 import { DEFAULT_REGION, SNS_MAX_MESSAGE_SIZE_BYTES } from "./common/types.ts";
 import { mulberry32 } from "./common/prng.ts";
-import { loadInitConfig, applyInitConfig, applyInitLifecycleConfigurations } from "./initConfig.ts";
+import { loadInitConfig, applyInitConfig, type FauxqsInitConfig } from "./initConfig.ts";
 import { MessageSpy, buildSnsSpyMessage, type MessageSpyReader } from "./spy.ts";
 import { PersistenceManager } from "./persistence.ts";
 import { FileS3Persistence } from "./s3/fileS3Persistence.ts";
@@ -303,31 +303,42 @@ export function buildApp(options?: BuildAppOptions) {
   });
 
   let lastExpirySweep = Date.now();
+  let runningSweep: Promise<void> | undefined;
+  app.addHook("preClose", async () => {
+    // Stores and persistence close after this hook, so let a running sweep finish first.
+    await runningSweep;
+  });
   app.addHook("onRequest", (request, _reply, done) => {
     const now = Date.now();
     // A clock moved back, for example by fake timers, would otherwise stop the sweep.
     if (now < lastExpirySweep) {
       lastExpirySweep = now;
     }
-    if (now - lastExpirySweep >= EXPIRY_SWEEP_INTERVAL_MS) {
+    if (now - lastExpirySweep >= EXPIRY_SWEEP_INTERVAL_MS && !runningSweep) {
       lastExpirySweep = now;
-      setImmediate(() => {
-        try {
-          sqsStore.expireMessages();
-        } catch (err) {
-          request.log.error({ err }, "SQS message expiry failed");
-        }
-        try {
-          s3Store.expireObjects();
-        } catch (err) {
-          request.log.error({ err }, "S3 object expiry failed");
-        }
-        try {
-          options?.afterExpirySweep?.();
-        } catch (err) {
-          request.log.error({ err }, "Reclaiming storage after expiry failed");
-        }
-      });
+      runningSweep = new Promise<void>((resolve) => setImmediate(resolve))
+        .then(async () => {
+          try {
+            sqsStore.expireMessages();
+          } catch (err) {
+            request.log.error({ err }, "SQS message expiry failed");
+          }
+          try {
+            // Gives requests a turn between steps, so a sweep over many objects does not
+            // stall them.
+            await s3Store.expireObjectsInSteps();
+          } catch (err) {
+            request.log.error({ err }, "S3 object expiry failed");
+          }
+          try {
+            options?.afterExpirySweep?.();
+          } catch (err) {
+            request.log.error({ err }, "Reclaiming storage after expiry failed");
+          }
+        })
+        .finally(() => {
+          runningSweep = undefined;
+        });
     }
     done();
   });
@@ -609,18 +620,23 @@ export async function startFauxqs(options?: {
     ? new FileS3Persistence(options.s3StorageDir)
     : persistenceManager;
 
+  // Resolved before loading, because loading needs the buckets it gives lifecycle rules.
+  // It is applied after the server listens.
+  const initConfig = init ? (typeof init === "string" ? loadInitConfig(init) : init) : undefined;
+  const loadS3Options = { lifecycleBuckets: initLifecycleBuckets(initConfig) };
+
   // Load persisted state BEFORE assigning persistence to stores.
   // This avoids INSERT OR REPLACE triggering ON DELETE CASCADE during load.
   if (persistenceManager && s3Persistence === persistenceManager) {
     // Single persistence backend for everything (existing behavior)
-    persistenceManager.load(sqsStore, snsStore, s3Store);
+    persistenceManager.load(sqsStore, snsStore, s3Store, loadS3Options);
   } else {
     // Separate backends: SQLite for SQS/SNS, file-based (or none) for S3
     if (persistenceManager) {
       persistenceManager.loadSqsAndSns(sqsStore, snsStore);
     }
     if (s3Persistence) {
-      s3Persistence.loadS3(s3Store);
+      s3Persistence.loadS3(s3Store, loadS3Options);
     }
   }
 
@@ -646,9 +662,8 @@ export async function startFauxqs(options?: {
     s3Store.spy = messageSpy;
   }
 
-  // Tenant management: create manager and wire usage tracker into stores
-  // We need the init config to use as a template, so resolve it here but defer application
-  const initConfig = init ? (typeof init === "string" ? loadInitConfig(init) : init) : undefined;
+  // Tenant management: create manager and wire usage tracker into stores.
+  // The init config (resolved before loading) is its template.
 
   let tenantManager: TenantManager | undefined;
   if (options?.tenant) {
@@ -679,20 +694,6 @@ export async function startFauxqs(options?: {
   for (const warning of persistenceManager?.loadWarnings ?? []) {
     app.log.warn(warning);
   }
-  // Expire what aged out while the server was down, then give the freed space back. Lifecycle
-  // rules from the init config go in first, so they replace the stored rules for this sweep too.
-  try {
-    if (initConfig) applyInitLifecycleConfigurations(initConfig, s3Store);
-    s3Store.expireObjects();
-  } catch (err) {
-    app.log.error({ err }, "S3 object expiry at startup failed");
-  }
-  try {
-    persistenceManager?.reclaimFreeSpace({ rebuild: true });
-  } catch (err) {
-    app.log.error({ err }, "Reclaiming storage at startup failed");
-  }
-
   if (persistenceManager) {
     app.addHook("preClose", () => {
       persistenceManager.close();
@@ -1030,6 +1031,20 @@ export async function startFauxqs(options?: {
     server.setup(initConfig);
   }
 
+  // Expire what aged out while the server was down, then give the freed space back. This runs
+  // after setup, so the sweep uses the lifecycle rules the init config sets. Nothing awaits
+  // between listen and here, so no request is served before the sweep.
+  try {
+    s3Store.expireObjects();
+  } catch (err) {
+    app.log.error({ err }, "S3 object expiry at startup failed");
+  }
+  try {
+    persistenceManager?.reclaimFreeSpace({ rebuild: true });
+  } catch (err) {
+    app.log.error({ err }, "Reclaiming storage at startup failed");
+  }
+
   // Start tenant manager after server is listening and init config is applied
   if (tenantManager) {
     tenantManager.setPort(actualPort);
@@ -1037,4 +1052,13 @@ export async function startFauxqs(options?: {
   }
 
   return server;
+}
+
+/** Buckets that the init config gives a lifecycle configuration. */
+function initLifecycleBuckets(config: FauxqsInitConfig | undefined): string[] {
+  const names: string[] = [];
+  for (const entry of config?.buckets ?? []) {
+    if (typeof entry !== "string" && entry.lifecycleConfiguration) names.push(entry.name);
+  }
+  return names;
 }

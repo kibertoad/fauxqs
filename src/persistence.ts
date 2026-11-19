@@ -9,7 +9,7 @@ import type { SnsTopic, SnsSubscription } from "./sns/snsTypes.ts";
 import type { S3Store, BucketType } from "./s3/s3Store.ts";
 import type { S3Object, MultipartUpload, MultipartPart } from "./s3/s3Types.ts";
 import { toChecksumAlgorithm } from "./s3/checksum.ts";
-import type { S3PersistenceProvider } from "./s3/s3Persistence.ts";
+import type { LoadS3Options, S3PersistenceProvider } from "./s3/s3Persistence.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sqs_queues (
@@ -131,6 +131,25 @@ const MESSAGE_LOAD_HEAP_SHARE = 0.3;
 /** Estimated heap cost of one loaded message on top of its body and attributes. */
 const MESSAGE_OVERHEAD_BYTES = 512;
 
+/**
+ * Estimated heap bytes per character of the stored attributes JSON once it is parsed: two bytes
+ * per character for strings V8 stores as UTF-16, and the same again for the objects that hold
+ * each attribute's name, data type and value.
+ */
+const ATTRIBUTE_HEAP_BYTES_PER_CHAR = 4;
+
+/**
+ * Estimated heap cost of one stored message, in SQL. V8 keeps a string with only Latin-1
+ * characters at one byte per character and any other string at two, so a body that is not
+ * plain ASCII counts two bytes per character. Latin-1 text outside ASCII is counted at two as
+ * well, which overestimates it.
+ */
+const MESSAGE_LOAD_COST_SQL = `(
+  CASE WHEN octet_length(body) = length(body) THEN length(body) ELSE 2 * length(body) END
+  + ${ATTRIBUTE_HEAP_BYTES_PER_CHAR} * length(message_attributes)
+  + ${MESSAGE_OVERHEAD_BYTES}
+)`;
+
 /** Pages released per reclaimFreeSpace call, which bounds how long one call blocks. */
 const RECLAIM_MAX_PAGES = 16_384;
 
@@ -141,7 +160,7 @@ const RECLAIM_MIN_FREE_PAGES = 256;
  * Largest amount of live data that a database created without auto_vacuum is rebuilt for at
  * startup. The rebuild copies all live data, so its duration grows with this size.
  */
-const REBUILD_MAX_LIVE_BYTES = 256 * 1024 * 1024;
+const REBUILD_MAX_LIVE_BYTES = 64 * 1024 * 1024;
 
 export interface PersistenceOptions {
   /**
@@ -243,6 +262,11 @@ interface PreparedStatements {
   deleteAllMultipartUploads: StatementSync;
   readBody: StatementSync;
   readPartBody: StatementSync;
+  pragmaAutoVacuum: StatementSync;
+  pragmaFreelistCount: StatementSync;
+  pragmaPageCount: StatementSync;
+  pragmaPageSize: StatementSync;
+  walCheckpoint: StatementSync;
 }
 
 export class PersistenceManager implements S3PersistenceProvider {
@@ -337,15 +361,14 @@ export class PersistenceManager implements S3PersistenceProvider {
           AND (delay_until IS NULL OR delay_until <= ?)
       `),
       messageLoadCost: this.db.prepare(`
-        SELECT coalesce(sum(octet_length(body) + octet_length(message_attributes) + ${MESSAGE_OVERHEAD_BYTES}), 0) AS bytes
+        SELECT coalesce(sum(${MESSAGE_LOAD_COST_SQL}), 0) AS bytes
         FROM sqs_messages
       `),
       // The newest message at which the running cost, newest first, exceeds the budget.
       messageLoadCutoff: this.db.prepare(`
         SELECT enqueue_timestamp, id FROM (
           SELECT enqueue_timestamp, rowid AS id,
-            sum(octet_length(body) + octet_length(message_attributes) + ${MESSAGE_OVERHEAD_BYTES})
-              OVER (ORDER BY enqueue_timestamp DESC, rowid DESC) AS running
+            sum(${MESSAGE_LOAD_COST_SQL}) OVER (ORDER BY enqueue_timestamp DESC, rowid DESC) AS running
           FROM sqs_messages
         ) WHERE running > ? ORDER BY running LIMIT 1
       `),
@@ -407,11 +430,13 @@ export class PersistenceManager implements S3PersistenceProvider {
         FROM s3_objects WHERE rowid > ? ORDER BY rowid LIMIT ${LOAD_PAGE_SIZE}
       `),
       // last_modified and initiated hold Date.toISOString() output, which sorts chronologically.
-      // Buckets with a lifecycle configuration are left to S3Store.expireObjects at startup,
-      // which sends the LifecycleExpiration event for objects that a rule expired.
+      // Buckets with a lifecycle configuration, stored or given in the second parameter as a
+      // JSON array of names, are left to S3Store.expireObjects at startup, which sends the
+      // LifecycleExpiration event for objects that a rule expired.
       deleteObjectsOlderThan: this.db.prepare(`
         DELETE FROM s3_objects WHERE last_modified < ?
           AND bucket NOT IN (SELECT bucket FROM s3_bucket_lifecycle_configurations)
+          AND bucket NOT IN (SELECT value FROM json_each(?))
       `),
       deleteMultipartUploadsOlderThan: this.db.prepare(
         "DELETE FROM s3_multipart_uploads WHERE initiated < ?",
@@ -440,6 +465,11 @@ export class PersistenceManager implements S3PersistenceProvider {
       readPartBody: this.db.prepare(
         "SELECT body FROM s3_multipart_parts WHERE upload_id = ? AND part_number = ?",
       ),
+      pragmaAutoVacuum: this.db.prepare("PRAGMA auto_vacuum"),
+      pragmaFreelistCount: this.db.prepare("PRAGMA freelist_count"),
+      pragmaPageCount: this.db.prepare("PRAGMA page_count"),
+      pragmaPageSize: this.db.prepare("PRAGMA page_size"),
+      walCheckpoint: this.db.prepare("PRAGMA wal_checkpoint(TRUNCATE)"),
     };
   }
 
@@ -781,9 +811,9 @@ export class PersistenceManager implements S3PersistenceProvider {
 
   // ── Load on startup ──
 
-  load(sqsStore: SqsStore, snsStore: SnsStore, s3Store: S3Store): void {
+  load(sqsStore: SqsStore, snsStore: SnsStore, s3Store: S3Store, s3Options?: LoadS3Options): void {
     this.loadSqsAndSns(sqsStore, snsStore);
-    this.loadS3(s3Store);
+    this.loadS3(s3Store, s3Options);
   }
 
   loadSqsAndSns(sqsStore: SqsStore, snsStore: SnsStore): void {
@@ -792,15 +822,19 @@ export class PersistenceManager implements S3PersistenceProvider {
     this.loadSnsSubscriptions(snsStore);
   }
 
-  loadS3(s3Store: S3Store): void {
+  loadS3(s3Store: S3Store, options?: LoadS3Options): void {
     this.loadS3Buckets(s3Store);
     this.loadS3BucketLifecycleConfigurations(s3Store);
     this.loadS3BucketNotificationConfigurations(s3Store);
     if (s3Store.maxObjectRetentionMs !== undefined) {
       // Drop what the retention cap has expired before its metadata is loaded. Objects in
-      // buckets with lifecycle rules stay until expireObjects checks the rules first.
+      // buckets with lifecycle rules, stored or from the init config, stay until expireObjects
+      // checks the rules first.
       const cutoff = new Date(Date.now() - s3Store.maxObjectRetentionMs).toISOString();
-      this.stmts.deleteObjectsOlderThan.run(cutoff);
+      this.stmts.deleteObjectsOlderThan.run(
+        cutoff,
+        JSON.stringify(options?.lifecycleBuckets ?? []),
+      );
       this.stmts.deleteMultipartUploadsOlderThan.run(cutoff);
     }
     this.loadS3Objects(s3Store);
@@ -1129,9 +1163,9 @@ export class PersistenceManager implements S3PersistenceProvider {
     }
   }
 
-  private pragmaNumber(name: string): number {
-    const row = this.db.prepare(`PRAGMA ${name}`).get() as Record<string, number>;
-    return row[name];
+  private static pragmaNumber(statement: StatementSync): number {
+    const row = statement.get() as Record<string, number>;
+    return Object.values(row)[0];
   }
 
   /**
@@ -1143,23 +1177,28 @@ export class PersistenceManager implements S3PersistenceProvider {
    * data is at most REBUILD_MAX_LIVE_BYTES. A larger one keeps its size.
    */
   reclaimFreeSpace(options?: { rebuild?: boolean }): void {
-    const freePages = this.pragmaNumber("freelist_count");
-    if (this.pragmaNumber("auto_vacuum") === 0) {
-      if (!options?.rebuild) return;
-      const livePages = this.pragmaNumber("page_count") - freePages;
-      if (livePages * this.pragmaNumber("page_size") > REBUILD_MAX_LIVE_BYTES) return;
-      this.db.exec("PRAGMA auto_vacuum = INCREMENTAL");
-      this.db.exec("VACUUM");
+    const pragma = PersistenceManager.pragmaNumber;
+    const freePages = pragma(this.stmts.pragmaFreelistCount);
+    let changed = false;
+    if (pragma(this.stmts.pragmaAutoVacuum) === 0) {
+      const livePages = pragma(this.stmts.pragmaPageCount) - freePages;
+      if (
+        options?.rebuild &&
+        livePages * pragma(this.stmts.pragmaPageSize) <= REBUILD_MAX_LIVE_BYTES
+      ) {
+        this.db.exec("PRAGMA auto_vacuum = INCREMENTAL");
+        this.db.exec("VACUUM");
+        changed = true;
+      }
     } else if (freePages >= RECLAIM_MIN_FREE_PAGES) {
       this.db.exec(`PRAGMA incremental_vacuum(${RECLAIM_MAX_PAGES})`);
-    } else if (!this.checkpointPending) {
-      return;
+      changed = true;
     }
+    if (!changed && !this.checkpointPending) return;
     // In WAL mode the database file shrinks when the change is checkpointed. Another connection
-    // can keep the checkpoint from finishing; the next call then retries it.
-    const result = this.db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as
-      | { busy: number }
-      | undefined;
+    // can keep the checkpoint from finishing; the next call then retries it, also on a database
+    // that keeps auto_vacuum off.
+    const result = this.stmts.walCheckpoint.get() as { busy: number } | undefined;
     this.checkpointPending = result !== undefined && result.busy !== 0;
   }
 

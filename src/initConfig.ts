@@ -267,22 +267,6 @@ export function applyInitConfig(
   };
 }
 
-/**
- * Put the lifecycle configurations the init config sets on buckets that already exist, such as
- * buckets restored from persistence. Startup calls this before its first expiry sweep, so that
- * sweep uses the rules the init config sets rather than the ones stored before the restart.
- */
-export function applyInitLifecycleConfigurations(config: FauxqsInitConfig, s3Store: S3Store): void {
-  for (const entry of config.buckets ?? []) {
-    if (typeof entry === "string" || !entry.lifecycleConfiguration) continue;
-    if (!s3Store.hasBucket(entry.name)) continue;
-    s3Store.putBucketLifecycleConfiguration(
-      entry.name,
-      lifecycleConfigToXml(entry.lifecycleConfiguration),
-    );
-  }
-}
-
 type LifecycleRule = v.InferOutput<typeof LifecycleRuleSchema>;
 
 function lifecycleConfigToXml(config: { Rules: LifecycleRule[] }): string {

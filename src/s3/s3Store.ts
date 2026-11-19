@@ -14,6 +14,9 @@ import {
 
 export type BucketType = "general-purpose" | "directory";
 
+/** Objects that S3Store.expireObjectsInSteps checks before it gives the event loop a turn. */
+const EXPIRY_STEP_OBJECTS = 5_000;
+
 // NOTE: When adding new public methods that operate on a bucket,
 // also override them in src/tenant/trackedStores.ts → TrackedS3Store so that
 // tenant usage tracking stays accurate.
@@ -821,12 +824,32 @@ export class S3Store {
    * has expired, and abort every incomplete multipart upload that an
    * `AbortIncompleteMultipartUpload` rule or `maxObjectRetentionMs` has expired.
    *
-   * An object deleted by a lifecycle rule produces an `s3:LifecycleExpiration:Delete` event.
-   * Persisted data is deleted first, so when that throws the entries stay in memory and the
-   * next call retries them. A failure in one bucket or upload does not stop the sweep: the
-   * rest is still expired, and the errors are thrown together at the end.
+   * Each deleted object gets a spy entry with status `deleted`. An object deleted by a lifecycle
+   * rule also produces an `s3:LifecycleExpiration:Delete` event. Persisted data is deleted first,
+   * so when that throws the entries stay in memory and the next call retries them. A failure in
+   * one bucket or upload does not stop the sweep: the rest is still expired, and the errors are
+   * thrown together at the end.
+   *
+   * This runs in one go and blocks the event loop for the whole sweep. The periodic sweep uses
+   * {@link expireObjectsInSteps} instead.
    */
   expireObjects(): void {
+    for (const _ of this.expirySteps()) {
+      // Each step yields after EXPIRY_STEP_OBJECTS objects; nothing to do between them here.
+    }
+  }
+
+  /**
+   * {@link expireObjects}, giving the event loop a turn after every EXPIRY_STEP_OBJECTS objects
+   * checked, so a sweep over many objects does not hold up requests.
+   */
+  async expireObjectsInSteps(): Promise<void> {
+    for (const _ of this.expirySteps()) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
+
+  private *expirySteps(): Generator<void, void, void> {
     const now = Date.now();
     const failures: unknown[] = [];
     const maxAgeCutoff =
@@ -836,45 +859,27 @@ export class S3Store {
       const rules = this.lifecycleRules(bucket);
       if (maxAgeCutoff === undefined && rules.length === 0) continue;
 
-      const expiredKeys: string[] = [];
-      const expiredByRule: string[] = [];
+      let checked = 0;
+      let expiredKeys: string[] = [];
+      let expiredByRule = new Set<string>();
       for (const obj of objects.values()) {
         const lastModified = obj.lastModified.getTime();
         if (objectExpiredByRules(rules, obj.key, obj.contentLength, lastModified, now)) {
           expiredKeys.push(obj.key);
-          expiredByRule.push(obj.key);
+          expiredByRule.add(obj.key);
         } else if (maxAgeCutoff !== undefined && lastModified < maxAgeCutoff) {
           expiredKeys.push(obj.key);
         }
-      }
-      if (expiredKeys.length > 0) {
-        let deletedKeys = expiredKeys;
-        try {
-          this.persistence?.deleteObjects(bucket, expiredKeys);
-        } catch (err) {
-          // Part of the batch may be gone already. Delete key by key, so every key whose stored
-          // data is gone also leaves memory, and the rest stay for the next sweep.
-          failures.push(err);
-          deletedKeys = [];
-          for (const key of expiredKeys) {
-            try {
-              this.persistence!.deleteObjects(bucket, [key]);
-              deletedKeys.push(key);
-            } catch {
-              // Reported through the batch error above.
-            }
-          }
-        }
-        const deleted = new Set(deletedKeys);
-        for (const key of deletedKeys) {
-          objects.delete(key);
-        }
-        for (const key of expiredByRule) {
-          if (deleted.has(key)) {
-            this.fireObjectEvent(bucket, key, "LifecycleExpiration:Delete");
-          }
+        if (++checked % EXPIRY_STEP_OBJECTS === 0) {
+          // Delete what this step found before yielding, so no key is held across a step in
+          // which a request could change or delete it.
+          this.deleteExpiredObjects(bucket, objects, expiredKeys, expiredByRule, failures);
+          expiredKeys = [];
+          expiredByRule = new Set();
+          yield;
         }
       }
+      this.deleteExpiredObjects(bucket, objects, expiredKeys, expiredByRule, failures);
 
       const bucketUploads = this.multipartUploadsByBucket.get(bucket);
       if (!bucketUploads) continue;
@@ -901,6 +906,41 @@ export class S3Store {
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) {
       throw new AggregateError(failures, `${failures.length} S3 expiry deletions failed`);
+    }
+  }
+
+  private deleteExpiredObjects(
+    bucket: string,
+    objects: Map<string, S3Object>,
+    expiredKeys: string[],
+    expiredByRule: Set<string>,
+    failures: unknown[],
+  ): void {
+    if (expiredKeys.length === 0) return;
+    let deletedKeys = expiredKeys;
+    try {
+      this.persistence?.deleteObjects(bucket, expiredKeys);
+    } catch (err) {
+      // Part of the batch may be gone already. Delete key by key, so every key whose stored
+      // data is gone also leaves memory, and the rest stay for the next sweep.
+      failures.push(err);
+      deletedKeys = [];
+      for (const key of expiredKeys) {
+        try {
+          this.persistence!.deleteObjects(bucket, [key]);
+          deletedKeys.push(key);
+        } catch {
+          // Reported through the batch error above.
+        }
+      }
+    }
+    const timestamp = Date.now();
+    for (const key of deletedKeys) {
+      objects.delete(key);
+      this.spy?.addMessage({ service: "s3", bucket, key, status: "deleted", timestamp });
+      if (expiredByRule.has(key)) {
+        this.fireObjectEvent(bucket, key, "LifecycleExpiration:Delete");
+      }
     }
   }
 

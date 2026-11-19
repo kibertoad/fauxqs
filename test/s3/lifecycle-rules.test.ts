@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { parseLifecycleRules } from "../../src/s3/lifecycle.js";
 import { S3Store } from "../../src/s3/s3Store.js";
 import type { S3PersistenceProvider } from "../../src/s3/s3Persistence.js";
+import { MessageSpy } from "../../src/spy.js";
 
 function rule(body: string): string {
   return `<LifecycleConfiguration><Rule><Status>Enabled</Status>${body}</Rule></LifecycleConfiguration>`;
@@ -112,5 +113,50 @@ describe("S3Store.expireObjects with failing persistence", () => {
     expect(() => store.expireObjects()).toThrow("permission denied");
     expect(keys(store, "bucket-a")).toEqual(["k2"]);
     expect(keys(store, "bucket-b")).toEqual([]);
+  });
+});
+
+describe("S3Store expiry sweep", () => {
+  async function agedStore(objectCount: number): Promise<S3Store> {
+    const store = new S3Store();
+    store.createBucket("aged");
+    for (let i = 0; i < objectCount; i++) {
+      store.putObject("aged", `k${i}`, Buffer.from("x"));
+    }
+    store.maxObjectRetentionMs = 1;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    return store;
+  }
+
+  it("records a deleted spy entry for each object it expires", async () => {
+    const store = await agedStore(2);
+    const spy = new MessageSpy();
+    store.spy = spy;
+
+    store.expireObjects();
+
+    const deleted = spy
+      .getAllMessages()
+      .filter((message) => message.service === "s3" && message.status === "deleted")
+      .map((message) => (message as { key: string }).key)
+      .sort();
+    expect(deleted).toEqual(["k0", "k1"]);
+  });
+
+  it("lets other callbacks run between steps of a sweep over many objects", async () => {
+    const store = await agedStore(12_000);
+    let ranDuringSweep = false;
+    let sweepDone = false;
+
+    const sweep = store.expireObjectsInSteps().then(() => {
+      sweepDone = true;
+    });
+    setImmediate(() => {
+      ranDuringSweep = !sweepDone;
+    });
+    await sweep;
+
+    expect(ranDuringSweep).toBe(true);
+    expect(store.listObjects("aged").objects).toEqual([]);
   });
 });

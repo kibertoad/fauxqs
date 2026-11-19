@@ -1,6 +1,15 @@
 import type { S3Store, BucketType } from "./s3Store.ts";
 import type { S3Object, MultipartUpload, MultipartPart } from "./s3Types.ts";
 
+export interface LoadS3Options {
+  /**
+   * Buckets that the init config gives a lifecycle configuration. Like buckets with a stored
+   * one, their objects are not dropped by the retention cap before loading, so that the startup
+   * sweep checks the rules first and sends the events for objects a rule expired.
+   */
+  lifecycleBuckets?: string[];
+}
+
 export interface S3PersistenceProvider {
   // Bucket ops
   insertBucket(name: string, creationDate: Date, type: BucketType): void;
@@ -31,7 +40,7 @@ export interface S3PersistenceProvider {
   readPartBody(uploadId: string, partNumber: number): Buffer;
 
   // Startup load (metadata only, for objects and for multipart parts)
-  loadS3(s3Store: S3Store): void;
+  loadS3(s3Store: S3Store, options?: LoadS3Options): void;
 
   // Purge all S3 data (buckets, objects, multipart uploads)
   purgeAll(): void;
